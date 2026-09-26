@@ -1,0 +1,1400 @@
+# ============================================================
+# Open Review — Codex pull-request reviewer (composite action)
+#
+# Features:
+#   - Inline diff comments with severity badges
+#   - State continuity across review passes (base64 in PR comments)
+#   - Auto-resolve threads when issues are fixed
+#   - Stale review marking
+#   - Slash commands (configurable names; options: full, reset, --since <sha>)
+#   - Diff-hunk validation for inline comments
+#   - Metadata footer (model, duration, tokens)
+#
+# Trust model:
+#   - The engine (scripts and prompt) comes from the pinned action ref and is
+#     staged outside the workspace before the PR head is checked out.
+#   - The repository rule pack is read from the PR's BASE commit, never from
+#     the PR head. A PR that edits the rule pack sets `rules_changed=true` and
+#     the posted review says so.
+#   - Checkout uses the PR head SHA directly, with persist-credentials: false.
+#   - GITHUB_TOKEN is NOT passed to Codex.
+#   - Codex runs in a read-only sandbox (legacy Landlock on Linux) with web
+#     search disabled; the sandbox is probed before the review runs.
+#   - Dirty-tree check fails the job if Codex modifies tracked files.
+#   - Automatic events review same-repository heads only; issue_comment
+#     triggers must match a configured command from an OWNER, MEMBER or
+#     COLLABORATOR; workflow_dispatch must run from the default branch.
+#   - Model traffic uses `provider-base-url` (+ optional `provider-env-key`)
+#     when set; otherwise the ChatGPT auth.json passed in `codex-auth-json-b64`.
+#
+# The calling workflow owns triggers, concurrency, draft policy, job
+# permissions, the runner, and any network setup the provider needs.
+# ============================================================
+name: Open Review
+description: Review a pull request with Codex against a repository rule pack read from the base branch.
+author: Andreas Asprou
+
+inputs:
+  rules-path:
+    description: Repository-relative path of the rule pack (Part 2 of the prompt). Read from the PR base commit.
+    required: true
+  parent-model:
+    description: Codex model for the parent reviewer.
+    default: gpt-6-astra
+  parent-reasoning-effort:
+    description: Reasoning effort for the parent reviewer.
+    default: high
+  child-model:
+    description: Default model for delegated child investigations.
+    default: gpt-6-luna
+  child-reasoning-effort:
+    description: Default reasoning effort for child investigations.
+    default: max
+  codex-cli-version:
+    description: Exact @openai/codex version to install and verify.
+    default: 0.157.1
+  provider-base-url:
+    description: >-
+      Optional Responses-API base URL for a custom model provider (Codex appends
+      /responses and /models). When set, auth.json is not used and session
+      resume is disabled.
+    default: ""
+  provider-env-key:
+    description: >-
+      Optional name of an environment variable (set on the calling step) holding
+      the provider API key. It is sent as a Bearer token and hidden from the
+      reviewer's shell commands.
+    default: ""
+  codex-auth-json-b64:
+    description: Base64 of a ChatGPT ~/.codex/auth.json. Required when provider-base-url is empty.
+    default: ""
+  check-name:
+    description: Name of the check run published on the PR head.
+    default: Open Review
+  command:
+    description: Slash command name(s) accepted on issue_comment events, separated by spaces or commas (without the leading slash).
+    default: open-review
+  decision-owners:
+    description: GitHub logins whose PR replies count as trusted review dispositions, separated by spaces or commas.
+    default: ""
+  disposition-marker:
+    description: HTML-comment marker of the base64 disposition ledger comments to read.
+    default: open-review-dispositions:v1:base64
+  context-keywords:
+    description: Extra words (for example a product or CLI name) that mark a trusted comment as review discussion.
+    default: ""
+  session-resume:
+    description: Continue the previous round's Codex session on incremental reviews ("true" or "false"). Ignored with provider-base-url.
+    default: "true"
+  pr-number:
+    description: PR number to review for workflow_dispatch callers.
+    default: ""
+
+outputs:
+  rules_changed:
+    description: '"true" when the PR modifies the rule pack (the review used the base-branch version).'
+    value: ${{ steps.rules.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    # ── Trusted Engine ───────────────────────────────────────
+    # Stage the pinned engine outside the workspace, so checking out the PR
+    # head can never replace the code that reviews it.
+    - name: Stage review engine
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        REVIEW_TMP="$RUNNER_TEMP/open-review"
+        rm -rf -- "$REVIEW_TMP"
+        mkdir -p "$REVIEW_TMP"
+        cp -r "$ACTION_PATH/engine" "$REVIEW_TMP/engine"
+        test -f "$REVIEW_TMP/engine/check-execution-evidence.py"
+
+    # ── PR Context ───────────────────────────────────────────
+    - name: Get PR details
+      id: pr
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER_INPUT: ${{ inputs.pr-number }}
+        REVIEW_COMMANDS: ${{ inputs.command }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          // Trigger policy: a comment must be one of the configured commands
+          // from a trusted association; a manual run must come from the
+          // default branch. Anything else ends quietly before any API write.
+          const rejectTrigger = (reason) => {
+            core.setOutput('trigger_rejected', reason);
+            console.log(`Not reviewing: ${reason}`);
+          };
+          if (context.eventName === 'issue_comment') {
+            const body = context.payload.comment?.body || '';
+            const commands = (process.env.REVIEW_COMMANDS || '')
+              .split(/[\s,]+/)
+              .map((name) => name.replace(/^\//, ''))
+              .filter(Boolean);
+            const invoked = commands.some((name) => body === `/${name}` || body.startsWith(`/${name} `));
+            const association = context.payload.comment?.author_association || '';
+            if (!context.payload.issue?.pull_request) return rejectTrigger('comment is not on a pull request');
+            if (!invoked) return rejectTrigger('comment is not a review command');
+            if (!['MEMBER', 'OWNER', 'COLLABORATOR'].includes(association)) {
+              return rejectTrigger(`commenter association ${association || 'unknown'} may not request reviews`);
+            }
+          }
+          if (context.eventName === 'workflow_dispatch' &&
+              context.ref !== `refs/heads/${context.payload.repository?.default_branch}`) {
+            return rejectTrigger('manual runs must use the default branch');
+          }
+
+          const prNumber = context.payload.pull_request?.number
+            || context.issue?.number
+            || parseInt(process.env.PR_NUMBER_INPUT, 10);
+
+          if (!prNumber || isNaN(prNumber)) {
+            core.setFailed('Could not determine PR number');
+            return;
+          }
+
+          const { data: pr } = await github.rest.pulls.get({
+            ...context.repo, pull_number: prNumber,
+          });
+
+          core.setOutput('number', pr.number);
+          core.setOutput('head_sha', pr.head.sha);
+          core.setOutput('base_sha', pr.base.sha);
+          core.setOutput('head_ref', pr.head.ref);
+          core.setOutput('base_ref', pr.base.ref);
+          core.setOutput('title', pr.title);
+          core.setOutput('author_login', pr.user?.login || '');
+          core.setOutput('author_type', pr.user?.type || '');
+          core.setOutput('head_repo_full_name', pr.head.repo?.full_name || '');
+
+          // Write PR body to file (avoids output escaping issues)
+          const fs = require('fs');
+          const path = require('path');
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'open-review', 'pr-body.txt'), pr.body || '(no description)');
+
+          // Parse command options inline (runs before checkout)
+          let forceFullReview = false;
+          let resetState = false;
+          let sinceSha = '';
+          if (context.eventName === 'issue_comment') {
+            const tokens = (context.payload.comment?.body || '').trim().split(/\s+/).slice(1);
+            for (let i = 0; i < tokens.length; i++) {
+              const t = tokens[i];
+              if (['full', '--full', 'all', '--all'].includes(t)) forceFullReview = true;
+              else if (['reset', '--reset'].includes(t)) resetState = true;
+              else if (t === '--since' && /^[0-9a-f]{7,40}$/i.test(tokens[i+1] || '')) sinceSha = tokens[++i];
+              else { const m = t.match(/^--since=([0-9a-f]{7,40})$/i); if (m) sinceSha = m[1]; }
+            }
+          }
+          core.setOutput('force_full_review', String(forceFullReview));
+          core.setOutput('reset_state', String(resetState));
+          core.setOutput('since_sha', sinceSha);
+
+          console.log(`PR #${pr.number}: ${pr.title}`);
+          console.log(`Head: ${pr.head.sha.slice(0, 8)} (${pr.head.ref})`);
+          console.log(`Base: ${pr.base.sha.slice(0, 8)} (${pr.base.ref})`);
+
+    - name: Check skip conditions
+      id: skip
+      shell: bash
+      env:
+        TRIGGER_REJECTED: ${{ steps.pr.outputs.trigger_rejected }}
+        PR_AUTHOR_LOGIN: ${{ steps.pr.outputs.author_login }}
+        PR_AUTHOR_TYPE: ${{ steps.pr.outputs.author_type }}
+        HEAD_REPO_FULL_NAME: ${{ steps.pr.outputs.head_repo_full_name }}
+        REPO_FULL_NAME: ${{ github.repository }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        LOGIN="${PR_AUTHOR_LOGIN:-}"
+        TYPE="${PR_AUTHOR_TYPE:-}"
+        SKIP="false"
+        REASON=""
+
+        # Automatic events are restricted to same-repository heads. A
+        # maintainer-only workflow_dispatch from the default branch is the
+        # explicit fork fallback and may review a fork head in the sandbox.
+        if [[ -n "${TRIGGER_REJECTED:-}" ]]; then
+          SKIP="true"
+          REASON="$TRIGGER_REJECTED"
+        elif [[ "$EVENT_NAME" != "workflow_dispatch" ]] &&
+           [[ -n "$HEAD_REPO_FULL_NAME" ]] &&
+           [[ "$HEAD_REPO_FULL_NAME" != "$REPO_FULL_NAME" ]]; then
+          SKIP="true"
+          REASON="Fork PR ($HEAD_REPO_FULL_NAME)"
+        elif [[ "$TYPE" == "Bot" ]] || [[ "$LOGIN" == *"[bot]" ]]; then
+          SKIP="true"
+          REASON="Bot PR ($LOGIN)"
+        fi
+
+        echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+        echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+        if [ "$SKIP" = "true" ]; then
+          echo "Skipping: $REASON"
+        fi
+
+    - name: React to command
+      if: github.event_name == 'issue_comment' && steps.skip.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          await github.rest.reactions.createForIssueComment({
+            ...context.repo,
+            comment_id: context.payload.comment.id,
+            content: 'eyes',
+          });
+
+    # ── Check Run ────────────────────────────────────────────
+    # Publish the result of the requested review against its inspected head.
+    - name: Create pending check
+      id: check
+      if: steps.skip.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      env:
+        CHECK_NAME: ${{ inputs.check-name }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const check = await github.rest.checks.create({
+            ...context.repo,
+            name: process.env.CHECK_NAME,
+            head_sha: '${{ steps.pr.outputs.head_sha }}',
+            status: 'in_progress',
+            started_at: new Date().toISOString(),
+            output: {
+              title: 'Codex is reviewing your PR...',
+              summary: 'The AI review is in progress. Check the Actions tab for live logs.',
+            },
+          });
+          core.setOutput('check_id', check.data.id);
+
+    # ── Code Checkout ────────────────────────────────────────
+    - name: Checkout PR
+      if: steps.skip.outputs.skip != 'true'
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.pr.outputs.head_sha }}
+        # Review needs recent head ancestry; the next step fetches the exact
+        # base SHA. Avoid fetching every repository branch.
+        fetch-depth: 100
+        persist-credentials: false
+
+    - name: Prepare safe Codex scratch directory
+      if: steps.skip.outputs.skip != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf -- .codex-ci
+        mkdir -m 700 .codex-ci
+        test -d .codex-ci
+        test ! -L .codex-ci
+
+    - name: Fetch base for diff
+      if: steps.skip.outputs.skip != 'true'
+      shell: bash
+      env:
+        BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+        git -c "http.extraheader=$auth_header" fetch --no-tags --depth=100 origin "$BASE_SHA"
+        if git merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1; then
+          exit 0
+        fi
+        for deepen_by in 200 500 1000 2000 5000; do
+          git -c "http.extraheader=$auth_header" fetch --no-tags --deepen="$deepen_by" origin "$BASE_SHA" "$HEAD_SHA"
+          if git merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1; then
+            exit 0
+          fi
+        done
+        echo "Unable to hydrate a merge base for $BASE_SHA..$HEAD_SHA" >&2
+        exit 1
+
+    # ── State & Scope ────────────────────────────────────────
+    - name: Load previous state
+      id: state
+      if: steps.skip.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const reviewTmp = path.join(process.env.RUNNER_TEMP, 'open-review');
+          const { createStderrCaughtErrorDiagnostics, recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require(path.join(reviewTmp, 'engine', 'diagnostics-runtime.cjs'));
+          const recorder = requireCaughtErrorDiagnosticRecorder(createStderrCaughtErrorDiagnostics().recorder);
+          const { loadPreviousState, summarizePreviousState } = require(path.join(reviewTmp, 'engine', 'index.cjs'));
+
+          fs.mkdirSync('.codex-ci', { recursive: true });
+
+          const reset = '${{ steps.pr.outputs.reset_state }}' === 'true';
+          const prev = await loadPreviousState({ recorder,
+            github,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            prNumber: ${{ steps.pr.outputs.number }},
+            reset,
+          });
+
+          // Write state files into workspace so Codex can read them
+          fs.writeFileSync(
+            '.codex-ci/state-prev.json',
+            prev.state ? JSON.stringify(prev.state, null, 2) : ''
+          );
+          fs.writeFileSync(
+            '.codex-ci/review-prev.md',
+            prev.previousReviewBody || ''
+          );
+
+          // Write previous state for the post-processing step
+          const summary = summarizePreviousState(prev);
+          summary.state = prev.state;
+          fs.writeFileSync(path.join(reviewTmp, 'previous-state.json'), JSON.stringify(summary));
+
+          core.setOutput('last_reviewed_sha', prev.lastReviewedSha || '');
+          core.setOutput('review_count', String(prev.reviewCount));
+
+    - name: Collect review discussion context
+      if: steps.skip.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      env:
+        DECISION_OWNERS: ${{ inputs.decision-owners }}
+        DISPOSITION_MARKER: ${{ inputs.disposition-marker }}
+        CONTEXT_KEYWORDS: ${{ inputs.context-keywords }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const path = require('path');
+          const engineDir = path.join(process.env.RUNNER_TEMP, 'open-review', 'engine');
+          const { createStderrCaughtErrorDiagnostics, recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require(path.join(engineDir, 'diagnostics-runtime.cjs'));
+          const recorder = requireCaughtErrorDiagnosticRecorder(createStderrCaughtErrorDiagnostics().recorder);
+          const { writeReviewDiscussionContext } = require(path.join(engineDir, 'index.cjs'));
+          const list = (value) => (value || '').split(/[\s,]+/).filter(Boolean);
+
+          await writeReviewDiscussionContext({ recorder,
+            github,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            prNumber: ${{ steps.pr.outputs.number }},
+            headSha: '${{ steps.pr.outputs.head_sha }}',
+            prAuthorLogin: '${{ steps.pr.outputs.author_login }}',
+            decisionOwners: list(process.env.DECISION_OWNERS),
+            dispositionMarker: process.env.DISPOSITION_MARKER,
+            contextKeywords: list(process.env.CONTEXT_KEYWORDS),
+            outputDir: '.codex-ci',
+          });
+
+    - name: Determine review scope
+      id: scope
+      if: steps.skip.outputs.skip != 'true'
+      shell: bash
+      env:
+        BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        LAST_REVIEWED_SHA: ${{ steps.state.outputs.last_reviewed_sha }}
+        FORCE_FULL_REVIEW: ${{ steps.pr.outputs.force_full_review }}
+        RESET_STATE: ${{ steps.pr.outputs.reset_state }}
+        SINCE_SHA: ${{ steps.pr.outputs.since_sha }}
+      run: |
+        set -euo pipefail
+
+        MERGE_BASE_SHA="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+
+        # Determine the "since" SHA: explicit --since > last reviewed > none
+        SINCE="${SINCE_SHA:-${LAST_REVIEWED_SHA:-}}"
+        REASON="no_previous_review"
+        MODE="full"
+        DIFF_BASE="$MERGE_BASE_SHA"
+
+        if [ "${RESET_STATE:-false}" = "true" ]; then
+          REASON="reset_requested"
+        elif [ "${FORCE_FULL_REVIEW:-false}" = "true" ]; then
+          REASON="forced_full_review"
+        elif [ -n "$SINCE" ]; then
+          if git cat-file -e "${SINCE}^{commit}" 2>/dev/null; then
+            if git merge-base --is-ancestor "$SINCE" "$HEAD_SHA"; then
+              COUNT="$(git rev-list --count "$SINCE".."$HEAD_SHA")"
+              if [ "$COUNT" -eq 0 ]; then
+                MODE="skip"
+                REASON="no_new_commits"
+              else
+                MODE="incremental"
+                DIFF_BASE="$SINCE"
+                REASON="${SINCE_SHA:+since_requested_sha}"
+                REASON="${REASON:-since_last_review}"
+              fi
+            else
+              REASON="history_rewritten"
+            fi
+          else
+            REASON="previous_sha_missing"
+          fi
+        fi
+
+        COMMIT_COUNT="$(git rev-list --count "$DIFF_BASE".."$HEAD_SHA" 2>/dev/null || echo 0)"
+        if [ "$MODE" != "skip" ]; then
+          COMMIT_RANGE="${DIFF_BASE:0:8}..${HEAD_SHA:0:8}"
+        else
+          COMMIT_RANGE=""
+        fi
+
+        echo "review_mode=$MODE" >> "$GITHUB_OUTPUT"
+        echo "review_scope_reason=$REASON" >> "$GITHUB_OUTPUT"
+        echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
+        echo "diff_base_sha=$DIFF_BASE" >> "$GITHUB_OUTPUT"
+        echo "commit_range=$COMMIT_RANGE" >> "$GITHUB_OUTPUT"
+        echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+
+        echo "Scope: mode=$MODE reason=$REASON commits=$COMMIT_COUNT range=$COMMIT_RANGE"
+
+    # The rule pack is review policy, so it comes from the base commit — the PR
+    # under review cannot rewrite the rules it is judged by.
+    - name: Load rule pack from base
+      id: rules
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      env:
+        RULES_PATH: ${{ inputs.rules-path }}
+        BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
+      run: |
+        set -euo pipefail
+        RULES_FILE="$RUNNER_TEMP/open-review/rules.md"
+        if [ -z "$RULES_PATH" ] || [[ "$RULES_PATH" == /* ]]; then
+          echo "::error::rules-path must be a repository-relative path; got '$RULES_PATH'"
+          exit 1
+        fi
+        if ! git cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
+          echo "::error::Rule pack '$RULES_PATH' does not exist at the PR base commit $BASE_SHA. Merge the rule pack before enabling reviews."
+          exit 1
+        fi
+        git show "$BASE_SHA:$RULES_PATH" > "$RULES_FILE"
+        CHANGED=false
+        if ! git diff --quiet "$MERGE_BASE_SHA" "$HEAD_SHA" -- "$RULES_PATH"; then
+          CHANGED=true
+          echo "::notice::This PR changes the rule pack '$RULES_PATH'; the review uses the base-branch version."
+        fi
+        echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+        echo "Rule pack: $RULES_PATH @ ${BASE_SHA:0:8} ($(wc -c < "$RULES_FILE") bytes, changed_by_pr=$CHANGED)"
+
+    # ── Diff Generation ──────────────────────────────────────
+    - name: Fetch diff base for incremental review
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental'
+      shell: bash
+      run: |
+        DIFF_BASE_SHA="${{ steps.scope.outputs.diff_base_sha }}"
+        if ! git cat-file -e "${DIFF_BASE_SHA}^{commit}" 2>/dev/null; then
+          echo "Fetching incremental diff base: $DIFF_BASE_SHA"
+          git fetch --no-tags origin "$DIFF_BASE_SHA" || echo "::warning::Could not fetch diff base $DIFF_BASE_SHA — falling back to full review"
+        fi
+
+    - name: Generate diff
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      env:
+        DIFF_BASE_SHA: ${{ steps.scope.outputs.diff_base_sha }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
+        REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}
+      run: |
+        set -euo pipefail
+        mkdir -p .codex-ci
+
+        # Full PR diff first (merge-base -> HEAD = complete PR scope).
+        git diff "$MERGE_BASE_SHA" "$HEAD_SHA" > .codex-ci/pr-diff-full.patch
+        git diff --name-only "$MERGE_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files-full.txt
+
+        if [ "$REVIEW_MODE" = "incremental" ] && git cat-file -e "${DIFF_BASE_SHA}^{commit}" 2>/dev/null; then
+          # Incremental diff scoped to PR files only.
+          if [ -s .codex-ci/changed-files-full.txt ]; then
+            changed_files=()
+            while IFS= read -r changed_file; do
+              changed_files+=("$changed_file")
+            done < .codex-ci/changed-files-full.txt
+            git diff "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${changed_files[@]}" \
+              > .codex-ci/pr-diff.patch
+            git diff --name-only "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${changed_files[@]}" \
+              > .codex-ci/changed-files.txt
+          else
+            : > .codex-ci/pr-diff.patch
+            : > .codex-ci/changed-files.txt
+          fi
+
+          git log --first-parent --oneline "$DIFF_BASE_SHA".."$HEAD_SHA" \
+            > .codex-ci/review-commits.txt
+        else
+          if [ "$REVIEW_MODE" = "incremental" ]; then
+            echo "::warning::Diff base $DIFF_BASE_SHA not available — falling back to full diff"
+          fi
+          cp .codex-ci/pr-diff-full.patch .codex-ci/pr-diff.patch
+          cp .codex-ci/changed-files-full.txt .codex-ci/changed-files.txt
+
+          git log --oneline "$DIFF_BASE_SHA".."$HEAD_SHA" \
+            > .codex-ci/review-commits.txt
+        fi
+
+        node "$RUNNER_TEMP/open-review/engine/inventory-diff.cjs" .codex-ci/pr-diff.patch > .codex-ci/review-inventory.md
+
+        echo "Changed files (scoped):"
+        cat .codex-ci/changed-files.txt
+        echo ""
+        echo "Commits in scope:"
+        cat .codex-ci/review-commits.txt
+
+    # ── Codex Setup & Execution ──────────────────────────────
+    - name: Setup Node.js
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Install Codex CLI
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        CODEX_CLI_VERSION: ${{ inputs.codex-cli-version }}
+        # Scoped exception for the exact-pinned CLI version.
+        NPM_CONFIG_MIN_RELEASE_AGE: "0"
+        # Do not allow the checked-out PR or runner user config to redirect the package.
+        NPM_CONFIG_USERCONFIG: /dev/null
+        NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      run: |
+        npm install -g "@openai/codex@$CODEX_CLI_VERSION" \
+          --ignore-scripts \
+          --registry=https://registry.npmjs.org/
+        INSTALLED_CODEX_VERSION=$(codex --version)
+        echo "$INSTALLED_CODEX_VERSION"
+        test "$INSTALLED_CODEX_VERSION" = "codex-cli $CODEX_CLI_VERSION"
+
+    - name: Configure Codex home
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/codex-home"
+        printf 'CODEX_HOME=%s/codex-home\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+    # Default path: ChatGPT credentials, used only when no custom model
+    # provider is configured.
+    - name: Restore Codex auth
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip' && inputs.provider-base-url == ''
+      shell: bash
+      env:
+        CODEX_AUTH_JSON_B64: ${{ inputs.codex-auth-json-b64 }}
+      run: |
+        if [ -z "${CODEX_AUTH_JSON_B64:-}" ]; then
+          echo "::error::codex-auth-json-b64 is empty. Run: codex login && gh secret set CODEX_AUTH_JSON_B64 --body \"\$(cat ~/.codex/auth.json | base64 | tr -d '\\n')\", then pass it as the codex-auth-json-b64 input."
+          exit 1
+        fi
+        mkdir -p "$CODEX_HOME"
+        echo "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
+        chmod 600 "$CODEX_HOME/auth.json"
+
+    # Fail fast with a clear cause when the configured provider is not
+    # reachable, instead of surfacing it as an opaque Codex error much later.
+    - name: Verify model provider reachability
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip' && inputs.provider-base-url != ''
+      shell: bash
+      env:
+        PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
+        PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
+        CODEX_CLI_VERSION: ${{ inputs.codex-cli-version }}
+      run: |
+        set -euo pipefail
+        PROBE_URL="${PROVIDER_BASE_URL%/}/models?client_version=${CODEX_CLI_VERSION}"
+        if [ -z "$PROVIDER_ENV_KEY" ]; then
+          curl --fail --silent --show-error "$PROBE_URL" >/dev/null
+          exit 0
+        fi
+        if ! [[ "$PROVIDER_ENV_KEY" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          echo "::error::provider-env-key must be an environment variable name; got '$PROVIDER_ENV_KEY'"
+          exit 1
+        fi
+        if [ -z "${!PROVIDER_ENV_KEY:-}" ]; then
+          echo "::error::provider-env-key names $PROVIDER_ENV_KEY, but that variable is empty. Set it in the env of the step that uses this action."
+          exit 1
+        fi
+        # The key travels on stdin, never on the command line.
+        printf 'header = "Authorization: Bearer %s"\n' "${!PROVIDER_ENV_KEY}" \
+          | curl --config - --fail --silent --show-error "$PROBE_URL" >/dev/null
+
+    # Codex runs read-only under bubblewrap, which needs unprivileged user
+    # namespaces. Ubuntu 24.04 runners deny them through AppArmor, so the
+    # ephemeral runner lifts that restriction before the probe.
+    - name: Enable Codex sandbox (GitHub-hosted runner workaround)
+      if: runner.os == 'Linux' && steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      run: |
+        current="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+        if [ -n "$current" ] && [ "$current" != "0" ]; then
+          echo "Disabling kernel.apparmor_restrict_unprivileged_userns for bubblewrap."
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+
+    - name: Verify Codex sandbox
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      run: |
+        if ! codex sandbox -c 'sandbox_mode="read-only"' -- /bin/true 2>&1; then
+          echo "::error::Codex read-only sandbox probe failed; bubblewrap cannot create user namespaces."
+          exit 1
+        fi
+        echo "Read-only sandbox probe passed"
+
+    # Round 2+ can continue the Codex session that reviewed the previous head
+    # instead of rebuilding its whole context from cold. `resume.cjs` owns the
+    # gates and fails open: any refusal leaves the round exactly as it was
+    # before incremental review existed. `session-resume: false` is the kill
+    # switch.
+    #
+    # Session resume stays off with a custom model provider. A pooling proxy
+    # may inject its own session anchors (a resumed round then hits a
+    # `previous_response_id` the Responses API refuses), and resume reuses the
+    # codex session id, which such a proxy may use as its sticky key: a
+    # resumed round reconstructs exactly the session state that failed instead
+    # of escaping it. Incremental reviews do not depend on resume — diff
+    # scoping and state-comment continuity work cold — so resume stays enabled
+    # only on the single-account auth.json path.
+    - name: Restore prior review session
+      id: resume
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental' && inputs.session-resume == 'true' && inputs.provider-base-url == ''
+      uses: actions/github-script@v7
+      env:
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        EXPECTED_MODEL: ${{ inputs.parent-model }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const path = require('path');
+          const reviewTmp = path.join(process.env.RUNNER_TEMP, 'open-review');
+          const { createStderrCaughtErrorDiagnostics, recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require(path.join(reviewTmp, 'engine', 'diagnostics-runtime.cjs'));
+          const recorder = requireCaughtErrorDiagnosticRecorder(createStderrCaughtErrorDiagnostics().recorder);
+          const childProcess = require('child_process');
+          const fs = require('fs');
+          const {
+            installResumedRollout,
+            resolveResumableSession,
+          } = require(path.join(reviewTmp, 'engine', 'resume.cjs'));
+
+          const readPrior = () => {
+            try {
+              return JSON.parse(
+                fs.readFileSync(path.join(reviewTmp, 'previous-state.json'), 'utf8'),
+              ).state;
+            } catch (error) {
+              recordCaughtError({ recorder, error, operation: "review.workflow", stage: "read_prior", disposition: "recover", context: {} });
+              return null;
+            }
+          };
+
+          const git = {
+            isAncestor: (ancestor, descendant) => {
+              try {
+                childProcess.execFileSync(
+                  'git',
+                  ['merge-base', '--is-ancestor', ancestor, descendant],
+                  { stdio: 'ignore' },
+                );
+                return true;
+              } catch (error) {
+                recordCaughtError({ recorder, error, operation: "review.workflow", stage: "ancestry", disposition: "recover", context: {} });
+                return false;
+              }
+            },
+            mergeBase: (a, b) => childProcess.execFileSync(
+              'git', ['merge-base', a, b], { encoding: 'utf8' },
+            ).trim(),
+            diffNames: (a, b) => childProcess.execFileSync(
+              'git', ['diff', '--name-only', a, b], { encoding: 'utf8' },
+            ),
+          };
+
+          // The head this run was dispatched for must still be the PR head:
+          // a superseded run would fork the shared session.
+          let currentHeadSha = '';
+          try {
+            const { data } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.pr.outputs.number }},
+            });
+            currentHeadSha = data.head.sha;
+          } catch (error) {
+            recordCaughtError({ recorder, error, operation: "review.workflow", stage: "current_head", disposition: "recover", context: {} });
+          }
+
+          const outcome = await resolveResumableSession({ recorder,
+            github,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            prior: readPrior(),
+            headSha: process.env.HEAD_SHA,
+            baseSha: process.env.BASE_SHA,
+            currentHeadSha,
+            expectedModel: process.env.EXPECTED_MODEL,
+            git,
+          });
+
+          let decision = `cold review (${outcome.reason})`;
+          if (outcome.sessionId) {
+            // Restoring is an optimisation, never a requirement: a failure
+            // here leaves the round exactly as it is today.
+            try {
+              installResumedRollout({
+                codexHome: process.env.CODEX_HOME,
+                rollout: outcome.rollout,
+              });
+              // Rollout counters are cumulative per thread, so the earlier
+              // rounds' total must be subtracted or this round's footer would
+              // report the whole session.
+              core.exportVariable(
+                'CODEX_RESUME_BASELINE_USAGE',
+                JSON.stringify({
+                  [outcome.sessionId]: outcome.telemetry.baselineUsage,
+                }),
+              );
+              core.setOutput('session_id', outcome.sessionId);
+              decision = `resumed session ${outcome.sessionId} from run ${outcome.priorRunId}`;
+            } catch (error) {
+              recordCaughtError({ recorder, error, operation: "review.workflow", stage: "install_rollout", disposition: "recover", context: {} });
+              decision = "cold review (install_failed)";
+            }
+          }
+          core.setOutput('decision', decision);
+          core.notice(`Codex session resume: ${decision}`);
+
+    - name: Build review prompt
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      env:
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        PR_TITLE: ${{ steps.pr.outputs.title }}
+        PR_BODY: ""
+        BASE_REF: ${{ steps.pr.outputs.base_ref }}
+        HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+        REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}
+        REVIEW_SCOPE_REASON: ${{ steps.scope.outputs.review_scope_reason }}
+        COMMIT_RANGE: ${{ steps.scope.outputs.commit_range }}
+        COMMIT_COUNT: ${{ steps.scope.outputs.commit_count }}
+        DIFF_BASE_SHA: ${{ steps.scope.outputs.diff_base_sha }}
+        MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        PARENT_MODEL: ${{ inputs.parent-model }}
+        CHILD_MODEL: ${{ inputs.child-model }}
+      run: |
+        REVIEW_TMP="$RUNNER_TEMP/open-review"
+        # Engine prompt (pinned action ref) + rule pack (base commit).
+        python3 "$REVIEW_TMP/engine/interpolate-code-review.py" assemble \
+          --rules "$REVIEW_TMP/rules.md" \
+          --parent-model "$PARENT_MODEL" \
+          --child-model "$CHILD_MODEL" \
+          > "$REVIEW_TMP/review-template.md"
+
+        # Read PR body from file (avoids env var escaping issues)
+        export PR_BODY="$(cat "$REVIEW_TMP/pr-body.txt" | head -c 4000)"
+        CODE_REVIEW_TEMPLATE_PATH="$REVIEW_TMP/review-template.md" \
+          python3 "$REVIEW_TMP/engine/interpolate-code-review.py" > .codex-ci/review-prompt.md
+
+        # Copy output schema into workspace
+        cp "$REVIEW_TMP/engine/output-schema.json" .codex-ci/output-schema.json
+
+        echo "Prompt built ($(wc -c < .codex-ci/review-prompt.md) bytes)"
+
+    # No step timeout in a composite action: the calling job's timeout-minutes
+    # is the outer bound; the model budget below bounds every attempt.
+    - name: Run Codex
+      id: codex
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
+      shell: bash
+      env:
+        RESUME_SESSION_ID: ${{ steps.resume.outputs.session_id }}
+        CODEX_MODEL: ${{ inputs.parent-model }}
+        CODEX_REASONING: ${{ inputs.parent-reasoning-effort }}
+        CODEX_SUBAGENT_MODEL: ${{ inputs.child-model }}
+        CODEX_SUBAGENT_REASONING: ${{ inputs.child-reasoning-effort }}
+        CODEX_WEB_SEARCH_MODE: disabled
+        PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
+        PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
+      run: |
+        # Shell variables, not environment: the reviewer's shell must not learn
+        # where the runner keeps its scratch files or Codex home.
+        REVIEW_TMP="$RUNNER_TEMP/open-review"
+        ENGINE_DIR="$REVIEW_TMP/engine"
+        echo "Model: $CODEX_MODEL | Sandbox: bwrap-read-only | Reasoning: $CODEX_REASONING"
+        echo "Prompt size: $(wc -c < .codex-ci/review-prompt.md) bytes"
+
+        # Route model traffic through a custom provider when configured. The
+        # provider authenticates the runner itself (network placement) or with
+        # the Bearer key named by provider-env-key; no ChatGPT credential is sent.
+        PROVIDER_ARGS=()
+        SHELL_ENV_EXCLUDE='["CODEX_HOME","RUNNER_TEMP"]'
+        if [ -n "${PROVIDER_BASE_URL:-}" ]; then
+          PROVIDER_HOST="${PROVIDER_BASE_URL#*://}"; PROVIDER_HOST="${PROVIDER_HOST#*@}"; PROVIDER_HOST="${PROVIDER_HOST%%/*}"
+          echo "Model provider: custom (${PROVIDER_HOST})"
+          PROVIDER_ARGS=(
+            -c 'model_provider="open-review"'
+            -c 'model_providers.open-review.name="openai"'
+            -c "model_providers.open-review.base_url=\"${PROVIDER_BASE_URL%/}\""
+            -c 'model_providers.open-review.wire_api="responses"'
+            -c 'model_providers.open-review.supports_websockets=false'
+            -c 'model_providers.open-review.requires_openai_auth=false'
+          )
+          if [ -n "${PROVIDER_ENV_KEY:-}" ]; then
+            PROVIDER_ARGS+=(-c "model_providers.open-review.env_key=\"$PROVIDER_ENV_KEY\"")
+            SHELL_ENV_EXCLUDE="[\"CODEX_HOME\",\"RUNNER_TEMP\",\"$PROVIDER_ENV_KEY\"]"
+          fi
+        fi
+
+        drain_progress_pipe() {
+          if cat >&9 2>/dev/null; then
+            return 0
+          fi
+          cat >/dev/null
+        }
+
+        START_TIME=$(date +%s)
+        # One 20m model budget for the whole step, shared by every attempt, so
+        # a retry can never outlive the review's time box. A retry that would
+        # start with less than MIN_RETRY_SECONDS left cannot finish a review,
+        # so it is not started at all.
+        CODEX_BUDGET_SECONDS=1200
+        MIN_RETRY_SECONDS=300
+        MAX_ATTEMPTS=2
+        PRESERVED_SESSIONS_DIR="${CODEX_HOME:-$RUNNER_TEMP}/failed-attempt-sessions"
+
+        # Both execution paths share model, delegation, and sandbox policy.
+        CODEX_COLD_MODE_ARGS=(exec)
+        CODEX_MODE_ARGS=("${CODEX_COLD_MODE_ARGS[@]}")
+        if [ -n "${RESUME_SESSION_ID:-}" ]; then
+          echo "Resuming Codex session $RESUME_SESSION_ID"
+          CODEX_MODE_ARGS=(exec resume "$RESUME_SESSION_ID")
+        fi
+
+        # One `codex exec` invocation. Sets CODEX_EXIT_CODE / RAW_LOG_STATUS
+        # and always returns 0: the caller runs under errexit and owns what a
+        # failed attempt means.
+        run_codex_attempt() {
+          local raw_log="$1"
+          local budget_seconds="$2"
+          set +e
+          timeout --kill-after=60s "${budget_seconds}s" codex "${CODEX_MODE_ARGS[@]}" \
+            --skip-git-repo-check \
+            --ignore-user-config \
+            --ignore-rules \
+            --strict-config \
+            --model "$CODEX_MODEL" \
+            -c 'sandbox_mode="read-only"' \
+            -c 'features.multi_agent_v2.enabled=true' \
+            -c 'features.multi_agent_v2.max_concurrent_threads_per_session=3' \
+            -c 'features.multi_agent_v2.tool_namespace="agents"' \
+            -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
+            -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
+            -c "agents.default_subagent_reasoning_effort=\"$CODEX_SUBAGENT_REASONING\"" \
+            -c 'allow_login_shell=false' \
+            -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
+            -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
+            -c "shell_environment_policy.exclude=$SHELL_ENV_EXCLUDE" \
+            "${PROVIDER_ARGS[@]}" \
+            --disable plugins \
+            --json \
+            --output-schema .codex-ci/output-schema.json \
+            -o .codex-ci/codex-review-output.json \
+            - < .codex-ci/review-prompt.md \
+            9>&- 2>&1 | tee "$raw_log" >(drain_progress_pipe) >/dev/null
+          CODEX_PIPE_STATUSES=("${PIPESTATUS[@]}")
+          set -e
+          CODEX_EXIT_CODE="${CODEX_PIPE_STATUSES[0]}"
+          # The raw-log sink status is reported separately: a tee failure must
+          # surface as degraded observability without falsifying the Codex result.
+          RAW_LOG_STATUS="${CODEX_PIPE_STATUSES[1]:-0}"
+          if [ "$RAW_LOG_STATUS" != "0" ]; then
+            echo "::warning::Raw review log sink failed (tee exit $RAW_LOG_STATUS); token/model evidence may be incomplete."
+            RAW_LOG_DEGRADED=true
+          fi
+          return 0
+        }
+
+        # Which failures a fresh session can clear. Everything else — a
+        # schema-invalid artifact, a genuine review failure, the exhausted
+        # budget — is this review's real result and is reported as it is.
+        classify_codex_failure() {
+          local exit_code="$1"
+          local raw_log="$2"
+          local tail_text last_event
+          if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+            echo "fatal:budget_timeout"
+            return 0
+          fi
+          if [ "$exit_code" -eq 0 ]; then
+            echo "fatal:no_review_artifact"
+            return 0
+          fi
+          # Classification reads the last 40 event lines, each truncated to
+          # 2000 bytes BEFORE matching: a command-completion event embeds the
+          # tool's entire aggregated_output, and matching inside megabytes of
+          # reviewed diff text would misclassify (accepted residual risk:
+          # error text beyond byte 2000 of its own event line degrades to
+          # fatal:unclassified; a misfire can only spend one bounded retry on
+          # an already-failed attempt).
+          tail_text="$(tail -n 40 "$raw_log" 2>/dev/null | cut -b -2000 || true)"
+          last_event="$(grep -o '"type":"[a-z0-9_.]*"' "$raw_log" 2>/dev/null | tail -1 || true)"
+          if grep -qE 'Invalid `previous_response_id`|previous_response_owner_unavailable' <<<"$tail_text"; then
+            echo "retryable:previous_response_id"
+          elif grep -qF 'Selected model is at capacity' <<<"$tail_text"; then
+            echo "retryable:model_at_capacity"
+          elif [ "$last_event" = '"type":"turn.failed"' ] && grep -qE 'stream (disconnected|error)|connection (closed|error|reset)|error sending request|unexpected EOF' <<<"$tail_text"; then
+            echo "retryable:stream_error"
+          else
+            echo "fatal:unclassified"
+          fi
+        }
+
+        # Without this a failed attempt reads as a bare "exited with code 1":
+        # the error text only ever existed in the raw stream.
+        report_attempt_failure_tail() {
+          local raw_log="$1"
+          # Sanitized AND bounded: raw event lines can embed tool payloads,
+          # command arguments, or secret-bearing output. Each of the last 20
+          # lines is reduced to classified fields (event type + error/message
+          # text) run through progress-reporter's shorten() — the same
+          # control-char scrub, SECRET_PATTERNS redaction, and length cap the
+          # hosted progress digest uses. Nothing raw reaches the job log.
+          echo "--- sanitized tail of $raw_log (last 20 events, classified fields only) ---"
+          tail -n 20 "$raw_log" 2>/dev/null \
+            | python3 "$ENGINE_DIR/sanitize-failure-tail.py" \
+            || echo "(raw log unreadable)"
+          echo "--- end sanitized tail ---"
+        }
+
+        # Rollouts from a discarded attempt move out of the sessions tree
+        # before the retry: `rollout-usage.cjs` sums everything under
+        # `sessions/`, so leaving them would bill the discarded attempt as part
+        # of this review. They stay on disk, and in the transcript artifact,
+        # for post-hoc debugging.
+        preserve_attempt_sessions() {
+          local attempt="$1"
+          local dest
+          if [ -z "${CODEX_HOME:-}" ] || [ ! -d "$CODEX_HOME/sessions" ]; then
+            return 0
+          fi
+          dest="$PRESERVED_SESSIONS_DIR/attempt-${attempt}"
+          mkdir -p "$dest"
+          find "$CODEX_HOME/sessions" -mindepth 1 -maxdepth 1 -exec mv {} "$dest/" \;
+          echo "Preserved attempt ${attempt} rollout transcripts under $dest"
+        }
+
+        set -o pipefail
+        exec 9> >(python3 -u "$ENGINE_DIR/progress-reporter.py" >&2)
+        REPORTER_PID=$!
+
+        ATTEMPT=0
+        RETRY_COUNT=0
+        RAW_LOG_DEGRADED=false
+        REVIEW_ARTIFACT_VALID=false
+        ATTEMPT_CLASSIFICATION=none
+        while true; do
+          ATTEMPT=$((ATTEMPT + 1))
+          ATTEMPT_RAW_LOG="$REVIEW_TMP/codex-output-attempt-${ATTEMPT}.json"
+          # Each attempt is judged on its own artifact: a retry that dies early
+          # would otherwise validate against the previous attempt's partial file.
+          rm -f .codex-ci/codex-review-output.json
+          ATTEMPT_BUDGET=$(( CODEX_BUDGET_SECONDS - ($(date +%s) - START_TIME) ))
+          # `timeout 0` means "no limit" in coreutils; never hand it one.
+          if [ "$ATTEMPT_BUDGET" -lt 60 ]; then
+            ATTEMPT_BUDGET=60
+          fi
+          run_codex_attempt "$ATTEMPT_RAW_LOG" "$ATTEMPT_BUDGET"
+
+          REVIEW_ARTIFACT_VALID=false
+          if [ -s .codex-ci/codex-review-output.json ] && jq -e '.review_markdown? | strings | select(test("\\S"))' .codex-ci/codex-review-output.json >/dev/null 2>&1; then
+            REVIEW_ARTIFACT_VALID=true
+          fi
+          if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ "$REVIEW_ARTIFACT_VALID" = "true" ]; then
+            ATTEMPT_CLASSIFICATION=success
+            echo "codex attempt $ATTEMPT: review produced [success]"
+            break
+          fi
+
+          ATTEMPT_CLASSIFICATION="$(classify_codex_failure "$CODEX_EXIT_CODE" "$ATTEMPT_RAW_LOG")"
+          echo "codex attempt $ATTEMPT: failed exit=$CODEX_EXIT_CODE [$ATTEMPT_CLASSIFICATION]"
+          report_attempt_failure_tail "$ATTEMPT_RAW_LOG"
+
+          REMAINING=$(( CODEX_BUDGET_SECONDS - ($(date +%s) - START_TIME) ))
+          if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ] || [ "${ATTEMPT_CLASSIFICATION%%:*}" != "retryable" ] || [ "$REMAINING" -lt "$MIN_RETRY_SECONDS" ]; then
+            break
+          fi
+
+          # The retry is a FRESH `codex exec`, never `codex exec resume`: every
+          # retryable classification above is a session-state failure, and
+          # resume would rebuild that state under the same provider session
+          # key. A new session id is the whole point of the retry.
+          preserve_attempt_sessions "$ATTEMPT"
+          CODEX_MODE_ARGS=("${CODEX_COLD_MODE_ARGS[@]}")
+          FINAL_SESSION_MODE="cold_retry"
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+          echo "codex attempt $ATTEMPT: retrying with a fresh session (${REMAINING}s of budget left)"
+        done
+
+        if [ "$RAW_LOG_DEGRADED" = "true" ]; then
+          echo "raw_log_degraded=true" >> "$GITHUB_OUTPUT"
+        fi
+        # Downstream steps read the final attempt's stream from one stable path.
+        if ! cp "$ATTEMPT_RAW_LOG" "$REVIEW_TMP/codex-output.json"; then
+          echo "::warning::Could not publish the final attempt raw log to $REVIEW_TMP/codex-output.json"
+          : > "$REVIEW_TMP/codex-output.json"
+        fi
+
+        exec 9>&-
+        if ! wait "$REPORTER_PID"; then
+          echo "::warning::Progress reporter exited before draining."
+        fi
+        set +o pipefail
+
+        DURATION=$(( $(date +%s) - START_TIME ))
+
+        # Token usage across every thread. The --json stream emits one
+        # turn.completed carrying the orchestrator thread only; each thread
+        # also writes its own rollout transcript, so sum those when they are
+        # readable and say so when they are not.
+        ROLLOUT_USAGE='{}'
+        if [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/sessions" ]; then
+          ROLLOUT_USAGE_STATUS=0
+          ROLLOUT_USAGE=$(node "$ENGINE_DIR/rollout-usage.cjs" "$CODEX_HOME/sessions") || ROLLOUT_USAGE_STATUS=$?
+          if [ "$ROLLOUT_USAGE_STATUS" -eq 78 ]; then exit 78; fi
+          if [ "$ROLLOUT_USAGE_STATUS" -ne 0 ]; then ROLLOUT_USAGE='{}'; fi
+        fi
+        if jq -e '(.threads // 0) > 0' >/dev/null 2>&1 <<<"$ROLLOUT_USAGE"; then
+          USAGE_SCOPE=all-threads
+          INPUT_TOKENS=$(jq -r '.inputTokens' <<<"$ROLLOUT_USAGE")
+          CACHED_TOKENS=$(jq -r '.cachedInputTokens' <<<"$ROLLOUT_USAGE")
+          OUTPUT_TOKENS=$(jq -r '.outputTokens' <<<"$ROLLOUT_USAGE")
+          REASONING_TOKENS=$(jq -r '.reasoningOutputTokens' <<<"$ROLLOUT_USAGE")
+          THREAD_COUNT=$(jq -r '.threads' <<<"$ROLLOUT_USAGE")
+          SUBAGENT_COUNT=$(jq -r '.subagentThreads' <<<"$ROLLOUT_USAGE")
+        else
+          # No readable transcript: report the orchestrator thread and say so.
+          USAGE_SCOPE=orchestrator-only
+          USAGE_JSON=$(grep '"type":"turn.completed"' "$REVIEW_TMP/codex-output.json" | tail -1)
+          [ -z "$USAGE_JSON" ] && USAGE_JSON='{}'
+          if ! jq -e . >/dev/null 2>&1 <<<"$USAGE_JSON"; then
+            USAGE_JSON='{}'
+          fi
+          INPUT_TOKENS=$(echo "$USAGE_JSON" | jq -r '(.usage.input_tokens? // 0)')
+          CACHED_TOKENS=$(echo "$USAGE_JSON" | jq -r '(.usage.cached_input_tokens? // 0)')
+          OUTPUT_TOKENS=$(echo "$USAGE_JSON" | jq -r '(.usage.output_tokens? // 0)')
+          REASONING_TOKENS=$(echo "$USAGE_JSON" | jq -r '(.usage.reasoning_output_tokens? // 0)')
+          THREAD_COUNT=0
+          SUBAGENT_COUNT=0
+        fi
+        echo "Token usage ($USAGE_SCOPE): input $INPUT_TOKENS, cached $CACHED_TOKENS, output $OUTPUT_TOKENS across $THREAD_COUNT thread(s)"
+        # A discarded attempt still billed. Reporting it separately keeps the
+        # round's own total honest without hiding what the retry cost.
+        if [ -d "$PRESERVED_SESSIONS_DIR" ]; then
+          DISCARDED_USAGE_STATUS=0
+          DISCARDED_USAGE=$(node "$ENGINE_DIR/rollout-usage.cjs" "$PRESERVED_SESSIONS_DIR") || DISCARDED_USAGE_STATUS=$?
+          if [ "$DISCARDED_USAGE_STATUS" -eq 78 ]; then exit 78; fi
+          if [ "$DISCARDED_USAGE_STATUS" -ne 0 ]; then DISCARDED_USAGE='{}'; fi
+          echo "Discarded attempt usage (billed, excluded from this review's totals): $DISCARDED_USAGE"
+        fi
+        MODEL=$(grep '"type":"thread.started"' "$REVIEW_TMP/codex-output.json" | head -1 | jq -r '.model // empty' || true)
+        MODEL="${MODEL:-$CODEX_MODEL}"
+
+        # The loop already judged the final attempt; reuse its verdict rather
+        # than re-deriving one from a file nothing has touched since.
+        REVIEW_GENERATED=false
+        if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ "$REVIEW_ARTIFACT_VALID" = "true" ]; then
+          REVIEW_GENERATED=true
+          echo "review_generated=true" >> "$GITHUB_OUTPUT"
+          echo "Review completed in ${DURATION}s across $ATTEMPT attempt(s)"
+        else
+          echo "review_generated=false" >> "$GITHUB_OUTPUT"
+          if [ "$CODEX_EXIT_CODE" -eq 124 ] || [ "$CODEX_EXIT_CODE" -eq 137 ]; then
+            echo "::error::Code review timed out after 20 minutes"
+          elif [ "$CODEX_EXIT_CODE" -ne 0 ]; then
+            echo "::error::Codex exited with code $CODEX_EXIT_CODE [$ATTEMPT_CLASSIFICATION] after $ATTEMPT attempt(s)"
+          else
+            echo "::error::Codex exited successfully without producing a non-whitespace review_markdown"
+          fi
+        fi
+
+        echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+        echo "retry_count=$RETRY_COUNT" >> "$GITHUB_OUTPUT"
+        echo "final_attempt=$ATTEMPT" >> "$GITHUB_OUTPUT"
+        # Truthful session mode: a resumed round that fell back to a cold
+        # retry must not be reported as resumed by downstream consumers of
+        # the resume resolver's decision.
+        echo "final_session_mode=${FINAL_SESSION_MODE:-as_resolved}" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$CODEX_EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "input_tokens=$INPUT_TOKENS" >> "$GITHUB_OUTPUT"
+        echo "cached_tokens=$CACHED_TOKENS" >> "$GITHUB_OUTPUT"
+        echo "output_tokens=$OUTPUT_TOKENS" >> "$GITHUB_OUTPUT"
+        echo "reasoning_tokens=$REASONING_TOKENS" >> "$GITHUB_OUTPUT"
+        echo "thread_count=$THREAD_COUNT" >> "$GITHUB_OUTPUT"
+        echo "subagent_count=$SUBAGENT_COUNT" >> "$GITHUB_OUTPUT"
+        echo "usage_scope=$USAGE_SCOPE" >> "$GITHUB_OUTPUT"
+        echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+
+        if [ "$REVIEW_GENERATED" != "true" ]; then
+          if [ "$CODEX_EXIT_CODE" -ne 0 ]; then
+            exit "$CODEX_EXIT_CODE"
+          fi
+          exit 1
+        fi
+
+    - name: Verify Codex execution evidence
+      if: steps.codex.outputs.review_generated == 'true'
+      shell: bash
+      run: python3 "$RUNNER_TEMP/open-review/engine/check-execution-evidence.py" "$RUNNER_TEMP/open-review/codex-output.json" .codex-ci/pr-diff.patch
+
+    - name: Verify checkout not modified
+      if: steps.codex.outputs.review_generated == 'true'
+      shell: bash
+      run: |
+        if ! git diff --quiet -- ':!.codex-ci' || ! git diff --cached --quiet -- ':!.codex-ci'; then
+          echo "::error::Codex modified tracked files during review"
+          git diff --stat -- ':!.codex-ci'
+          exit 1
+        fi
+
+    # Credentials must be gone before any upload action runs, even though
+    # the artifact paths never include auth.json.
+    - name: Remove Codex auth before transcript upload
+      if: always()
+      shell: bash
+      run: |
+        if [ -n "${CODEX_HOME:-}" ]; then
+          rm -f "$CODEX_HOME/auth.json"
+        fi
+
+    # Full transcripts for post-hoc debugging and session resume: the raw
+    # orchestrator event stream of every attempt plus the session rollouts,
+    # including the rollouts a retried attempt left behind. Deliberately
+    # unredacted — download requires repository read access, the same
+    # audience as PR contents and job logs. Scoped to the two rollout
+    # directories so auth.json is never uploadable. Short retention keeps
+    # storage cost negligible.
+    - name: Upload review transcripts
+      if: always() && steps.codex.outcome != 'skipped'
+      # Diagnostics only: an artifact-service failure must not discard a
+      # completed review by failing the action.
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: code-review-transcripts-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/open-review/codex-output.json
+          ${{ runner.temp }}/open-review/codex-output-attempt-*.json
+          ${{ env.CODEX_HOME }}/sessions/
+          ${{ env.CODEX_HOME }}/failed-attempt-sessions/
+        retention-days: 3
+        if-no-files-found: ignore
+
+    - name: Remove Codex auth
+      if: always()
+      shell: bash
+      run: |
+        if [ -n "${CODEX_HOME:-}" ]; then
+          rm -rf "$CODEX_HOME"
+        fi
+
+    # ── Post-Processing ──────────────────────────────────────
+    - name: Post results
+      if: always() && steps.pr.outputs.number
+      uses: actions/github-script@v7
+      env:
+        CHECK_ID: ${{ steps.check.outputs.check_id }}
+        SHOULD_SKIP: ${{ steps.skip.outputs.skip }}
+        SKIP_REASON: ${{ steps.skip.outputs.reason }}
+        REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}
+        REVIEW_GENERATED: ${{ steps.codex.outputs.review_generated }}
+        CODEX_EXIT_CODE: ${{ steps.codex.outputs.exit_code }}
+        # The composite action's own result so far (a workflow's job.status).
+        JOB_STATUS: ${{ github.action_status }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        DURATION: ${{ steps.codex.outputs.duration }}
+        INPUT_TOKENS: ${{ steps.codex.outputs.input_tokens }}
+        CACHED_TOKENS: ${{ steps.codex.outputs.cached_tokens }}
+        OUTPUT_TOKENS: ${{ steps.codex.outputs.output_tokens }}
+        REASONING_TOKENS: ${{ steps.codex.outputs.reasoning_tokens }}
+        THREAD_COUNT: ${{ steps.codex.outputs.thread_count }}
+        SUBAGENT_COUNT: ${{ steps.codex.outputs.subagent_count }}
+        USAGE_SCOPE: ${{ steps.codex.outputs.usage_scope }}
+        MODEL: ${{ steps.codex.outputs.model }}
+        MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
+        RESUME_DECISION: ${{ steps.resume.outputs.decision }}
+        FINAL_SESSION_MODE: ${{ steps.codex.outputs.final_session_mode }}
+        RULES_CHANGED: ${{ steps.rules.outputs.changed }}
+        RULES_PATH: ${{ inputs.rules-path }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const reviewTmp = path.join(process.env.RUNNER_TEMP, 'open-review');
+          const engineDir = path.join(reviewTmp, 'engine');
+          const owner = context.repo.owner;
+          const repo = context.repo.repo;
+          const prNumber = parseInt(process.env.PR_NUMBER, 10);
+          const checkId = process.env.CHECK_ID ? Number(process.env.CHECK_ID) : null;
+
+          // ── Skip / edge cases ──
+          if (process.env.SHOULD_SKIP === 'true') {
+            if (checkId) {
+              await github.rest.checks.update({
+                owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: 'neutral',
+                output: { title: 'Review Skipped', summary: process.env.SKIP_REASON || 'Skipped' },
+              });
+            }
+            console.log(`Skipped: ${process.env.SKIP_REASON}`);
+            return;
+          }
+
+          if (process.env.REVIEW_MODE === 'skip') {
+            // "No new commits" must carry the PREVIOUS round's merge gate
+            // forward, never stamp success over a standing BLOCK: re-running
+            // the review command on an already-reviewed head would otherwise
+            // launder an open P0/P1 into a green check.
+            const { createStderrCaughtErrorDiagnostics, recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require(path.join(engineDir, 'diagnostics-runtime.cjs'));
+            const recorder = requireCaughtErrorDiagnosticRecorder(createStderrCaughtErrorDiagnostics().recorder);
+            const { deriveMergeGate, formatMergeGateSummary } =
+              require(path.join(engineDir, 'index.cjs'));
+            let previousReviewState = null;
+            try {
+              previousReviewState = JSON.parse(
+                fs.readFileSync(path.join(reviewTmp, 'previous-state.json'), 'utf8'),
+              ).state ?? null;
+            } catch (error) {
+              recordCaughtError({ recorder, error, operation: "review.workflow", stage: "carry_state", disposition: "recover", context: {} });
+
+            }
+            const gate = deriveMergeGate(previousReviewState);
+            if (checkId) {
+              await github.rest.checks.update({
+                owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: gate.conclusion,
+                output: {
+                  title: `No New Commits — carried gate: ${gate.status}`,
+                  summary: [
+                    'All commits have already been reviewed; the previous round\'s merge gate is carried forward.',
+                    formatMergeGateSummary(gate, 'carried'),
+                  ].join('\n\n'),
+                },
+              });
+            }
+            console.log(`No new commits to review; carried merge gate: ${gate.status}`);
+            return;
+          }
+
+          if (process.env.JOB_STATUS === 'cancelled') {
+            if (checkId) {
+              await github.rest.checks.update({
+                owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: 'cancelled',
+                output: { title: 'Review Cancelled', summary: 'A newer review superseded this one.' },
+              });
+            }
+            return;
+          }
+
+          if (process.env.REVIEW_GENERATED !== 'true') {
+            const exitCode = process.env.CODEX_EXIT_CODE;
+            const summary = !exitCode
+              ? 'The review pipeline failed before Codex produced a result.'
+              : exitCode === '0'
+                ? 'Codex exited without producing a review artifact.'
+                : `Codex exited with code ${exitCode}.`;
+            if (checkId) {
+              await github.rest.checks.update({
+                owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: 'failure',
+                output: { title: 'Review Failed', summary },
+              });
+            }
+            console.log(summary);
+            return;
+          }
+
+          if (process.env.JOB_STATUS !== 'success') {
+            const summary = 'The review pipeline failed after Codex completed.';
+            if (checkId) {
+              await github.rest.checks.update({
+                owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: 'failure',
+                output: { title: 'Review Failed', summary },
+              });
+            }
+            console.log(summary);
+            return;
+          }
+
+          const { createStderrCaughtErrorDiagnostics, recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require(path.join(engineDir, 'diagnostics-runtime.cjs'));
+          const recorder = requireCaughtErrorDiagnosticRecorder(createStderrCaughtErrorDiagnostics().recorder);
+
+          // ── Review completed — run post-processing pipeline ──
+          try {
+            const { postResults } = require(path.join(engineDir, 'index.cjs'));
+
+            let previousState = { stateCommentId: null, reviewCommentId: null, reviewCount: 0 };
+            try {
+              previousState = JSON.parse(fs.readFileSync(path.join(reviewTmp, 'previous-state.json'), 'utf8'));
+            } catch (error) {
+              recordCaughtError({ recorder, error, operation: "review.workflow", stage: "previous_state", disposition: "recover", context: {} });
+            }
+
+            await postResults({ recorder,
+              github, owner, repo, prNumber, checkId,
+              headSha: process.env.HEAD_SHA,
+              previousState,
+              outputDir: '.codex-ci',
+              metadata: {
+                model: process.env.MODEL || 'unknown',
+                duration: process.env.DURATION || '0',
+                inputTokens: process.env.INPUT_TOKENS || '0',
+                cachedTokens: process.env.CACHED_TOKENS || '0',
+                outputTokens: process.env.OUTPUT_TOKENS || '0',
+                reasoningTokens: process.env.REASONING_TOKENS || '0',
+                threadCount: process.env.THREAD_COUNT || '0',
+                subagentCount: process.env.SUBAGENT_COUNT || '0',
+                usageScope: process.env.USAGE_SCOPE || 'orchestrator-only',
+                resumeDecision:
+                  process.env.FINAL_SESSION_MODE === 'cold_retry'
+                    ? `${process.env.RESUME_DECISION || ''} (superseded: retried with a fresh cold session)`.trim()
+                    : (process.env.RESUME_DECISION || ''),
+                rulesChanged: process.env.RULES_CHANGED === 'true',
+                rulesPath: process.env.RULES_PATH || '',
+              },
+              sessionContext: {
+                runId: context.runId,
+                runAttempt: process.env.GITHUB_RUN_ATTEMPT || '1',
+                mergeBaseSha: process.env.MERGE_BASE_SHA || '',
+              },
+            });
+          } catch (error) {
+            recordCaughtError({ recorder, error, operation: "review.workflow", stage: "post_results", disposition: "recover", context: {} });
+
+            if (checkId) {
+              try {
+                await github.rest.checks.update({
+                  owner, repo, check_run_id: checkId,
+                  status: 'completed', conclusion: 'failure',
+                  output: {
+                    title: 'Review Error',
+                    summary: "Post-processing failed.",
+                  },
+                });
+              } catch (error) {
+                recordCaughtError({ recorder, error, operation: "review.workflow", stage: "error_check", disposition: "recover", context: {} });
+              }
+            }
+          }

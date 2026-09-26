@@ -1,0 +1,20 @@
+{"type":"thread.started","thread_id":"root","model":"HOSTILE_MODEL_SENTINEL eyJhbGciOiJIUzI1NiJ9.eyJjcmVkZW50aWFsIjoic2VjcmV0In0.signature123","reasoning_effort":"HOSTILE_EFFORT_SENTINEL","label":"HOSTILE_LABEL_SENTINEL ghp_abcdefghijklmnopqrstuvwxyz123456"}
+{"type":"item.started","item":{"id":"hostile-command","type":"command_execution","command":"/bin/bash -lc 'git diff --stat HOSTILE_ARGUMENT_SENTINEL eyJhbGciOiJIUzI1NiJ9.eyJjcmVkZW50aWFsIjoic2VjcmV0In0.signature123'"}}
+{"type":"item.completed","item":{"id":"hostile-command","type":"command_execution","command":"/bin/bash -lc 'git diff --stat HOSTILE_ARGUMENT_SENTINEL'","status":"HOSTILE_STATUS_SENTINEL","exit_code":9182736455463728192837465,"duration_ms":9876543210987654321098765}}
+{"type":"item.started","item":{"id":"hostile-search","type":"web_search","query":"HOSTILE_QUERY_SENTINEL ghp_abcdefghijklmnopqrstuvwxyz123456"}}
+{"type":"item.completed","item":{"id":"hostile-search","type":"web_search","query":"HOSTILE_QUERY_SENTINEL","status":"completed"}}
+{"type":"item.started","item":{"id":"hostile-collab","type":"collab_tool_call","tool":"HOSTILE_TOOL_SENTINEL","label":"HOSTILE_LABEL_SENTINEL"}}
+{"type":"item.completed","item":{"id":"hostile-collab","type":"collab_tool_call","tool":"HOSTILE_TOOL_SENTINEL","status":"HOSTILE_STATUS_SENTINEL"}}
+{"type":"agent.tool_call.started","tool_call":{"id":"hostile-direct","name":"HOSTILE_TOOL_SENTINEL","server":"HOSTILE_SERVER_SENTINEL","arguments":{"query":"HOSTILE_QUERY_SENTINEL"}}}
+{"type":"agent.tool_call.completed","tool_call":{"id":"hostile-direct","name":"HOSTILE_TOOL_SENTINEL","server":"HOSTILE_SERVER_SENTINEL","status":"HOSTILE_STATUS_SENTINEL"}}
+{"type":"agent.subagent.started","subagent":{"id":"hostile-subagent","model":"oauth.token","reasoning_effort":"high password=12345678","label":"HOSTILE_LABEL_SENTINEL"}}
+{"type":"agent.subagent.completed","subagent":{"id":"hostile-subagent","label":"HOSTILE_LABEL_SENTINEL"}}
+{"type":"agent.subagent.started","subagent":{"id":"hostile-gpt-lookalike","model":"gpt-deadbeefcafebabefeedface01234567","reasoning_effort":"high"}}
+{"type":"agent.subagent.started","subagent":{"id":"hostile-claude-lookalike","model":"claude-deadbeefcafebabefeedface01234567","reasoning_effort":"high"}}
+{"type":"agent.subagent.started","subagent":{"id":"hostile-composer-lookalike","model":"composer-deadbeefcafebabefeedface01234567","reasoning_effort":"high"}}
+{"type":"agent.subagent.started","subagent":{"id":"hostile-o-lookalike","model":"o-token","reasoning_effort":"high"}}
+{"type":"item.started","item":{"id":"hostile-mcp","type":"mcp_tool_call","server":"HOSTILE_SERVER_SENTINEL","tool":"HOSTILE_TOOL_SENTINEL","arguments":{"credential":"ghp_abcdefghijklmnopqrstuvwxyz123456"}}}
+{"type":"item.completed","item":{"id":"hostile-mcp","type":"mcp_tool_call","server":"HOSTILE_SERVER_SENTINEL","tool":"HOSTILE_TOOL_SENTINEL","status":"completed"}}
+{"type":"item.completed","item":{"id":"hostile-duration","type":"web_search","status":"completed","duration_ms":9876543210987654321098765}}
+{"type":"token_count","info":{"total_token_usage":{"total_tokens":112233445566778899001122}}}
+{"type":"HOSTILE_EVENT_SENTINEL","payload":"HOSTILE_ARGUMENT_SENTINEL"}

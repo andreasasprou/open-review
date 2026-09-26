@@ -1,0 +1,93 @@
+# Example caller: copy to .github/workflows/code-review.yml in the repository
+# under review, merge it together with the rule pack (start from
+# examples/rules.md in open-review), then pin `uses:` to a full commit SHA of
+# open-review.
+#
+# pull_request_target and issue_comment run this file from the default branch,
+# so a PR cannot change how it is reviewed. The action reads the rule pack from
+# the PR base commit and checks the PR head out without credentials.
+name: Code Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: number
+
+# Returning a PR to draft must cancel an already-running review even though the
+# review job itself is skipped for draft events.
+concurrency:
+  group: >-
+    code-review-${{
+      github.event.pull_request.number
+      || (github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && (github.event.comment.body == '/open-review'
+              || startsWith(github.event.comment.body, '/open-review '))
+          && (github.event.comment.author_association == 'MEMBER'
+              || github.event.comment.author_association == 'OWNER'
+              || github.event.comment.author_association == 'COLLABORATOR')
+          && github.event.issue.number)
+      || github.event.inputs.pr_number
+      || github.run_id
+    }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    # The action has no step timeout of its own (composite actions cannot set
+    # one); its model budget is 20 minutes per review.
+    timeout-minutes: 40
+
+    if: |
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       (github.event.comment.body == '/open-review' ||
+        startsWith(github.event.comment.body, '/open-review ')) &&
+       (github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'COLLABORATOR'))
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      issues: write
+      statuses: read
+      # Reading the prior round's transcript artifact (session resume) needs
+      # actions: read; without it every round quietly runs cold.
+      actions: read
+
+    steps:
+      # If the model provider sits on a private network, join it here, before
+      # the review step.
+      - uses: your-org/open-review@0000000000000000000000000000000000000000 # pin a full commit SHA
+        with:
+          # Your rule pack, copied from examples/rules.md and filled in.
+          rules-path: .github/review-rules.md
+          command: open-review
+          check-name: Open Review
+          pr-number: ${{ github.event.inputs.pr_number }}
+          # ChatGPT auth.json, base64-encoded (see the README).
+          codex-auth-json-b64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+          # Or a Responses-API provider instead of auth.json:
+          # provider-base-url: https://models.example.com/v1
+          # provider-env-key: REVIEW_PROVIDER_API_KEY
+          # decision-owners: your-login another-login
+        # env:
+        #   REVIEW_PROVIDER_API_KEY: ${{ secrets.REVIEW_PROVIDER_API_KEY }}

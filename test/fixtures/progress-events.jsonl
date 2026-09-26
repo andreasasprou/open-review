@@ -1,0 +1,16 @@
+{"type":"thread.started","thread_id":"root","model":"gpt-5.6-sol","reasoning_effort":"xhigh","label":"review-root"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"git diff --stat"}}
+{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","command":"git diff --stat","status":"completed","exit_code":0,"aggregated_output":"SENSITIVE_FILE_CONTENT"}}
+{"type":"item.started","item":{"id":"spawn-1","type":"collab_tool_call","tool":"spawn_agent","receiver_thread_ids":["sub-1"],"model":"gpt-5.6-luna","reasoning_effort":"high","label":"explorer","prompt":"SENSITIVE_PROMPT"}}
+{"type":"item.completed","item":{"id":"spawn-1","type":"collab_tool_call","tool":"spawn_agent","status":"completed","receiver_thread_ids":["sub-1"],"agents_states":{"sub-1":{"status":"running","message":"SENSITIVE_STATE"}}}}
+{"type":"item.started","item":{"id":"wait-1","type":"collab_tool_call","tool":"wait","receiver_thread_ids":["sub-1"]}}
+{"type":"item.completed","item":{"id":"wait-1","type":"collab_tool_call","tool":"wait","status":"completed","receiver_thread_ids":["sub-1"],"agents_states":{"sub-1":{"status":"completed","message":"SENSITIVE_JOIN"}}}}
+{"type":"token_count","info":{"total_token_usage":{"total_tokens":40000}}}
+{"type":"token_count","info":{"total_token_usage":{"total_tokens":60000}}}
+{"type":"token_count","info":{"total_token_usage":{"total_tokens":90000}}}
+{"type":"turn.completed","usage":{"input_tokens":70000,"cached_input_tokens":10000,"output_tokens":20000,"reasoning_output_tokens":5000}}
+{"type":"task_complete","last_agent_message":"SENSITIVE_FILE_CONTENT password=super-secret"}
+{"type":"item.completed","item":{"id":"reason-1","type":"reasoning","text":"SENSITIVE_FILE_CONTENT\u001b[31m"}}
+{"type":"unknown.future","payload":"SENSITIVE_FILE_CONTENT\npassword=super-secret"}
+not json and not safe to echo
