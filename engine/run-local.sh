@@ -76,6 +76,7 @@ PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
 RULES_PATH="${OPEN_REVIEW_RULES_PATH:-}"
 CHECK_NAME="${OPEN_REVIEW_CHECK_NAME:-Open Review}"
 SETTLEMENT_MARKER="${OPEN_REVIEW_SETTLEMENT_MARKER:-open-review-local:settlement}"
+ENGINE_REF="${OPEN_REVIEW_ENGINE_REF:-}"
 STREAM_RAW="false"
 PREPARE_ONLY="false"
 USE_CLEAN_CODEX_HOME="true"
@@ -230,29 +231,43 @@ TRUSTED_RUNNER_FILES=(
   "inventory-diff.cjs"
 )
 
-# Trusted engine = the engine repository's freshly fetched origin/main.
-echo "Fetching origin/main of the engine repository for trusted runner verification..."
-# Concurrent runners (recall benchmarks) collide on the ref lock; retry briefly.
-# The run directory does not exist yet, so keep the attempts' diagnostics in a
-# temporary log and show them if every attempt fails.
-FETCH_LOG="$(mktemp)"
-FETCHED_MAIN="false"
-if [ -n "$ENGINE_REPO" ]; then
-  for attempt in 1 2 3; do
-    if git -C "$ENGINE_REPO" fetch --quiet --no-tags origin main:refs/remotes/origin/main 2>>"$FETCH_LOG"; then FETCHED_MAIN="true"; break; fi
-    sleep $((attempt * 5))
-  done
-else
-  echo "engine directory $ENGINE_DIR is not a git checkout" >>"$FETCH_LOG"
-fi
-if [ "$FETCHED_MAIN" != "true" ]; then
-  if [ "$ALLOW_MODIFIED_RUNNER" = "true" ]; then
-    echo "warning: could not fetch the engine's origin/main; every runner file counts as unverified:" >&2
-    cat "$FETCH_LOG" >&2
-  else
-    echo "error: failed to fetch the engine's origin/main for trusted runner verification:" >&2
-    cat "$FETCH_LOG" >&2
+# A consumer may pin the engine to the same commit as its hosted action.
+if [ -n "$ENGINE_REF" ]; then
+  if ! [[ "$ENGINE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: OPEN_REVIEW_ENGINE_REF must be a full lowercase commit SHA" >&2
     exit 1
+  fi
+  if [ -z "$ENGINE_REPO" ] || [ "$(git -C "$ENGINE_REPO" rev-parse HEAD)" != "$ENGINE_REF" ]; then
+    echo "error: engine checkout HEAD must equal OPEN_REVIEW_ENGINE_REF $ENGINE_REF" >&2
+    exit 1
+  fi
+  TRUSTED_REF="$ENGINE_REF"
+  FETCHED_MAIN="true"
+else
+  TRUSTED_REF="origin/main"
+  echo "Fetching origin/main of the engine repository for trusted runner verification..."
+  # Concurrent runners (recall benchmarks) collide on the ref lock; retry briefly.
+  # The run directory does not exist yet, so keep the attempts' diagnostics in a
+  # temporary log and show them if every attempt fails.
+  FETCH_LOG="$(mktemp)"
+  FETCHED_MAIN="false"
+  if [ -n "$ENGINE_REPO" ]; then
+    for attempt in 1 2 3; do
+      if git -C "$ENGINE_REPO" fetch --quiet --no-tags origin main:refs/remotes/origin/main 2>>"$FETCH_LOG"; then FETCHED_MAIN="true"; break; fi
+      sleep $((attempt * 5))
+    done
+  else
+    echo "engine directory $ENGINE_DIR is not a git checkout" >>"$FETCH_LOG"
+  fi
+  if [ "$FETCHED_MAIN" != "true" ]; then
+    if [ "$ALLOW_MODIFIED_RUNNER" = "true" ]; then
+      echo "warning: could not fetch the engine's origin/main; every runner file counts as unverified:" >&2
+      cat "$FETCH_LOG" >&2
+    else
+      echo "error: failed to fetch the engine's origin/main for trusted runner verification:" >&2
+      cat "$FETCH_LOG" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -261,7 +276,7 @@ TRUSTED_RUNNER_HASHES=()
 for RUNNER_FILE in "${TRUSTED_RUNNER_FILES[@]}"; do
   EXPECTED_HASH=""
   if [ "$FETCHED_MAIN" = "true" ]; then
-    TREE_ENTRY="$(git -C "$ENGINE_REPO" ls-tree origin/main -- "$ENGINE_PREFIX$RUNNER_FILE")"
+    TREE_ENTRY="$(git -C "$ENGINE_REPO" ls-tree "$TRUSTED_REF" -- "$ENGINE_PREFIX$RUNNER_FILE")"
     if [ -n "$TREE_ENTRY" ]; then
       EXPECTED_HASH="${TREE_ENTRY#* blob }"
       EXPECTED_HASH="${EXPECTED_HASH%%$'\t'*}"
@@ -303,14 +318,20 @@ verify_trusted_runner_files_unchanged() {
   fi
 }
 
+if [ -n "$ENGINE_REF" ] && [ "${#MODIFIED_RUNNER_FILES[@]}" -gt 0 ]; then
+  echo "error: engine files differ from pinned commit $ENGINE_REF:" >&2
+  printf '  - %s\n' "${MODIFIED_RUNNER_FILES[@]}" >&2
+  exit 1
+fi
+
 if [ "$ALLOW_MODIFIED_RUNNER" = "true" ]; then
   echo "warning: --allow-modified-runner disables trusted publication; no settlement, commit status, or inline review will be posted." >&2
   if [ "${#MODIFIED_RUNNER_FILES[@]}" -gt 0 ]; then
-    echo "warning: runner-development files differ from the engine's origin/main:" >&2
+    echo "warning: runner-development files differ from the engine's $TRUSTED_REF:" >&2
     printf '  - %s\n' "${MODIFIED_RUNNER_FILES[@]}" >&2
   fi
 elif [ "${#MODIFIED_RUNNER_FILES[@]}" -gt 0 ]; then
-  echo "error: local Code Review runner files differ from the engine's freshly fetched origin/main:" >&2
+  echo "error: local Code Review runner files differ from the engine's $TRUSTED_REF:" >&2
   printf '  - %s\n' "${MODIFIED_RUNNER_FILES[@]}" >&2
   echo "error: trusted review refused. Fix: invoke from an up-to-date engine checkout, e.g.:" >&2
   echo "  git -C '$ENGINE_REPO' fetch origin main && git -C '$ENGINE_REPO' merge --ff-only origin/main" >&2
@@ -404,7 +425,7 @@ REVIEW_SCOPE_REASON="local_reproduction"
   echo "Run dir: $RUN_DIR"
   echo "Worktree: $WORKTREE"
   if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ]; then
-    echo "Runner trust: verified against the engine's origin/main"
+    echo "Runner trust: verified against the engine's $TRUSTED_REF"
   else
     echo "Runner trust: modified-runner development mode; trusted publication disabled"
   fi

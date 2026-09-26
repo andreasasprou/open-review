@@ -90,6 +90,10 @@ compares the output with a committed snapshot.
 checkout with the same prompt, sandbox and settlement as the action. The runner
 checks its own engine files against the engine repository's `origin/main`
 before it publishes anything.
+Set `OPEN_REVIEW_ENGINE_REF` to a full commit SHA when a consumer pins the
+engine to its hosted action. In that mode the runner requires the checkout's
+`HEAD` and runtime files to match that commit, even for unpublished development
+runs, and does not fetch `origin/main`.
 
 `eval/run-recall.sh --manifest <cases.json> --rules <path> --arm a=<ref> ...`
 reviews known pre-fix PR heads and scores how many known defects each rule-pack
