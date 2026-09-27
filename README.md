@@ -33,9 +33,12 @@ structured output, not the model's verdict word.
 | `check-name` | `Open Review` | Check run name |
 | `command` | `open-review` | Slash command name(s) |
 | `decision-owners` | empty | Logins whose replies count as trusted dispositions |
+| `framework-decision-owners` | empty | Logins allowed to evolve the review framework; defaults to decision owners |
 | `disposition-marker` | `open-review-dispositions:v1:base64` | Marker for disposition-ledger comments |
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
+| `provider-session-resume` | `false` | Allows session resume through a custom provider |
+| `review-budget-minutes` | `20` | Total hosted Codex budget across attempts (1–120 minutes) |
 | `pr-number` | empty | PR number for `workflow_dispatch` |
 
 The action has one output, `rules_changed`. It is `true` when the PR edits the

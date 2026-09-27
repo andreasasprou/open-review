@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "dataset_id": "intavia-code-review-bounded-v1",
+  "fixture_id": "pr-1330-failed-transfer-edge",
+  "phase": "deterministic_validator",
+  "frozen_at": "2026-08-01T18:00:00.000Z",
+  "provenance": {
+    "source_prs": [1330],
+    "source_commits": ["1330133013301330133013301330133013301330"]
+  },
+  "inclusions": [
+    "Failed-transfer callback recovery at one workflow node",
+    "One lateral cross-intent edge evaluated by the LLM"
+  ],
+  "exclusions": [
+    "The full NCD workflow",
+    "Any change to voice-agent behavior",
+    "Settlement of the historical PR finding"
+  ],
+  "input": {
+    "target": {
+      "repository": "Intavia-Ai/web",
+      "pr_number": 1330,
+      "base_ref": "main",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "merge_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "head_sha": "1330133013301330133013301330133013301330"
+    },
+    "head_ref": "sanitized/ncd-failed-transfer-edge",
+    "pr_title": "Enable working-hours live transfers",
+    "pr_body": "Add the approved working-hours transfer path and callback recovery.",
+    "changed_files": [
+      "src/agents2/customers/ncd/workflow.ts",
+      "src/agents2/core/transfers/failed-transfer.ts"
+    ],
+    "commits": [
+      {
+        "sha": "1330133013301330133013301330133013301330",
+        "message": "Enable working-hours live transfers"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/agents2/customers/ncd/workflow.ts",
+        "src/agents2/core/transfers/failed-transfer.ts"
+      ],
+      "lifecycle_planes": ["prompt_workflow", "tools_live_state"],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\nThe bounded scenario requires a failed live transfer, one specific workflow node, cross-intent caller wording, and an LLM lateral-edge match.\n",
+    "diff": "diff --git a/src/agents2/customers/ncd/workflow.ts b/src/agents2/customers/ncd/workflow.ts\n--- a/src/agents2/customers/ncd/workflow.ts\n+++ b/src/agents2/customers/ncd/workflow.ts\n@@ -40,3 +40,4 @@\n+edge({ from: failedTransferCallback, to: appointmentIntent, condition: llmMatch });\n"
+  }
+}

@@ -57,7 +57,7 @@ inputs:
     description: >-
       Optional Responses-API base URL for a custom model provider (Codex appends
       /responses and /models). When set, auth.json is not used and session
-      resume is disabled.
+      resume is disabled unless provider-session-resume is true.
     default: ""
   provider-env-key:
     description: >-
@@ -75,7 +75,10 @@ inputs:
     description: Slash command name(s) accepted on issue_comment events, separated by spaces or commas (without the leading slash).
     default: open-review
   decision-owners:
-    description: GitHub logins whose PR replies count as trusted review dispositions, separated by spaces or commas.
+    description: GitHub logins whose marked owner decisions and evidence challenges are trusted, separated by spaces or commas.
+    default: ""
+  framework-decision-owners:
+    description: GitHub logins allowed to make EVOLVE_FRAMEWORK decisions; when empty, any decision-owners login may.
     default: ""
   disposition-marker:
     description: HTML-comment marker of the base64 disposition ledger comments to read.
@@ -84,8 +87,14 @@ inputs:
     description: Extra words (for example a product or CLI name) that mark a trusted comment as review discussion.
     default: ""
   session-resume:
-    description: Continue the previous round's Codex session on incremental reviews ("true" or "false"). Ignored with provider-base-url.
+    description: Continue the previous round's Codex session on incremental reviews ("true" or "false").
     default: "true"
+  provider-session-resume:
+    description: Allow session resume through provider-base-url when true.
+    default: "false"
+  review-budget-minutes:
+    description: Total hosted Codex model budget across attempts.
+    default: "20"
   pr-number:
     description: PR number to review for workflow_dispatch callers.
     default: ""
@@ -366,6 +375,11 @@ runs:
       uses: actions/github-script@v7
       env:
         DECISION_OWNERS: ${{ inputs.decision-owners }}
+        FRAMEWORK_DECISION_OWNERS: ${{ inputs.framework-decision-owners }}
+        BASE_REF: ${{ steps.pr.outputs.base_ref }}
+        BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        REVIEW_COMMAND: ${{ inputs.command }}
         DISPOSITION_MARKER: ${{ inputs.disposition-marker }}
         CONTEXT_KEYWORDS: ${{ inputs.context-keywords }}
       with:
@@ -390,6 +404,26 @@ runs:
             contextKeywords: list(process.env.CONTEXT_KEYWORDS),
             outputDir: '.codex-ci',
           });
+          const fs = require('fs');
+          const { collectLedgerEvidence, loadWorkflowRunLog, formatReviewTargetAttestation } = require(path.join(engineDir, 'ledger', 'evidence.cjs'));
+          const ledgerEvidence = await collectLedgerEvidence({
+            github, owner: context.repo.owner, repo: context.repo.repo,
+            prNumber: ${{ steps.pr.outputs.number }},
+            headSha: '${{ steps.pr.outputs.head_sha }}',
+            expectedBaseRef: process.env.BASE_REF,
+            expectedBaseSha: process.env.BASE_SHA,
+            reviewerRef: process.env.TRUSTED_WORKFLOW_SHA,
+            decisionOwners: list(process.env.DECISION_OWNERS),
+            frameworkDecisionOwners: list(process.env.FRAMEWORK_DECISION_OWNERS),
+            command: list(process.env.REVIEW_COMMAND),
+            expectedWorkflowRef: process.env.GITHUB_WORKFLOW_REF,
+            loadWorkflowRunLog: ({ runId, attemptNumber }) => loadWorkflowRunLog({
+              github, owner: context.repo.owner, repo: context.repo.repo, runId, attemptNumber,
+            }),
+          });
+          console.log(formatReviewTargetAttestation(ledgerEvidence.target));
+          fs.writeFileSync('.codex-ci/ledger-evidence.json', JSON.stringify(ledgerEvidence));
+          fs.writeFileSync('.codex-ci/prior-projection.json', JSON.stringify(ledgerEvidence.reviewPriorProjection || {}));
 
     - name: Determine review scope
       id: scope
@@ -409,6 +443,11 @@ runs:
 
         # Determine the "since" SHA: explicit --since > last reviewed > none
         SINCE="${SINCE_SHA:-${LAST_REVIEWED_SHA:-}}"
+        # An old state comment cannot establish a v4 ledger. The first v4 run
+        # must inspect the whole PR even when the previous reviewer saw this head.
+        if jq -e '.priorProjection == null' .codex-ci/ledger-evidence.json >/dev/null; then
+          SINCE=""
+        fi
         REASON="no_previous_review"
         MODE="full"
         DIFF_BASE="$MERGE_BASE_SHA"
@@ -422,8 +461,17 @@ runs:
             if git merge-base --is-ancestor "$SINCE" "$HEAD_SHA"; then
               COUNT="$(git rev-list --count "$SINCE".."$HEAD_SHA")"
               if [ "$COUNT" -eq 0 ]; then
-                MODE="skip"
-                REASON="no_new_commits"
+                if jq -e '(.modelReviewRequired == true) or
+                  (([.humanDecisions[]?.comment_id] - [.priorProjection.human_decisions[]?.comment_id]) | length > 0) or
+                  (([.evidenceChallenges[]? | "github-comment:\(.comment_id)"] -
+                  (.priorProjection.consumed_evidence_challenge_refs // [])) | length > 0)' \
+                  .codex-ci/ledger-evidence.json >/dev/null; then
+                  MODE="full"
+                  REASON="new_owner_event"
+                else
+                  MODE="skip"
+                  REASON="no_new_commits"
+                fi
               else
                 MODE="incremental"
                 DIFF_BASE="$SINCE"
@@ -655,17 +703,10 @@ runs:
     # before incremental review existed. `session-resume: false` is the kill
     # switch.
     #
-    # Session resume stays off with a custom model provider. A pooling proxy
-    # may inject its own session anchors (a resumed round then hits a
-    # `previous_response_id` the Responses API refuses), and resume reuses the
-    # codex session id, which such a proxy may use as its sticky key: a
-    # resumed round reconstructs exactly the session state that failed instead
-    # of escaping it. Incremental reviews do not depend on resume — diff
-    # scoping and state-comment continuity work cold — so resume stays enabled
-    # only on the single-account auth.json path.
+    # Custom providers resume only when the caller explicitly opts in.
     - name: Restore prior review session
       id: resume
-      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental' && inputs.session-resume == 'true' && inputs.provider-base-url == ''
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental' && inputs.session-resume == 'true' && (inputs.provider-base-url == '' || inputs.provider-session-resume == 'true')
       uses: actions/github-script@v7
       env:
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
@@ -824,6 +865,7 @@ runs:
         CODEX_WEB_SEARCH_MODE: disabled
         PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
         PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
+        REVIEW_BUDGET_MINUTES: ${{ inputs.review-budget-minutes }}
       run: |
         # Shell variables, not environment: the reviewer's shell must not learn
         # where the runner keeps its scratch files or Codex home.
@@ -862,11 +904,15 @@ runs:
         }
 
         START_TIME=$(date +%s)
-        # One 20m model budget for the whole step, shared by every attempt, so
+        # One caller-bounded model budget for the whole step, shared by every attempt, so
         # a retry can never outlive the review's time box. A retry that would
         # start with less than MIN_RETRY_SECONDS left cannot finish a review,
         # so it is not started at all.
-        CODEX_BUDGET_SECONDS=1200
+        if [[ ! "$REVIEW_BUDGET_MINUTES" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$REVIEW_BUDGET_MINUTES" -gt 120 ]; then
+          echo "::error::review-budget-minutes must be an integer from 1 through 120"
+          exit 1
+        fi
+        CODEX_BUDGET_SECONDS=$(( REVIEW_BUDGET_MINUTES * 60 ))
         MIN_RETRY_SECONDS=300
         MAX_ATTEMPTS=2
         PRESERVED_SESSIONS_DIR="${CODEX_HOME:-$RUNNER_TEMP}/failed-attempt-sessions"
@@ -1235,6 +1281,12 @@ runs:
         FINAL_SESSION_MODE: ${{ steps.codex.outputs.final_session_mode }}
         RULES_CHANGED: ${{ steps.rules.outputs.changed }}
         RULES_PATH: ${{ inputs.rules-path }}
+        BASE_REF: ${{ steps.pr.outputs.base_ref }}
+        BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        DECISION_OWNERS: ${{ inputs.decision-owners }}
+        FRAMEWORK_DECISION_OWNERS: ${{ inputs.framework-decision-owners }}
+        REVIEW_COMMAND: ${{ inputs.command }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -1261,6 +1313,13 @@ runs:
           }
 
           if (process.env.REVIEW_MODE === 'skip') {
+            if (process.env.JOB_STATUS !== 'success') {
+              if (checkId) await github.rest.checks.update({ owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: 'failure',
+                output: { title: 'Review Failed', summary: 'The review pipeline failed before the same-head carry.' } });
+              core.setFailed('Review pipeline failed before the same-head carry.');
+              return;
+            }
             // "No new commits" must carry the PREVIOUS round's merge gate
             // forward, never stamp success over a standing BLOCK: re-running
             // the review command on an already-reviewed head would otherwise
@@ -1278,7 +1337,49 @@ runs:
               recordCaughtError({ recorder, error, operation: "review.workflow", stage: "carry_state", disposition: "recover", context: {} });
 
             }
-            const gate = deriveMergeGate(previousReviewState);
+            const ledgerEvidence = JSON.parse(fs.readFileSync('.codex-ci/ledger-evidence.json', 'utf8'));
+            const priorProjection = ledgerEvidence.priorProjection;
+            let carriedProjection = null;
+            if (priorProjection) {
+              if (!checkId) throw new Error('Cannot carry a v4 projection without the custom review check');
+              const { loadCheckIdentity, revalidateLedgerAuthority, loadWorkflowRunLog } = require(path.join(engineDir, 'ledger', 'evidence.cjs'));
+              const { publishCarriedProjection } = require(path.join(engineDir, 'ledger', 'carry.cjs'));
+              const target = ledgerEvidence.target;
+              if (!target || target.base_ref !== process.env.BASE_REF ||
+                  target.base_sha !== process.env.BASE_SHA ||
+                  target.merge_base_sha !== process.env.MERGE_BASE_SHA ||
+                  target.head_sha !== process.env.HEAD_SHA) {
+                throw new Error('Collected ledger target differs from the current review scope');
+              }
+              const revalidateAuthority = () => revalidateLedgerAuthority({ snapshot: ledgerEvidence,
+                github, owner, repo, prNumber, headSha: process.env.HEAD_SHA,
+                expectedBaseRef: process.env.BASE_REF, expectedBaseSha: process.env.BASE_SHA,
+                reviewerRef: process.env.TRUSTED_WORKFLOW_SHA,
+                decisionOwners: (process.env.DECISION_OWNERS || '').split(/[\s,]+/).filter(Boolean),
+                frameworkDecisionOwners: (process.env.FRAMEWORK_DECISION_OWNERS || '').split(/[\s,]+/).filter(Boolean),
+                command: (process.env.REVIEW_COMMAND || 'open-review').split(/[\s,]+/).filter(Boolean),
+                expectedWorkflowRef: process.env.GITHUB_WORKFLOW_REF,
+                loadWorkflowRunLog: ({ runId, attemptNumber }) => loadWorkflowRunLog({ github, owner, repo, runId, attemptNumber }) });
+              const checkIdentity = await loadCheckIdentity({ github, owner, repo,
+                runId: context.runId, runAttempt: process.env.GITHUB_RUN_ATTEMPT || '1',
+                headSha: process.env.HEAD_SHA, workflowRef: process.env.GITHUB_WORKFLOW_REF,
+                trustedWorkflowSha: process.env.TRUSTED_WORKFLOW_SHA,
+                runnerName: process.env.RUNNER_NAME, callerJob: process.env.GITHUB_JOB,
+                prNumber, baseRef: process.env.BASE_REF,
+              });
+              console.log(`TRUSTED_WORKFLOW_SHA: ${process.env.TRUSTED_WORKFLOW_SHA}`);
+              carriedProjection = await publishCarriedProjection({ github, owner, repo, prNumber,
+                priorProjection, target, checkIdentity, humanDecisions: ledgerEvidence.humanDecisions,
+                revalidateAuthority });
+            }
+            const derived = carriedProjection
+              ? deriveMergeGate({ open_findings: carriedProjection.open_findings })
+              : deriveMergeGate(previousReviewState);
+            const gate = carriedProjection ? {
+              ...derived,
+              status: carriedProjection.conclusion === 'block' ? 'BLOCK' : 'PASS',
+              conclusion: carriedProjection.conclusion === 'block' ? 'failure' : 'success',
+            } : derived;
             if (checkId) {
               await github.rest.checks.update({
                 owner, repo, check_run_id: checkId,
@@ -1293,6 +1394,7 @@ runs:
               });
             }
             console.log(`No new commits to review; carried merge gate: ${gate.status}`);
+            if (gate.status === 'BLOCK') core.setFailed('Carried review has reachable P0/P1 findings requiring a fix or owner decision.');
             return;
           }
 
@@ -1352,9 +1454,38 @@ runs:
               recordCaughtError({ recorder, error, operation: "review.workflow", stage: "previous_state", disposition: "recover", context: {} });
             }
 
-            await postResults({ recorder,
-              github, owner, repo, prNumber, checkId,
+            const { loadCheckIdentity, revalidateLedgerAuthority, loadWorkflowRunLog } = require(path.join(engineDir, 'ledger', 'evidence.cjs'));
+            console.log(`TRUSTED_WORKFLOW_SHA: ${process.env.TRUSTED_WORKFLOW_SHA}`);
+            const ledgerEvidence = JSON.parse(fs.readFileSync('.codex-ci/ledger-evidence.json', 'utf8'));
+            const ledgerTarget = ledgerEvidence.target;
+            if (!ledgerTarget || ledgerTarget.base_ref !== process.env.BASE_REF ||
+                ledgerTarget.base_sha !== process.env.BASE_SHA ||
+                ledgerTarget.merge_base_sha !== process.env.MERGE_BASE_SHA ||
+                ledgerTarget.head_sha !== process.env.HEAD_SHA) {
+              throw new Error('Collected ledger target differs from the current review scope');
+            }
+            const revalidateAuthority = () => revalidateLedgerAuthority({ snapshot: ledgerEvidence,
+              github, owner, repo, prNumber, headSha: process.env.HEAD_SHA,
+              expectedBaseRef: process.env.BASE_REF, expectedBaseSha: process.env.BASE_SHA,
+              reviewerRef: process.env.TRUSTED_WORKFLOW_SHA,
+              decisionOwners: (process.env.DECISION_OWNERS || '').split(/[\s,]+/).filter(Boolean),
+              frameworkDecisionOwners: (process.env.FRAMEWORK_DECISION_OWNERS || '').split(/[\s,]+/).filter(Boolean),
+              command: (process.env.REVIEW_COMMAND || 'open-review').split(/[\s,]+/).filter(Boolean),
+              expectedWorkflowRef: process.env.GITHUB_WORKFLOW_REF,
+              loadWorkflowRunLog: ({ runId, attemptNumber }) => loadWorkflowRunLog({ github, owner, repo, runId, attemptNumber }) });
+            const checkIdentity = await loadCheckIdentity({ github, owner, repo,
+              runId: context.runId, runAttempt: process.env.GITHUB_RUN_ATTEMPT || '1',
               headSha: process.env.HEAD_SHA,
+              workflowRef: process.env.GITHUB_WORKFLOW_REF,
+              trustedWorkflowSha: process.env.TRUSTED_WORKFLOW_SHA,
+              runnerName: process.env.RUNNER_NAME, callerJob: process.env.GITHUB_JOB,
+              prNumber, baseRef: process.env.BASE_REF,
+            });
+            const result = await postResults({ recorder,
+              github, owner, repo, prNumber, checkId,
+              eventName: context.eventName,
+              headSha: process.env.HEAD_SHA,
+              ledgerTarget, checkIdentity, revalidateLedgerAuthority: revalidateAuthority,
               previousState,
               outputDir: '.codex-ci',
               metadata: {
@@ -1380,8 +1511,12 @@ runs:
                 mergeBaseSha: process.env.MERGE_BASE_SHA || '',
               },
             });
+            if (result.mergeGate?.status === 'BLOCK') {
+              core.setFailed('Review found reachable P0/P1 findings that require a fix or owner decision.');
+            }
           } catch (error) {
             recordCaughtError({ recorder, error, operation: "review.workflow", stage: "post_results", disposition: "recover", context: {} });
+            core.setFailed('Review post-processing failed; no trusted projection was completed.');
 
             if (checkId) {
               try {

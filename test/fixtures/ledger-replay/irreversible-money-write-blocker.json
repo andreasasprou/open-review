@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "dataset_id": "intavia-code-review-bounded-v1",
+  "fixture_id": "irreversible-money-write-blocker",
+  "phase": "deterministic_validator",
+  "frozen_at": "2026-08-01T18:20:00.000Z",
+  "provenance": {
+    "source_prs": [1400],
+    "source_commits": ["cccccccccccccccccccccccccccccccccccccccc"]
+  },
+  "inclusions": ["Silent payment capture", "Irreversible provider write"],
+  "exclusions": ["Provider implementation details", "Unrelated checkout UI"],
+  "input": {
+    "target": {
+      "repository": "Intavia-Ai/web",
+      "pr_number": 1400,
+      "base_ref": "main",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "merge_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "head_sha": "cccccccccccccccccccccccccccccccccccccccc"
+    },
+    "head_ref": "sanitized/payment-write",
+    "pr_title": "Capture booking deposits",
+    "pr_body": "Capture the approved deposit after booking confirmation.",
+    "changed_files": ["src/modules/payments/capture.ts"],
+    "commits": [
+      {
+        "sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "message": "Capture booking deposits"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": ["src/modules/payments/capture.ts"],
+      "lifecycle_planes": ["provider_action"],
+      "needs_vision_assessment": false
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\nThe changed retry path can submit the same irreversible charge twice without caller visibility.\n",
+    "diff": "diff --git a/src/modules/payments/capture.ts b/src/modules/payments/capture.ts\n--- a/src/modules/payments/capture.ts\n+++ b/src/modules/payments/capture.ts\n@@ -20,3 +20,4 @@\n+return retry(() => provider.capture(payment));\n"
+  }
+}

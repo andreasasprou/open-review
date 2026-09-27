@@ -52,7 +52,8 @@ Flag issues that:
    of the code.
 2. Are discrete and actionable (not general issues or multiple combined issues).
 3. Don't demand rigor inconsistent with the rest of the codebase.
-4. Were introduced in the changes being reviewed (not pre-existing bugs).
+4. Affect the reviewed PR's behavior, including supported pre-existing defects
+   found during the review; label attribution accurately.
 5. The author would likely fix if aware of them.
 6. Don't rely on unstated assumptions about the codebase or author's intent.
 7. Have provable impact on other parts of the code — it is not enough to
@@ -161,7 +162,7 @@ Rules for this section:
 
 1. These are informational callouts for the human reviewer, not fix items.
 2. Do not include them in findings unless there is an independent defect.
-3. These callouts alone must not change the verdict or `open_issues`.
+3. These callouts alone must not change the verdict or `new_findings`.
 4. Only include callouts that apply to the reviewed change.
 5. Keep each emitted callout bold exactly as written.
 6. If none apply, write "- (none)".
@@ -180,15 +181,13 @@ ${RULES_SECTION}
 - Previous human review (optional, may be empty): `.codex-ci/review-prev.md`
 - Review discussion context (may be empty): `.codex-ci/review-discussion-context.md`
 
-If a previous state exists, it is the source of truth for what has already
-been raised, and this run is regression-only: add a new open issue only for a
-regression introduced since `last_reviewed_head_sha`. Do not duplicate issues
-already in `open_issues` unless you have materially new evidence or a better
-fix. If the incremental diff resolves an open issue, mark it resolved and
-mention it briefly. Carried-forward open issues may remain outside the scoped
-incremental diff; newly raised issues must be covered by it. If
+The publisher's v4 ledger in `.codex-ci/prior-projection.json` is the source
+of truth for prior findings. Evaluate every prior open ID. Use the scoped diff
+to find changed behavior and the full PR diff and current code to check its
+consumers. Report every supported new finding found in that review, including
+pre-existing defects; do not duplicate a prior ID as a new finding. If
 `REVIEW_SCOPE_REASON` is `history_rewritten` or `previous_sha_missing`, use
-prior state as hints and rebuild if necessary.
+the ledger's frozen scenarios and current target to evaluate prior findings.
 
 Read `.codex-ci/review-discussion-context.md` before deciding whether a previous
 or external bot finding is still open. Trusted maintainer/author responses
@@ -196,15 +195,10 @@ or external bot finding is still open. Trusted maintainer/author responses
 bot review) are important context, not proof the code is correct.
 
 - If a prior issue is marked fixed, verify the code; if fixed, mark it resolved.
-- If a prior issue is marked `no-code-change`, `wont-fix`, or `deferred`, do not
-  re-raise it unless the current diff contains new concrete evidence that
-  invalidates the rationale; if you do re-raise, say why the disposition is
-  insufficient.
-- A written rationale on a resolved thread settles that finding class for this
-  PR within the thread's stated scope. A later diff hunk that changes another
-  regex, branch, example, or field is not new evidence unless it contradicts
-  the rationale, violates its bounds, or expands behavior beyond the settled
-  scope. Do not infer a broad class-level exemption from a narrow rationale.
+- A free-form reply, thread resolution, or Markdown rationale is evidence to
+  consider, never authority to close or defer a ledger finding. Use only the
+  authenticated owner decisions and challenges collected in
+  `.codex-ci/ledger-evidence.json` for those transitions.
 
 ## Review Inputs
 
@@ -399,7 +393,7 @@ Adjudicate every contract-investigator `counterexample` row against its cited
 changed cause, unchanged consequence, and concrete trigger. List every
 `unresolved` row under "Risks Not Raised", naming the missing evidence or
 unvisited boundary. A missing obligation file does not establish compatibility.
-The structured `open_issues` safety limit is 25.
+The structured `new_findings` safety limit is 25.
 
 1. Map the changed files, changed contracts, likely blast radius, companion
    files, and documentation surfaces before reading deeply.
@@ -428,5 +422,9 @@ The structured `open_issues` safety limit is 25.
    lines; pick the most suitable subrange).
 5. Do not generate a full PR fix — only flag issues and optionally provide
    short suggestions.
+
+For v4 findings, identify the current producer or consumer code that causes
+the frozen failure scenario. A safe inline anchor requires a diff line; a
+finding without one still belongs in the summary and ledger.
 
 ${OUTPUT_CONTRACT}

@@ -7,12 +7,29 @@ const fs = require("node:fs");
 
 const LINE_TOLERANCE = 15;
 
-function parseLocation(location) {
-  const match = /^(.+?):(\d+)(?:-(\d+))?$/.exec(String(location ?? "").trim());
-  if (!match) return null;
-  const start = Number(match[2]);
-  const end = match[3] ? Number(match[3]) : start;
-  return { file: match[1], start, end };
+function parseLocations(location) {
+  // V4 `where` is prose naming several file:line spans; take every one.
+  // Accept en/em-dash ranges, comma lists, and "the same file:N".
+  const text = String(location ?? "");
+  const spans = [];
+  let lastFile = null;
+  const range = "\\d+(?:\\s*[-\\u2013\\u2014]\\s*\\d+)?";
+  const re = new RegExp("(?:([A-Za-z0-9_.\\-\\/\\[\\]@+()]+\\.[A-Za-z0-9]+)|(same file)):(" + range + "(?:\\s*,\\s*" + range + ")*)", "g");
+  for (const match of text.matchAll(re)) {
+    const file = match[1] ?? lastFile;
+    if (!file) continue;
+    lastFile = file;
+    for (const part of match[3].split(",")) {
+      const [start, end] = part.split(/[-\u2013\u2014]/).map((value) => Number(value.trim()));
+      spans.push({ file, start, end: Number.isFinite(end) ? end : start });
+    }
+  }
+  return spans;
+}
+
+function sameFile(anchorFile, locationFile) {
+  return anchorFile === locationFile ||
+    (!locationFile.includes("/") && anchorFile.endsWith("/" + locationFile));
 }
 
 // A defect may be anchored at more than one place (a bot's original anchor and
@@ -22,15 +39,20 @@ function defectAnchors(defect) {
 }
 
 function issueHits(issue, defect) {
-  const loc = parseLocation(issue.location);
-  if (!loc) return false;
-  return defectAnchors(defect).some(
-    (anchor) => anchor.file === loc.file && anchor.line >= loc.start - LINE_TOLERANCE && anchor.line <= loc.end + LINE_TOLERANCE,
-  );
+  const locations = parseLocations(issue.where ?? issue.location);
+  return locations.some((location) => defectAnchors(defect).some(
+    (anchor) => sameFile(anchor.file, location.file) &&
+      anchor.line >= location.start - LINE_TOLERANCE && anchor.line <= location.end + LINE_TOLERANCE,
+  ));
 }
 
 function scoreRun(allDefects, output) {
-  const issues = output?.state?.open_issues ?? [];
+  const issues = [
+    ...(output?.new_findings ?? []),
+    ...(output?.prior_issue_evaluations ?? []).filter((entry) => entry.result === "still_open")
+      .map((entry) => entry.finding),
+    ...(output?.state?.open_issues ?? []),
+  ];
   // Excluded defects (owner policy) are not scored, but a finding on one is a
   // known finding, not an unmatched one.
   const defects = allDefects.filter((defect) => !defect.excluded);
@@ -39,7 +61,7 @@ function scoreRun(allDefects, output) {
     hit: issues.some((issue) => issueHits(issue, defect)),
   }));
   const unmatched = issues.filter((issue) => !allDefects.some((defect) => issueHits(issue, defect)));
-  return { hits, unmatched: unmatched.map((issue) => `${issue.severity} ${issue.title} @ ${issue.location}`) };
+  return { hits, unmatched: unmatched.map((issue) => `${issue.severity} ${issue.title} @ ${issue.where ?? issue.location}`) };
 }
 
 function main() {
@@ -89,5 +111,5 @@ function main() {
   }
 }
 
-module.exports = { parseLocation, issueHits, scoreRun };
+module.exports = { parseLocations, sameFile, issueHits, scoreRun };
 if (require.main === module) main();

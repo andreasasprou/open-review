@@ -1,0 +1,246 @@
+{
+  "source": "Intavia fa91fab1 replay-corpus.json",
+  "fixtures": [
+    {
+      "id": "whitehill-lifecycle-initial",
+      "file": "replay-fixtures/whitehill-lifecycle-initial.json",
+      "fixture_sha256": "2e90fdbe084fab59a482767f95c54eec2d98d184ca1215103828e2187452e748",
+      "oracle": {
+        "evaluation": "new_finding",
+        "finding": {
+          "stable_id": "WHITEHILL-LIFECYCLE-001",
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "Completed-call extraction creates staff work after terminal emergency direction.",
+          "worst_credible_consequence": "The practice acts on a request that contradicts the caller's emergency route.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "A supported emergency path creates contradictory fulfilment and must be repaired in this PR.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "NO",
+          "title": "Completed-call work can contradict terminal emergency direction",
+          "failure_scenario": "A caller receives terminal 999 direction, then transcript extraction creates non-routine staff work for the same call.",
+          "approved_invariant": "Live emergency direction and completed-call fulfillment must not produce contradictory outcomes.",
+          "affected_lifecycle_planes": [
+            "prompt_workflow",
+            "post_call_fulfillment"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "whitehill-lifecycle-follow-up",
+      "file": "replay-fixtures/whitehill-lifecycle-follow-up.json",
+      "fixture_sha256": "3f57cb987233f26f82be832b854d0bf031b6bc4557165f7fb4d3c2f27d052a16",
+      "oracle": {
+        "evaluation": "still_open",
+        "finding": {
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "Completed-call extraction still creates contradictory staff work.",
+          "worst_credible_consequence": "The practice acts on a request that conflicts with terminal emergency direction.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "relied_upon",
+          "risk_rationale": "The bounded repair has not restored the approved lifecycle invariant.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "NO",
+          "title": "Completed-call work can contradict terminal emergency direction",
+          "approved_invariant": "Suppress staff work after Whitehill's existing terminal 999 route without introducing a fleet-wide follow-up contract.",
+          "affected_lifecycle_planes": [
+            "prompt_workflow",
+            "post_call_fulfillment"
+          ],
+          "decision_ref": "github-comment:1233001",
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "pr-1137-autonomous-batch",
+      "file": "replay-fixtures/pr-1137-autonomous-batch.json",
+      "fixture_sha256": "3233936348c52386ba32a65db7c7a7aeb2ac4c7491f32599b64135b82b89deda",
+      "oracle": {
+        "evaluation": "new_finding",
+        "finding": {
+          "stable_id": "PPS-BOOKING-001",
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "A rejected booking is reported as successful.",
+          "worst_credible_consequence": "The caller relies on an appointment that does not exist.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "A normal provider rejection breaks the truthful booking contract and must block.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "YES",
+          "title": "PPS booking rejection is not returned truthfully",
+          "failure_scenario": "PPS rejects a booking but the tool path reports success to the caller.",
+          "approved_invariant": "A rejected provider action must return a truthful recoverable failure.",
+          "affected_lifecycle_planes": [
+            "tools_live_state",
+            "provider_action"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "pr-1193-author-decision",
+      "file": "replay-fixtures/pr-1193-author-decision.json",
+      "fixture_sha256": "fa97ba8bcbc80ccf4c0d8a17cd7eccb16e0bb4a7f952479283986afc34bc8eec",
+      "oracle": {
+        "evaluation": "new_finding",
+        "finding": {
+          "stable_id": "PHONE-TRUST-001",
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "Later identity actions consume an unapproved phone-trust state.",
+          "worst_credible_consequence": "The workflow associates caller actions with the wrong identity evidence.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "The normal-path lifecycle needs an owner decision before merge.",
+          "disposition": "AUTHOR_DECISION",
+          "autonomous_eligibility": "NO",
+          "title": "Recovery introduces an unapproved phone-trust lifecycle",
+          "failure_scenario": "A caller supplies another phone during recovery and later identity actions depend on pending, confirmed, or withdrawn trust state.",
+          "approved_invariant": "The owner must choose whether to persist alternate-phone trust or narrow the recovery promise.",
+          "affected_lifecycle_planes": [
+            "tools_live_state"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "pr-1140-settlement-correction",
+      "file": "replay-fixtures/pr-1140-settlement-correction.json",
+      "fixture_sha256": "85d1c54eb6d64eb7a081792acaa92fee34275fe8cba134f5c9405f71ea892e63",
+      "oracle": {
+        "evaluation": "still_open",
+        "finding": {
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "Kath requests can still leave the approved team route.",
+          "worst_credible_consequence": "A caller reaches a team that cannot handle the request.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "relied_upon",
+          "risk_rationale": "The repair still violates the approved routing invariant and remains blocking.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "YES",
+          "title": "Kath requests can leave the team route",
+          "approved_invariant": "Kath hygiene requests and reschedules use the existing team route.",
+          "affected_lifecycle_planes": [
+            "prompt_workflow"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "pr-1330-failed-transfer-edge",
+      "file": "replay-fixtures/pr-1330-failed-transfer-edge.json",
+      "fixture_sha256": "77e32184933beb11bb2c75ea4529a7beb870c6a73e2b5ee29c1d2eab8ff3c14a",
+      "oracle": {
+        "evaluation": "new_finding",
+        "finding": {
+          "stable_id": "NCD-FAILED-TRANSFER-EDGE-001",
+          "severity": "P2",
+          "reachability": "compound_path",
+          "likelihood": "low",
+          "likely_consequence": "The caller's callback recovery is interrupted and must be restarted or handled by the practice.",
+          "worst_credible_consequence": "The caller experiences a delayed callback after the failed live transfer.",
+          "recoverability": "routine",
+          "proof_strength": "inferred",
+          "attribution": "introduced",
+          "risk_rationale": "The path needs four aligned triggers and causes recoverable caller friction, so it should pause for approval as tracked follow-up instead of starting an automatic repair batch.",
+          "disposition": "FOLLOW_UP",
+          "autonomous_eligibility": "NO",
+          "title": "Failed-transfer callback can leave through a lateral edge",
+          "failure_scenario": "A live transfer fails at the callback node, the caller uses cross-intent wording, and the LLM matches a lateral edge before callback recovery completes.",
+          "approved_invariant": "Failed-transfer recovery should keep the caller on a truthful callback path unless a higher-risk intent requires another route.",
+          "affected_lifecycle_planes": [
+            "prompt_workflow",
+            "tools_live_state"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "normal-provider-failure-blocker",
+      "file": "replay-fixtures/normal-provider-failure-blocker.json",
+      "fixture_sha256": "8281373cbe8dcdd09a04c74cec8c018ab9a5aa896a485009f4c4133e72ab247e",
+      "oracle": {
+        "evaluation": "new_finding",
+        "finding": {
+          "stable_id": "NORMAL-PROVIDER-FAILURE-001",
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "A provider rejection is reported as a successful booking.",
+          "worst_credible_consequence": "The caller relies on an appointment that the provider never created.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "The ordinary provider failure path breaks a material caller promise and must block merge.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "YES",
+          "title": "Provider rejection is returned as booking success",
+          "failure_scenario": "The provider rejects an ordinary booking request and the changed tool wraps that result as success.",
+          "approved_invariant": "A provider rejection must return a truthful failure before the caller is told the booking exists.",
+          "affected_lifecycle_planes": [
+            "tools_live_state",
+            "provider_action"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    },
+    {
+      "id": "irreversible-money-write-blocker",
+      "file": "replay-fixtures/irreversible-money-write-blocker.json",
+      "fixture_sha256": "247bec9996f4e10764a06d4123ac770eb47929f9c3f1bcecdb17334d28dc1518",
+      "oracle": {
+        "evaluation": "new_finding",
+        "finding": {
+          "stable_id": "PAYMENT-DUPLICATE-CAPTURE-001",
+          "severity": "P0",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "A transient response failure submits the same charge twice without caller visibility.",
+          "worst_credible_consequence": "The provider captures duplicate money through an irreversible external write.",
+          "recoverability": "irreversible",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "A supported retry can make a silent irreversible money write, so it must block regardless of manual refund options.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "YES",
+          "title": "Retry can capture the same payment twice",
+          "failure_scenario": "The provider captures a payment but its response is lost, then the changed retry submits the capture again without an idempotency key.",
+          "approved_invariant": "A retry must not repeat a silent irreversible money write.",
+          "affected_lifecycle_planes": [
+            "provider_action"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      }
+    }
+  ]
+}

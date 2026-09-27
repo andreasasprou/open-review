@@ -1,0 +1,13 @@
+{
+  "source_pr": 1326,
+  "source_run": 30614464459,
+  "retained_findings": 13,
+  "new_findings": 4,
+  "field_lengths": {
+    "title": 80,
+    "failure_scenario": 500,
+    "approved_invariant": 500,
+    "where": 500,
+    "evidence": 1000
+  }
+}

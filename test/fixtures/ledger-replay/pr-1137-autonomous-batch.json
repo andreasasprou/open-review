@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "dataset_id": "intavia-code-review-bounded-v1",
+  "fixture_id": "pr-1137-autonomous-batch",
+  "phase": "deterministic_validator",
+  "frozen_at": "2026-07-12T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [1137],
+    "source_commits": ["263bbc8a8ad724943338a5f64b5d7eaeaa9428ad"]
+  },
+  "inclusions": [
+    "One bounded booking-error recovery defect",
+    "The two local owning surfaces"
+  ],
+  "exclusions": [
+    "The full PR",
+    "Historical review prose",
+    "Any product or framework choice"
+  ],
+  "input": {
+    "target": {
+      "repository": "Intavia-Ai/web",
+      "pr_number": 1137,
+      "base_ref": "main",
+      "base_sha": "f2a2c9b718548edd70e188088012d29c4df91d33",
+      "merge_base_sha": "f2a2c9b718548edd70e188088012d29c4df91d33",
+      "head_sha": "263bbc8a8ad724943338a5f64b5d7eaeaa9428ad"
+    },
+    "head_ref": "sanitized/pps-booking-error",
+    "pr_title": "Handle PPS booking validation failures",
+    "pr_body": "Return a truthful recovery result when PPS rejects a booking request.",
+    "changed_files": [
+      "src/agents2/tools/booking.ts",
+      "src/platform/adapters/pms/pps/appointments.ts"
+    ],
+    "commits": [
+      {
+        "sha": "263bbc8a8ad724943338a5f64b5d7eaeaa9428ad",
+        "message": "Handle PPS booking validation failures"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/agents2/tools/booking.ts",
+        "src/platform/adapters/pms/pps/appointments.ts"
+      ],
+      "lifecycle_planes": ["tools_live_state", "provider_action"],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\n_None._\n",
+    "diff": "diff --git a/src/agents2/tools/booking.ts b/src/agents2/tools/booking.ts\n--- a/src/agents2/tools/booking.ts\n+++ b/src/agents2/tools/booking.ts\n@@ -20,3 +20,4 @@\n+return adapter.book(request);\ndiff --git a/src/platform/adapters/pms/pps/appointments.ts b/src/platform/adapters/pms/pps/appointments.ts\n--- a/src/platform/adapters/pms/pps/appointments.ts\n+++ b/src/platform/adapters/pms/pps/appointments.ts\n@@ -40,3 +40,4 @@\n+if (!response.ok) return failure(response.message);\n"
+  }
+}

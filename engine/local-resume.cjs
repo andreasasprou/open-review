@@ -35,7 +35,7 @@ function readReview(runDir, headSha) {
 	const review = json(path.join(runDir, "codex-review-output.json"));
 	if (!review.review_markdown || review.state?.schema_version !== 1 ||
 		review.state.last_reviewed_head_sha !== headSha ||
-		!Array.isArray(review.state.open_issues) || !Array.isArray(review.state.review_dispositions)) {
+		!Array.isArray(review.new_findings) || !Array.isArray(review.prior_issue_evaluations)) {
 		throw new Error("saved review state does not identify the reviewed head");
 	}
 	return review;
@@ -92,6 +92,8 @@ function install({ recorder, selectionFile, codexHome }) {
 	const selection = json(selectionFile);
 	const parent = readParent(recorder, path.join(selection.runDir, "parent-session", selection.basename), selection.sessionId, selection.model, selection.rolloutDigest);
 	fs.copyFileSync(path.join(selection.runDir, "codex-review-output.json"), path.join(path.dirname(selectionFile), "resumed-review.json"));
+	const settlement = path.join(selection.runDir, "local-settlement.json");
+	if (fs.existsSync(settlement)) fs.copyFileSync(settlement, path.join(path.dirname(selectionFile), "resumed-settlement.json"));
 	installResumedRollout({ codexHome, rollout: {
 		basename: selection.basename,
 		dateDir: sessionDateDir(parent.file),

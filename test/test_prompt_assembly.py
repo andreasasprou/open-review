@@ -55,7 +55,7 @@ class AssemblyContractTest(unittest.TestCase):
             "7. When uncertain, prefer crashing fast over silent degradation.\n\n## Review priorities",
             template,
         )
-        self.assertTrue(template.endswith("`recently_resolved_issues`: max 20.\n"))
+        self.assertTrue(template.endswith("Existing finding state belongs to the publisher's v4 ledger.\n"))
 
     def test_slot_override_replaces_default(self):
         rules = (

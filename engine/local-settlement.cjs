@@ -3,6 +3,7 @@
 
 const fs = require("node:fs");
 const { runReviewCli } = require("./diagnostics-runtime.cjs");
+const { foldReview } = require("./ledger/projection.cjs");
 
 const {
 	buildIssueSeverityMap,
@@ -68,19 +69,27 @@ function buildInlineApiComments({ inlineComments, reviewState, patch }) {
 	};
 }
 
-function buildLocalSettlement({ output, patch }) {
+function buildLocalSettlement({ output, patch, priorProjection = null }) {
 	const reviewMarkdown = String(output?.review_markdown || "").trim();
 	if (!reviewMarkdown) {
 		throw new Error("review output has no review_markdown");
 	}
 
 	const verdict = extractVerdict(reviewMarkdown);
-	const mergeGate = deriveMergeGate(output?.state);
+	const headSha = output?.state?.last_reviewed_head_sha;
+	// Local settlement has no hosted evidence bundle. Retain the prior target's
+	// identity when present and use a deterministic local identity for cold runs.
+	const target = { repository: "local/open-review", pr_number: 1,
+		base_ref: "local", base_sha: headSha, merge_base_sha: headSha,
+		trusted_reviewer_ref: headSha, evidence_bundle_sha256: "0".repeat(64),
+		evidence_schema_version: 2, ...priorProjection?.review_target, head_sha: headSha };
+	const ledger = foldReview({ output, target, priorProjection });
+	const mergeGate = deriveMergeGate({ open_findings: ledger.open_findings });
 	const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
 	const mergeGateLine = mergeGateSummary.split("\n", 1)[0];
 	const inline = buildInlineApiComments({
 		inlineComments: output?.inline_comments,
-		reviewState: output?.state,
+		reviewState: { open_findings: ledger.open_findings },
 		patch,
 	});
 
@@ -95,20 +104,22 @@ function buildLocalSettlement({ output, patch }) {
 			plainMergeGateLine(mergeGateLine),
 		),
 		inline,
+		ledger: { ...ledger, review_target: target },
 	};
 }
 
 function main(argv) {
-	const [outputPath, patchPath] = argv;
+	const [outputPath, patchPath, priorPath] = argv;
 	if (!outputPath || !patchPath) {
 		throw new Error(
-			"usage: local-settlement.cjs <codex-review-output.json> <pr-diff.patch>",
+			"usage: local-settlement.cjs <codex-review-output.json> <pr-diff.patch> [prior-projection.json]",
 		);
 	}
 
 	const output = JSON.parse(fs.readFileSync(outputPath, "utf8"));
 	const patch = fs.readFileSync(patchPath, "utf8");
-	process.stdout.write(`${JSON.stringify(buildLocalSettlement({ output, patch }))}\n`);
+	const priorProjection = priorPath && fs.existsSync(priorPath) ? JSON.parse(fs.readFileSync(priorPath, "utf8")) : null;
+	process.stdout.write(`${JSON.stringify(buildLocalSettlement({ output, patch, priorProjection }))}\n`);
 }
 
 if (require.main === module) runReviewCli(() => main(process.argv.slice(2)));

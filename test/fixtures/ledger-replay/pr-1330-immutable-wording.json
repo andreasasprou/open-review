@@ -1,0 +1,8 @@
+{
+  "source_pr": 1330,
+  "source_run": 30630453812,
+  "stable_id": "ncd-urgent-transfer-advice-turn-conflict",
+  "prior_failure_scenario": "A parent reports facial swelling or an adult permanent tooth being knocked out during open hours. The red-flag branch must deliver same-day or milk/saliva safety advice and then transfer. The shared transfer sequence simultaneously requires that the transfer turn contain only the exact connecting line and tool call. With only one guaranteed assistant turn after the disclosure, Anna may obey the transfer sequence and omit the safety advice, or give the advice but leave the caller waiting without initiating the approved transfer.",
+  "regenerated_failure_scenario": "A parent reports facial swelling or an adult permanent tooth being knocked out during open hours. The red-flag branch must deliver same-day or milk/saliva safety advice and then transfer. The shared transfer sequence simultaneously requires that the transfer turn contain only the connecting message and tool call. With only one guaranteed assistant turn after the disclosure, Anna may obey the transfer sequence and omit the safety advice, or give the advice but leave the caller waiting without initiating the approved transfer.",
+  "expected_old_error": "frozen_scenario_changed"
+}

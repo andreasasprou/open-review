@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "dataset_id": "intavia-code-review-bounded-v1",
+  "fixture_id": "pr-1193-author-decision",
+  "phase": "deterministic_validator",
+  "frozen_at": "2026-07-18T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [1193],
+    "source_commits": ["7ba697570fcd8f2cf6294ada20fc33207844b9f3"]
+  },
+  "inclusions": [
+    "A caller-ID recovery promise",
+    "A proposed persistent alternate-phone trust state"
+  ],
+  "exclusions": [
+    "The full PR",
+    "Hosted QA transcripts",
+    "An approved phone-trust lifecycle design"
+  ],
+  "input": {
+    "target": {
+      "repository": "Intavia-Ai/web",
+      "pr_number": 1193,
+      "base_ref": "main",
+      "base_sha": "c10ad8fe1779fa2d60aad3abe60d27ac825d5d04",
+      "merge_base_sha": "c10ad8fe1779fa2d60aad3abe60d27ac825d5d04",
+      "head_sha": "7ba697570fcd8f2cf6294ada20fc33207844b9f3"
+    },
+    "head_ref": "sanitized/caller-id-recovery",
+    "pr_title": "Recover from caller-ID lookup misses",
+    "pr_body": "Let a caller continue identity verification when the calling number is not registered.",
+    "changed_files": [
+      "src/agents2/tools/resolve-patient-identity.ts",
+      "src/agents2/conversation-context/phone-trust.ts"
+    ],
+    "commits": [
+      {
+        "sha": "7ba697570fcd8f2cf6294ada20fc33207844b9f3",
+        "message": "Enforce caller-ID follow-up contracts"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/agents2/tools/resolve-patient-identity.ts",
+        "src/agents2/conversation-context/phone-trust.ts"
+      ],
+      "lifecycle_planes": ["tools_live_state"],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\n_None._\n",
+    "diff": "diff --git a/src/agents2/conversation-context/phone-trust.ts b/src/agents2/conversation-context/phone-trust.ts\n--- a/src/agents2/conversation-context/phone-trust.ts\n+++ b/src/agents2/conversation-context/phone-trust.ts\n@@ -1,3 +1,8 @@\n+export type AlternatePhoneTrust =\n+  | { status: \"pending\"; phone: string }\n+  | { status: \"confirmed\"; phone: string }\n+  | { status: \"withdrawn\" };\n"
+  }
+}

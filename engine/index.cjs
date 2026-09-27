@@ -5,6 +5,8 @@
 const fs = require("node:fs");
 const { recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require("./diagnostics-runtime.cjs");
 const path = require("node:path");
+const { foldReview } = require("./ledger/projection.cjs");
+const { postResults: publishLedger } = require("./ledger/publisher.cjs");
 
 // ─── Comment Markers ──────────────────────────────────────────────────────────
 // These HTML comments identify bot-managed comments on the PR.
@@ -58,7 +60,8 @@ const BLOCKING_SEVERITIES = new Set(["P0", "P1"]);
 function isMergeBlocker(issue) {
 	return (
 		BLOCKING_SEVERITIES.has(issue?.severity) &&
-		issue?.reachability !== "theoretical"
+		issue?.reachability !== "theoretical" &&
+		!(issue?.disposition === "FOLLOW_UP" && issue?.decision_ref && issue?.follow_up)
 	);
 }
 
@@ -70,7 +73,7 @@ function isMergeBlocker(issue) {
  * never silently reports a clean gate.
  */
 function deriveMergeGate(reviewState) {
-	const openIssues = reviewState?.open_issues;
+	const openIssues = reviewState?.open_findings ?? reviewState?.open_issues;
 	if (!Array.isArray(openIssues)) {
 		return {
 			status: "UNKNOWN",
@@ -85,7 +88,7 @@ function deriveMergeGate(reviewState) {
 	// blank id must not exempt an otherwise blocking finding.
 	const blockingIssues = openIssues.filter(isMergeBlocker);
 	const blockingIssueIds = blockingIssues
-		.map((issue) => issue?.id)
+		.map((issue) => issue?.stable_id || issue?.id)
 		.filter(Boolean);
 
 	return {
@@ -115,7 +118,7 @@ function formatMergeGateSummary(gate, verdict) {
 		}
 	} else if (gate.status === "PASS") {
 		lines.push(
-			`Merge gate: **PASS** — ${gate.openCount} open findings, none P1-or-higher on a reachable path.`,
+			`Merge gate: **PASS** — ${gate.openCount} open findings, none requiring a fix or owner decision.`,
 		);
 	} else {
 		lines.push(
@@ -128,9 +131,10 @@ function formatMergeGateSummary(gate, verdict) {
 
 function buildIssueSeverityMap(reviewState) {
 	const map = new Map();
-	for (const issue of reviewState?.open_issues || []) {
-		if (issue?.id && issue?.severity) {
-			map.set(issue.id, issue.severity);
+	for (const issue of reviewState?.open_findings ?? reviewState?.open_issues ?? []) {
+		const id = issue?.stable_id || issue?.id;
+		if (id && issue?.severity) {
+			map.set(id, issue.severity);
 		}
 	}
 	return map;
@@ -1600,7 +1604,7 @@ function parseOutput(outputDir, recorder) {
 
 	if (!fs.existsSync(outputPath)) {
 		console.log(`[codex-review] Output file not found: ${outputPath}`);
-		return { reviewBody: null, reviewState: null, inlineComments: [] };
+		return { reviewBody: null, reviewState: null, inlineComments: [], rawOutput: null };
 	}
 
 	try {
@@ -1621,14 +1625,14 @@ function parseOutput(outputDir, recorder) {
 			: [];
 
 		console.log(
-			`[codex-review] Parsed output: body=${!!reviewBody} (${reviewBody?.length || 0} chars), state=${!!reviewState}, issues=${reviewState?.open_issues?.length || 0}, inline=${inlineComments.length}`,
+			`[codex-review] Parsed output: body=${!!reviewBody} (${reviewBody?.length || 0} chars), state=${!!reviewState}, issues=${output.new_findings?.length ?? reviewState?.open_issues?.length ?? 0}, inline=${inlineComments.length}`,
 		);
 
-		return { reviewBody, reviewState, inlineComments };
+		return { reviewBody, reviewState, inlineComments, rawOutput: output };
 	} catch (e) {
 		recordCaughtError({ recorder, error: e, operation: "review.process", stage: "output_file", disposition: "recover", context: {} });
 
-		return { reviewBody: null, reviewState: null, inlineComments: [] };
+		return { reviewBody: null, reviewState: null, inlineComments: [], rawOutput: null };
 	}
 }
 
@@ -1766,10 +1770,38 @@ async function postResults({ recorder,
 	outputDir,
 	metadata,
 	sessionContext = {},
+	ledgerTarget = null,
+	checkIdentity = null,
+	revalidateLedgerAuthority = async () => {},
+	eventName = "pull_request_target",
 }) {
 	requireCaughtErrorDiagnosticRecorder(recorder);
 	const log = (msg) => console.log(`[codex-review] ${msg}`);
-	const { reviewBody, reviewState, inlineComments } = parseOutput(outputDir, recorder);
+	const parsedOutput = parseOutput(outputDir, recorder);
+	let { reviewBody, reviewState, inlineComments } = parsedOutput;
+	let ledgerCandidate = null;
+	let ledgerEvidence = null;
+	if (ledgerTarget && checkIdentity) {
+		ledgerEvidence = JSON.parse(fs.readFileSync(path.join(outputDir, "ledger-evidence.json"), "utf8"));
+		ledgerCandidate = foldReview({ output: parsedOutput.rawOutput,
+			target: ledgerTarget,
+			priorProjection: ledgerEvidence.priorProjection,
+			priorProjections: ledgerEvidence.priorProjections || [],
+			humanDecisions: ledgerEvidence.humanDecisions,
+			evidenceChallenges: ledgerEvidence.evidenceChallenges });
+		for (const warning of ledgerCandidate.warnings) console.warn(`[codex-review] Ledger: ${warning}`);
+		const legacyIssues = ledgerCandidate.open_findings.map((finding) => ({
+			id: finding.stable_id, severity: finding.severity, reachability: finding.reachability,
+			title: finding.title, location: finding.where, notes: finding.evidence,
+			disposition: finding.disposition, decision_ref: finding.decision_ref, follow_up: finding.follow_up,
+			first_seen_head_sha: finding.first_evidence_sha, last_seen_head_sha: ledgerTarget.head_sha,
+		}));
+		reviewState = { ...reviewState, open_findings: ledgerCandidate.open_findings,
+			open_issues: legacyIssues,
+			recently_resolved_issues: ledgerCandidate.prior_issue_evaluations
+				.filter((entry) => entry.result !== "still_open")
+				.map((entry) => ({ id: entry.stable_id, resolution: entry.result, notes: entry.evidence })) };
+	}
 	const reviewNumber = (previousState?.reviewCount || 0) + 1;
 	const discussionContext = loadReviewDiscussionContext(outputDir, recorder);
 
@@ -1802,11 +1834,28 @@ async function postResults({ recorder,
 	// Append metadata footer to review body. The gate banner leads so the posted
 	// comment agrees with the check run even when the model's verdict word does not.
 	const footer = buildMetadataFooter(metadata);
-	const reviewBodyWithFooter = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${footer}`;
-
+	const ledgerSummary = ledgerCandidate ? `\n\n### Ledger findings (${ledgerCandidate.open_findings.length})\n${ledgerCandidate.open_findings.map((finding) => `- **${finding.severity} ${finding.stable_id}: ${finding.title}** — ${finding.failure_scenario} (${finding.where})`).join("\n") || "- None."}` : "";
+	const reviewBodyWithFooter = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${ledgerSummary}${footer}`;
+	if (ledgerCandidate && Buffer.byteLength(`<!-- ${MARKERS.review} -->\n${reviewBodyWithFooter}`, "utf8") >= 65_000) {
+		throw new Error("Visible review exceeds GitHub comment size limit");
+	}
 	// Step 1: Post new summary comment (most important — do first)
 	let newCommentId = null;
-	try {
+	if (ledgerCandidate) {
+		if (!checkId) throw new Error("Cannot publish a v4 projection without the custom review check");
+		const published = await publishLedger({ github, owner, repo, prNumber,
+			target: ledgerTarget, priorProjection: ledgerEvidence.priorProjection,
+			evidence: { human_decisions: ledgerEvidence.humanDecisions,
+				evidence_challenges: ledgerEvidence.evidenceChallenges,
+				prior_projections: ledgerEvidence.priorProjections || [] },
+			checkIdentity, candidate: ledgerCandidate, summaryBody: `<!-- ${MARKERS.review} -->\n${reviewBodyWithFooter}`,
+			skipInlineComments: true, revalidateAuthority: revalidateLedgerAuthority, eventName });
+		newCommentId = published.summaryCommentId;
+		await updateCheckRun({ github, owner, repo, checkId,
+			conclusion: published.projection.conclusion === "block" ? "failure" : "success",
+			title: `${formatReviewLabel(reviewNumber)}: ${published.projection.conclusion === "block" ? "BLOCK" : "PASS"}`,
+			summary: formatMergeGateSummary(mergeGate, verdict) });
+	} else try {
 		newCommentId = await postReviewComment({
 			github,
 			owner,
@@ -1969,7 +2018,7 @@ async function postResults({ recorder,
 				repo,
 				prNumber,
 				state: {
-					...reviewState,
+					...Object.fromEntries(Object.entries(reviewState).filter(([key]) => key !== "open_findings")),
 					...buildInlineReviewTrackingState(activeInlineReviewIds),
 					inlineCommentMap:
 						Object.keys(newInlineCommentMap).length > 0
@@ -2006,7 +2055,7 @@ async function postResults({ recorder,
 	}
 
 	// Step 5: Update check run (least critical)
-	if (checkId) {
+	if (checkId && !ledgerCandidate) {
 		try {
 			await updateCheckRun({
 				github,

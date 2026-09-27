@@ -5,6 +5,7 @@ import io
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -1656,13 +1657,17 @@ class ProgressReporterTest(unittest.TestCase):
         # Bounded: at most two attempts, sharing the one 20m model budget, and
         # never a retry with too little of it left to finish a review.
         self.assertIn(
-            "CODEX_BUDGET_SECONDS=1200 MIN_RETRY_SECONDS=300 MAX_ATTEMPTS=2",
+            "CODEX_BUDGET_SECONDS=$(( REVIEW_BUDGET_MINUTES * 60 )) MIN_RETRY_SECONDS=300 MAX_ATTEMPTS=2",
             normalized,
         )
         self.assertIn(
             "ATTEMPT_BUDGET=$(( CODEX_BUDGET_SECONDS - ($(date +%s) - START_TIME) ))",
             normalized,
         )
+
+        self.assertIn("REVIEW_BUDGET_MINUTES: ${{ inputs.review-budget-minutes }}", CODE_REVIEW_WORKFLOW_PATH.read_text())
+        self.assertIn('default: "20"', CODE_REVIEW_WORKFLOW_PATH.read_text().split("  review-budget-minutes:", 1)[1].split("  pr-number:", 1)[0])
+
         self.assertIn(
             'timeout --kill-after=60s "${budget_seconds}s" codex '
             '"${CODEX_MODE_ARGS[@]}"',
@@ -2168,6 +2173,37 @@ exit "$producer_status"
         self.assertTrue(any("Turn completed tokens=60,000" in line for line in lines))
         self.assertTrue(any("Turn completed tokens=120,000" in line for line in lines))
         self.assertIn("Summary: events=2 tool calls=0 subagents=0 tokens=120,000", lines[-1])
+
+
+    def test_custom_provider_resume_is_an_explicit_opt_in(self):
+        workflow = CODE_REVIEW_WORKFLOW_PATH.read_text()
+        self.assertIn("provider-session-resume:\n    description:", workflow)
+        self.assertIn('default: "false"', workflow.split("  provider-session-resume:", 1)[1].split("  pr-number:", 1)[0])
+        expression = workflow.split("    - name: Restore prior review session", 1)[1].split("      if: ", 1)[1].splitlines()[0]
+        python_expression = re.sub(r"(?:inputs|steps)\.[\w.-]+", lambda match: f"values[{match.group()!r}]",
+                                   expression.replace("&&", "and").replace("||", "or"))
+        base = {"steps.skip.outputs.skip": "false", "steps.scope.outputs.review_mode": "incremental",
+                "inputs.session-resume": "true", "inputs.provider-base-url": "",
+                "inputs.provider-session-resume": "false"}
+        for overrides, expected in [({}, True), ({"inputs.provider-base-url": "https://provider"}, False),
+                                    ({"inputs.provider-base-url": "https://provider", "inputs.provider-session-resume": "true"}, True),
+                                    ({"inputs.session-resume": "false", "inputs.provider-session-resume": "true"}, False),
+                                    ({"steps.scope.outputs.review_mode": "full"}, False)]:
+            values = {**base, **overrides}
+            self.assertEqual(eval(python_expression, {"__builtins__": {}}, {"values": values}), expected)
+
+    def test_review_budget_input_bounds_the_shared_attempt_budget(self):
+        workflow = CODE_REVIEW_WORKFLOW_PATH.read_text()
+        condition = next(line.strip() for line in workflow.splitlines()
+                         if line.strip().startswith('if [[ ! "$REVIEW_BUDGET_MINUTES"'))
+        assignment = next(line.strip() for line in workflow.splitlines()
+                          if line.strip().startswith("CODEX_BUDGET_SECONDS=$(("))
+        script = f'{condition}\nexit 8\nfi\n{assignment}\nprintf "%s" "$CODEX_BUDGET_SECONDS"'
+        for minutes, expected in [("20", "1200"), ("40", "2400"), ("0", None),
+                                  ("121", None), ("999999999999999999999", None)]:
+            result = subprocess.run(["bash", "-c", script], env={**os.environ, "REVIEW_BUDGET_MINUTES": minutes},
+                                    text=True, capture_output=True)
+            self.assertEqual(result.stdout if result.returncode == 0 else None, expected)
 
 
 class SanitizeFailureTailTest(unittest.TestCase):
