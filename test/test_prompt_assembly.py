@@ -94,6 +94,24 @@ class AssemblyContractTest(unittest.TestCase):
             with self.subTest(term):
                 self.assertIn(term, part2)
 
+    def test_dependency_map_and_conditional_investigator_are_assembled(self):
+        prompt = engine.assemble(self.core(), self.contract(), "# Part 2 — Rules\n", "parent", "child")
+        self.assertIn("dependency map runs first whenever the changed-contracts list is non-empty", prompt)
+        self.assertIn("- **Dependency map** (read-only; grep and file reads only)", prompt)
+        self.assertIn("For each changed symbol, name the companion files", prompt)
+        self.assertIn("run the **contract audit** on the\n   dependency map", prompt)
+        self.assertLess(prompt.index("- **Dependency map**"), prompt.index("- **Contract investigator**"))
+        self.assertIn("Read `.codex-ci/change-impact.md` if it exists", prompt)
+        self.assertIn("If there is at least one obligation, spawn one **contract investigator**", prompt)
+        self.assertIn("after the dependency map when it runs, with all obligations", prompt)
+        self.assertIn("If the file is missing or has no obligations,\ncontinue with the other briefs", prompt)
+        self.assertIn("children only when there are more than 40 obligations", prompt)
+        self.assertIn("`model: gpt-6-sol` and `reasoning_effort: high`", prompt)
+        self.assertIn("Your primary target is an UNCHANGED consumer or producer", prompt)
+        self.assertIn("For a write, also work backward from reader requirements", prompt)
+        self.assertIn("result: compatible | counterexample | unresolved", prompt)
+        self.assertIn("`unresolved` row under \"Risks Not Raised\"", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

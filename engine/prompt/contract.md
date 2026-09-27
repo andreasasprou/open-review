@@ -87,5 +87,6 @@ State rules:
   `likelihood`, `worst_credible_consequence`, and `recoverability`. Set them
   from evidence. Do not inflate `severity` to draw attention, and do not label a
   genuine normal-path defect `theoretical` to avoid blocking.
-- `open_issues`: max 5, ordered by reachable user impact.
+- `open_issues`: include every supported finding, ordered by reachable user impact
+  (schema safety limit: 25).
   `recently_resolved_issues`: max 20.

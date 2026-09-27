@@ -368,6 +368,7 @@ SETTLEMENT_JSON="$RUN_DIR/local-settlement.json"
 SETTLEMENT_BODY="$RUN_DIR/settlement-comment.md"
 INLINE_REVIEW_PAYLOAD="$RUN_DIR/inline-review.json"
 CLEAN_CODEX_HOME=""
+ACTIVE_CODEX_HOME=""
 
 cleanup_auth_copy() {
   if [ -n "$CLEAN_CODEX_HOME" ]; then
@@ -521,6 +522,7 @@ if [ "$USE_CLEAN_CODEX_HOME" = "true" ]; then
     chmod 600 "$CLEAN_CODEX_HOME/auth.json"
   fi
   CODEX_ENV+=("CODEX_HOME=$CLEAN_CODEX_HOME")
+  ACTIVE_CODEX_HOME="$CLEAN_CODEX_HOME"
   CODEX_FLAGS+=(--ignore-user-config)
   if [ -n "$RESUME_SESSION_ID" ]; then
     RESUME_INSTALL_STATUS=0
@@ -536,7 +538,8 @@ if [ "$USE_CLEAN_CODEX_HOME" = "true" ]; then
   fi
   echo "Codex home: $CLEAN_CODEX_HOME (temporary auth copy plus selected parent history)"
 else
-  CODEX_ENV+=("CODEX_HOME=${CODEX_HOME:-$HOME/.codex}")
+  ACTIVE_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+  CODEX_ENV+=("CODEX_HOME=$ACTIVE_CODEX_HOME")
   echo "Codex home: ${CODEX_HOME:-$HOME/.codex} (user config)"
 fi
 
@@ -735,6 +738,7 @@ drain_progress_pipe() {
   cat >/dev/null
 }
 
+touch "$RUN_DIR/session-start.marker"
 set +e
 set -o pipefail
 exec 9> >(python3 -u "$ENGINE_DIR/progress-reporter.py" 2>&1 | tee "$PROGRESS_LOG" >&2)
@@ -1009,8 +1013,10 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
     fi
   fi
 
-  if "$ENGINE_DIR/retain-local-run.sh" "$ROOT" "$RUN_DIR"; then
-    echo "Local review retention complete: transcript=$CODEX_LOG.gz; worktree deleted; runs older than 14 days pruned"
+  CODEX_HOME_SCOPE="clean"
+  if [ "$USE_CLEAN_CODEX_HOME" != "true" ]; then CODEX_HOME_SCOPE="shared"; fi
+  if "$ENGINE_DIR/retain-local-run.sh" "$ROOT" "$RUN_DIR" "$ACTIVE_CODEX_HOME" "$RUN_DIR/session-start.marker" "$CODEX_HOME_SCOPE"; then
+    echo "Local review retention complete: transcript=$CODEX_LOG.gz; rollouts=$RUN_DIR/sessions/; worktree deleted; runs older than 14 days pruned"
   else
     echo "warning: local review settlement succeeded, but retention failed for $RUN_DIR" >&2
   fi

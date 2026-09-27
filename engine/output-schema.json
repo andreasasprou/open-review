@@ -65,8 +65,8 @@
 				},
 				"open_issues": {
 					"type": "array",
-					"maxItems": 5,
-					"description": "Open findings, at most five, ordered by reachable user impact. CI derives the merge gate from these entries, not from the verdict word in review_markdown.",
+					"maxItems": 25,
+					"description": "Open findings, ordered by reachable user impact. CI derives the merge gate from these entries, not from the verdict word in review_markdown.",
 					"items": {
 						"type": "object",
 						"properties": {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: retain-local-run.sh <repo-root> <run-dir>" >&2
+if [ "$#" -ne 5 ]; then
+  echo "usage: retain-local-run.sh <repo-root> <run-dir> <codex-home> <run-start-marker> <clean|shared>" >&2
   exit 2
 fi
 
@@ -50,6 +50,18 @@ if [ "${RUN_DIR%/*}" != "$RUNS_ROOT" ]; then
   exit 1
 fi
 
+CODEX_HOME_DIR="$(canonicalize_directory "$3")"
+RUN_START_MARKER="$RUN_DIR/session-start.marker"
+if [ "$4" != "$RUN_START_MARKER" ] || [ ! -f "$RUN_START_MARKER" ]; then
+  echo "error: run-start marker must be $RUN_START_MARKER" >&2
+  exit 1
+fi
+CODEX_HOME_SCOPE="$5"
+if [ "$CODEX_HOME_SCOPE" != "clean" ] && [ "$CODEX_HOME_SCOPE" != "shared" ]; then
+  echo "error: Codex home scope must be clean or shared" >&2
+  exit 1
+fi
+
 remove_run_worktree() {
   local run_dir="$1"
   local worktree="$run_dir/worktree"
@@ -79,6 +91,31 @@ if [ -f "$CODEX_LOG" ]; then
     fi
   done < "$SUMMARY_PATH" > "$SUMMARY_TEMP"
   mv "$SUMMARY_TEMP" "$SUMMARY_PATH"
+fi
+
+# A shared user home may contain concurrent unrelated sessions. The marker
+# excludes older rollouts; session_meta.cwd attributes newer ones to this run.
+if [ -d "$CODEX_HOME_DIR/sessions" ]; then
+  while IFS= read -r -d '' ROLLOUT; do
+    if [ "$CODEX_HOME_SCOPE" = "shared" ]; then
+      SESSION_META="$(head -n 1 -- "$ROLLOUT")"
+      if ! jq -e --arg cwd "$RUN_DIR/worktree" \
+        '.type == "session_meta" and .payload.cwd == $cwd' \
+        >/dev/null 2>&1 <<< "$SESSION_META"; then
+        continue
+      fi
+    fi
+    RELATIVE_ROLLOUT="${ROLLOUT#"$CODEX_HOME_DIR/sessions/"}"
+    RETAINED_ROLLOUT="$RUN_DIR/sessions/$RELATIVE_ROLLOUT.gz"
+    mkdir -p "${RETAINED_ROLLOUT%/*}"
+    gzip -n -c -- "$ROLLOUT" > "$RETAINED_ROLLOUT"
+  done < <(
+    find "$CODEX_HOME_DIR/sessions" \
+      -type f \
+      -name 'rollout-*.jsonl' \
+      -newer "$RUN_START_MARKER" \
+      -print0
+  )
 fi
 
 remove_run_worktree "$RUN_DIR"

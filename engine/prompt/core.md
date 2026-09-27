@@ -19,6 +19,7 @@ Commits in scope are listed in `.codex-ci/review-commits.txt`.
 Changed files are listed in `.codex-ci/changed-files.txt`.
 The scoped diff is at `.codex-ci/pr-diff.patch`.
 The coverage inventory is at `.codex-ci/review-inventory.md`.
+Changed-contract obligations, when available, are at `.codex-ci/change-impact.md`.
 
 <!-- open-review:slot role -->
 You are acting as a code reviewer for a proposed change made by another
@@ -279,6 +280,16 @@ dependency map runs first whenever the changed-contracts list is non-empty;
 the other briefs follow as the inventory warrants, inline if the thread limit
 is reached:
 
+Read `.codex-ci/change-impact.md` if it exists. Its `### CI-<n>` blocks are
+changed-contract obligations; the final `Obligations: <n>` line gives their
+count. If there is at least one obligation, spawn one **contract investigator**
+after the dependency map when it runs, with all obligations. Split into two
+children only when there are more than 40 obligations, giving each a disjoint
+set that together covers every obligation. Use the spawn model override
+`model: gpt-6-sol` and `reasoning_effort: high` for each contract investigator,
+regardless of `${CHILD_MODEL}`. If the file is missing or has no obligations,
+continue with the other briefs.
+
 - **Dependency map** (read-only; grep and file reads only): for each changed
   contract, find every real reference at HEAD (`rg -n --hidden --glob '!.git'
   --glob '!node_modules' '\bNAME\b'`, so workflow and review-runtime callers
@@ -322,6 +333,40 @@ is reached:
   bound ("no callers found by grep" is not "unused"), dynamic access grep
   cannot resolve. Every row cites a line that exists at HEAD; no
   hypothetical callers; do not judge severity or write findings.
+- **Contract investigator** (read-only): supply the obligations from
+  `.codex-ci/change-impact.md` and this brief verbatim:
+
+  Investigate the supplied changed-contract obligations at BASE and HEAD.
+  Your primary target is an UNCHANGED consumer or producer whose behavior
+  no longer composes with the changed side.
+
+  For each obligation:
+  - Establish what values, states, fields, or effects the changed side can
+    actually produce or accept. Include defaults, absence, and failure.
+  - Locate the counterpart by symbol AND by data identity: field, table,
+    event, endpoint, command registry, or persisted relationship.
+  - Read the counterpart's predicates and transformations. Follow the path
+    until an observable decision, result, or durable effect is established.
+  - For a write, also work backward from reader requirements: what must
+    have been stored for the next read to recognize this operation?
+  - Compare BASE and HEAD. Identify whether this PR introduces, worsens,
+    or newly relies on the mismatch.
+
+  Return one row per obligation:
+    evidence at changed site;
+    evidence at counterpart;
+    concrete input/action/state;
+    observed consequence;
+    strongest explanation that would make the suspected mismatch harmless;
+    result: compatible | counterexample | unresolved.
+
+  Do not restrict counterpart inspection to changed files. A passing type
+  check, matching mock, or lack of grep hits is not compatibility proof.
+  Do not invent an external provider's behavior.
+
+  For a counterexample, cite the changed cause and the unchanged consequence.
+  For unresolved work, name the missing evidence or unvisited boundary.
+  Do not choose severity, propose a disposition, or write review comments.
 - **Failure propagation** (when `exit_path` or `floating_promise` items
   exist): for each listed line, enumerate every way the awaited or chained
   operation can reject or throw, follow each rejection to where it is handled,
@@ -349,6 +394,12 @@ is reached:
   rows that conflict, not the ones that agree.
 - Otherwise, give a child the single highest-uncertainty hypothesis as a
   concrete failure scenario to confirm or refute.
+
+Adjudicate every contract-investigator `counterexample` row against its cited
+changed cause, unchanged consequence, and concrete trigger. List every
+`unresolved` row under "Risks Not Raised", naming the missing evidence or
+unvisited boundary. A missing obligation file does not establish compatibility.
+The structured `open_issues` safety limit is 25.
 
 1. Map the changed files, changed contracts, likely blast radius, companion
    files, and documentation surfaces before reading deeply.
