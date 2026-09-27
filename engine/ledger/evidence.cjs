@@ -33,10 +33,21 @@ const DEFAULT_MODEL_CONTEXT_LIMITS = Object.freeze({
 
 class EvidenceError extends Error {
   constructor({ code, message, cause }) {
-    super(message, cause ? { cause } : undefined);
+    super(message, cause ? { cause: ledgerError(cause) } : undefined);
     this.name = "EvidenceError";
     this.code = code;
   }
+}
+
+function ledgerError(value) {
+  if (value instanceof Error) return value;
+  const code = value?.code;
+  const message = typeof value?.message === "string" ? value.message : String(value);
+  const error = new Error(code ? `${code}: ${message}` : message);
+  if (code !== undefined) error.code = code;
+  for (const key of ["retry_after_ms", "retry_after_seconds", "response"])
+    if (value?.[key] !== undefined) error[key] = value[key];
+  return error;
 }
 
 function isPlainObject(value) {
@@ -799,6 +810,7 @@ function splitRepository(repository) {
 }
 
 function decorateRetryError(error) {
+  error = ledgerError(error);
   const retryAfter = error?.response?.headers?.["retry-after"];
   if (retryAfter !== undefined && error.retry_after_seconds === undefined) {
     error.retry_after_seconds = Number(retryAfter);

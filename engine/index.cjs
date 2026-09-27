@@ -477,6 +477,11 @@ function dispositionFromTopLevelReviewResponse(item) {
 
 // ─── State Management ─────────────────────────────────────────────────────────
 
+function preparePromptState(state, priorProjection) {
+	if (!state) return state;
+	return priorProjection?.schema_version === 4 ? state : { ...state, open_issues: [] };
+}
+
 /**
  * Load previous review state from GitHub PR comments.
  *
@@ -1835,7 +1840,8 @@ async function postResults({ recorder,
 	// comment agrees with the check run even when the model's verdict word does not.
 	const footer = buildMetadataFooter(metadata);
 	const ledgerSummary = ledgerCandidate ? `\n\n### Ledger findings (${ledgerCandidate.open_findings.length})\n${ledgerCandidate.open_findings.map((finding) => `- **${finding.severity} ${finding.stable_id}: ${finding.title}** — ${finding.failure_scenario} (${finding.where})`).join("\n") || "- None."}` : "";
-	const reviewBodyWithFooter = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${ledgerSummary}${footer}`;
+	const ledgerWarnings = ledgerCandidate?.warnings.length ? `\n\n### Ledger warnings\n${ledgerCandidate.warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
+	const reviewBodyWithFooter = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${ledgerSummary}${ledgerWarnings}${footer}`;
 	if (ledgerCandidate && Buffer.byteLength(`<!-- ${MARKERS.review} -->\n${reviewBodyWithFooter}`, "utf8") >= 65_000) {
 		throw new Error("Visible review exceeds GitHub comment size limit");
 	}
@@ -2078,6 +2084,7 @@ async function postResults({ recorder,
 
 module.exports = {
 	loadPreviousState,
+	preparePromptState,
 	fetchReviewDiscussionContext,
 	writeReviewDiscussionContext,
 	renderReviewDiscussionMarkdown,

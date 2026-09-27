@@ -148,14 +148,21 @@ function isProposedFollowUp(finding) {
   return finding.disposition === "FOLLOW_UP" && finding.decision_ref === null;
 }
 
-// Severity gates the merge. P2 findings, theoretical-reachability findings, and
-// follow-up proposals are published for the author but never block the merge.
+// Unsettled owner decisions block even when the retained risk is advisory.
+// Other P2 findings, theoretical paths, and follow-up proposals are advisory.
 function isMergeBlocker(finding) {
   return (
-    finding.disposition !== "FOLLOW_UP" &&
-    finding.severity !== "P2" &&
-    finding.reachability !== "theoretical"
+    finding.disposition === "AUTHOR_DECISION" ||
+    (finding.disposition !== "FOLLOW_UP" &&
+      finding.severity !== "P2" &&
+      finding.reachability !== "theoretical")
   );
+}
+
+// Previously published v4 projections gated only reachable P0/P1 findings.
+function wasMergeBlocker(finding) {
+  return finding.disposition !== "FOLLOW_UP" &&
+    finding.severity !== "P2" && finding.reachability !== "theoretical";
 }
 
 function isFollowUpRiskEligible(finding) {
@@ -447,18 +454,23 @@ function normalizeFinding(
     priorFinding = null,
     newFinding = false,
     historicalFinding = false,
+    conflictRetained = false,
     warnings = null,
   } = {},
 ) {
   // Ruling D1: publish pre-existing findings and retain forbidden follow-up
   // proposals as owner decisions. Never apply this coercion to stored records.
   finding = structuredClone(finding);
-  if (warnings && newFinding && finding.attribution === "pre_existing") {
+  if (conflictRetained) {
+    finding.disposition = "AUTHOR_DECISION";
+    finding.autonomous_eligibility = "NO";
+    finding.follow_up = null;
+  } else if (warnings && newFinding && finding.attribution === "pre_existing") {
     finding.disposition = "FOLLOW_UP";
     finding.autonomous_eligibility = "NO";
     finding.follow_up = null;
   }
-  if (warnings && isProposedFollowUp(finding) && !isFollowUpRiskEligible(finding)) {
+  if (!conflictRetained && warnings && isProposedFollowUp(finding) && !isFollowUpRiskEligible(finding)) {
     finding.disposition = "AUTHOR_DECISION";
     finding.autonomous_eligibility = "NO";
     finding.follow_up = null;
@@ -612,6 +624,116 @@ function normalizeFinding(
   };
 }
 
+function findingRisk(finding) {
+  const severity = typeof finding?.severity === "string"
+    ? ({ P0: 3, P1: 2, P2: 1 }[finding.severity] || 2) : 2;
+  const reachability = typeof finding?.reachability === "string"
+    ? ({ normal_path: 2, compound_path: 1, theoretical: 0 }[finding.reachability] ?? 2) : 2;
+  return [severity >= 2 && reachability > 0 ? 1 : 0, severity, reachability];
+}
+
+function moreRiskyFinding(left, right) {
+  const a = findingRisk(left);
+  const b = findingRisk(right);
+  for (let index = 0; index < a.length; index += 1) {
+    if (b[index] !== a[index]) return b[index] > a[index] ? right : left;
+  }
+  return left;
+}
+
+function canonicalEvaluation(evaluation, target) {
+  try {
+    if (!isObject(evaluation) || typeof evaluation.stable_id !== "string" ||
+        !STABLE_ID_RE.test(evaluation.stable_id) || !isObject(evaluation.finding) ||
+        evaluation.finding.stable_id !== evaluation.stable_id)
+      return null;
+    const allowed = {
+      still_open: ["stable_id", "result", "finding", "challenge_ref"],
+      resolved_on_target: ["stable_id", "result", "finding", "evidence"],
+      withdrawn_as_unsupported: ["stable_id", "result", "finding", "challenge_ref", "evidence"],
+      superseded_by_human_decision: ["stable_id", "result", "finding", "decision_ref", "evidence"],
+    }[evaluation.result];
+    if (!allowed) return null;
+    exactKeys(evaluation, allowed, "prior evaluation");
+    if (evaluation.result !== "still_open") bounded(evaluation.evidence, "evaluation evidence", 4_000);
+    if (["withdrawn_as_unsupported", "superseded_by_human_decision"].includes(evaluation.result) &&
+        !Object.hasOwn(evaluation, evaluation.result === "withdrawn_as_unsupported" ? "challenge_ref" : "decision_ref"))
+      return null;
+    if (Object.hasOwn(evaluation, "challenge_ref")) bounded(evaluation.challenge_ref, "challenge ref", 2_048);
+    if (Object.hasOwn(evaluation, "decision_ref")) bounded(evaluation.decision_ref, "decision ref", 2_048);
+    const finding = normalizeFinding(evaluation.finding, { target });
+    return canonicalJson({ ...evaluation, finding });
+  } catch {
+    return null;
+  }
+}
+
+function nonEmptyText(value, fallback, limit) {
+  const source = typeof value === "string" && value.trim() ? value.trim() : fallback;
+  let result = "";
+  let bytes = 0;
+  for (const character of source) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > limit) break;
+    result += character;
+    bytes += size;
+  }
+  return result.trimEnd();
+}
+
+function repairReportedFinding(raw, stableId) {
+  const finding = { ...raw, stable_id: stableId };
+  if (finding.disposition !== "FIX_IN_PR" && finding.autonomous_eligibility === "YES")
+    finding.autonomous_eligibility = "NO";
+  const scenario = nonEmptyText(finding.failure_scenario, `Reported finding ${stableId} requires review.`, 2_000);
+  const firstReportedLine = typeof finding.failure_scenario === "string"
+    ? finding.failure_scenario.split("\n", 1)[0] : "";
+  const title = nonEmptyText(finding.title,
+    nonEmptyText(firstReportedLine, `Untitled finding ${stableId}`, 160), 160);
+  finding.title = title;
+  finding.failure_scenario = scenario;
+  for (const [key, fallback, limit] of [
+    ["likely_consequence", scenario, 2_000],
+    ["worst_credible_consequence", scenario, 2_000],
+    ["risk_rationale", "The reported finding requires review.", 2_000],
+    ["approved_invariant", "Resolve the reported failure before merge.", 2_000],
+    ["where", "Location unavailable; inspect review evidence.", 2_000],
+    ["evidence", "Reviewer output omitted complete evidence; verify the reported failure.", 4_000],
+  ]) finding[key] = nonEmptyText(finding[key], fallback, limit);
+  return finding;
+}
+
+function minimalBlockingFinding(raw, stableId, target, reason) {
+  const repaired = repairReportedFinding(raw, stableId);
+  return {
+    stable_id: stableId,
+    severity: ["P0", "P1"].includes(raw?.severity) ? raw.severity : "P1",
+    reachability: ["normal_path", "compound_path"].includes(raw?.reachability)
+      ? raw.reachability : "normal_path",
+    likelihood: LIKELIHOODS.has(raw?.likelihood) ? raw.likelihood : "unknown",
+    likely_consequence: repaired.likely_consequence,
+    worst_credible_consequence: repaired.worst_credible_consequence,
+    recoverability: RECOVERABILITY.has(raw?.recoverability) ? raw.recoverability : "irreversible",
+    proof_strength: PROOF_STRENGTHS.has(raw?.proof_strength) ? raw.proof_strength : "speculative",
+    attribution: ATTRIBUTIONS.has(raw?.attribution) ? raw.attribution : "relied_upon",
+    risk_rationale: `Reconciliation could not validate the reported finding (${reason}).`,
+    disposition: "AUTHOR_DECISION",
+    autonomous_eligibility: "NO",
+    title: repaired.title,
+    failure_scenario: repaired.failure_scenario,
+    approved_invariant: repaired.approved_invariant,
+    where: repaired.where,
+    evidence: repaired.evidence,
+    first_evidence_sha: target.head_sha,
+    last_evaluated_target: hashReviewTarget(target),
+    affected_lifecycle_planes: Array.isArray(raw?.affected_lifecycle_planes)
+      ? [...new Set(raw.affected_lifecycle_planes.filter((plane) => typeof plane === "string" && plane.trim()))]
+      : [],
+    decision_ref: null,
+    follow_up: null,
+  };
+}
+
 function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
   const reviewTarget = buildReviewTarget(target);
   const warnings = [];
@@ -650,7 +772,21 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
   const priorById = new Map(
     priorFindings.map((entry) => [entry.stable_id, entry]),
   );
+  const candidateById = new Map();
+  for (const finding of rawOutput.new_findings) {
+    const prior = candidateById.get(finding?.stable_id);
+    if (prior) {
+      candidateById.set(finding.stable_id, moreRiskyFinding(prior, finding));
+      warnings.push(`${finding.stable_id}: duplicate new finding reconciled by risk`);
+    } else candidateById.set(finding?.stable_id, finding);
+  }
+  const convertedNewFindings = new Set();
+  const conflictRetainedFindingIds = new Set();
   const evaluationById = new Map();
+  const unknownById = new Map();
+  const unreconciledKnownIds = new Set();
+  const conflictIds = new Set();
+  const evaluationsById = new Map();
   for (const rawEvaluation of rawOutput.prior_issue_evaluations) {
     // Strict model output requires nullable keys. The durable v4 projection
     // keeps only fields applicable to this result.
@@ -659,22 +795,131 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       for (const key of ["evidence", "challenge_ref", "decision_ref"])
         if (evaluation[key] === null) delete evaluation[key];
     }
-    if (!isObject(evaluation) || !priorById.has(evaluation.stable_id))
-      fail(
-        "unknown_prior_issue_evaluation",
-        "Evaluation references an unknown prior issue",
-      );
-    if (evaluationById.has(evaluation.stable_id))
-      fail(
-        "duplicate_prior_issue_evaluation",
-        "Prior issue was evaluated more than once",
-      );
-    evaluationById.set(evaluation.stable_id, evaluation);
+    if (!isObject(evaluation)) {
+      warnings.push("Unknown prior evaluation was dropped: evaluation is not an object");
+      continue;
+    }
+    const members = evaluationsById.get(evaluation.stable_id) || [];
+    members.push(evaluation);
+    evaluationsById.set(evaluation.stable_id, members);
+  }
+  for (const [stableId, members] of evaluationsById) {
+    const canonical = members.map((member) => canonicalEvaluation(member, reviewTarget));
+    const conflict = members.length > 1 &&
+      (canonical.some((value) => value === null) || canonical.some((value) => value !== canonical[0]));
+    if (conflict) {
+      conflictIds.add(stableId);
+      warnings.push(`reconciliation conflict on ${typeof stableId === "string" ? stableId : "(invalid stable ID)"}: ${members.length} evaluations disagreed; kept prior record and blocked`);
+      if (!priorById.has(stableId)) {
+        const latestWellFormed = members.findLast((member, index) =>
+          member.result === "still_open" && canonical[index] !== null);
+        unknownById.set(stableId, latestWellFormed || {
+          stable_id: stableId, result: "still_open", finding: { stable_id: stableId },
+        });
+      }
+      continue;
+    }
+    if (members.length > 1)
+      warnings.push(`${stableId}: equivalent duplicate prior evaluation dropped`);
+    const evaluation = members[0];
+    if (priorById.has(stableId)) evaluationById.set(stableId, evaluation);
+    else if (evaluation.result === "still_open") unknownById.set(stableId, evaluation);
+    else warnings.push(`${typeof stableId === "string" ? stableId : "(invalid stable ID)"}: unknown prior ${typeof evaluation.result === "string" ? evaluation.result.replace(/[^a-z_]/g, "") : "invalid"} evaluation dropped`);
+  }
+  const closedIds = new Set((priorProjection?.closed_findings || []).map((entry) => entry.finding.stable_id));
+  for (const [stableId, evaluation] of unknownById) {
+    const warningId = typeof stableId === "string" && STABLE_ID_RE.test(stableId)
+      ? stableId : "(invalid stable ID)";
+    let finding = isObject(evaluation.finding) ? { ...evaluation.finding } : { stable_id: stableId };
+    if (finding.stable_id !== stableId) {
+      warnings.push(`${warningId}: inconsistent reported finding ID; using evaluation ID`);
+      finding.stable_id = stableId;
+    }
+    if (typeof finding.stable_id !== "string" || !STABLE_ID_RE.test(finding.stable_id)) {
+      const base = `RECON-${hashCanonical({ stableId: warningId, target: reviewTarget.head_sha }).slice(0, 12)}`;
+      let safeId = base;
+      for (let suffix = 2; candidateById.has(safeId) || priorById.has(safeId) || closedIds.has(safeId); suffix += 1)
+        safeId = `${base}-${suffix}`;
+      finding.stable_id = safeId;
+      warnings.push(`${safeId}: invalid reported stable ID replaced with a blocking identity`);
+    }
+    if (closedIds.has(stableId)) {
+      const base = `${stableId.slice(0, 40)}:recur:${reviewTarget.head_sha.slice(0, 8)}`;
+      let freshId = base;
+      for (let suffix = 2; candidateById.has(freshId) || priorById.has(freshId) || closedIds.has(freshId); suffix += 1)
+        freshId = `${base}-${suffix}`;
+      finding.stable_id = freshId;
+      const link = `Recurrence of prior finding ${stableId}.`;
+      finding.evidence = `${nonEmptyText(finding.evidence, "Reported recurrence.",
+        4_000 - Buffer.byteLength(link, "utf8") - 1)} ${link}`;
+      warnings.push(`${stableId}: closed finding recurred as ${freshId}`);
+    }
+    if (conflictIds.has(stableId)) {
+      finding = canonicalEvaluation(evaluation, reviewTarget) === null
+        ? minimalBlockingFinding(finding, finding.stable_id, reviewTarget, "conflicting evaluations")
+        : repairReportedFinding(finding, finding.stable_id);
+      finding.disposition = "AUTHOR_DECISION";
+      finding.autonomous_eligibility = "NO";
+      finding.follow_up = null;
+      finding.decision_ref = null;
+      conflictRetainedFindingIds.add(finding.stable_id);
+    }
+    const existing = candidateById.get(finding.stable_id);
+    if (conflictIds.has(stableId) || !existing || moreRiskyFinding(existing, finding) === finding) {
+      candidateById.set(finding.stable_id, finding);
+      convertedNewFindings.add(finding);
+    } else warnings.push(`${warningId}: duplicate new finding retained the higher risk`);
+  }
+  for (const prior of priorFindings) {
+    if (conflictIds.has(prior.stable_id)) continue;
+    const evaluation = evaluationById.get(prior.stable_id);
+    if (!evaluation) continue;
+    if (evaluation.result === "still_open") {
+      if (evaluation.finding?.stable_id !== prior.stable_id) {
+        evaluation.finding = minimalBlockingFinding(evaluation.finding, prior.stable_id,
+          reviewTarget, "inconsistent stable ID");
+        unreconciledKnownIds.add(prior.stable_id);
+        warnings.push(`${prior.stable_id}: inconsistent nested finding ID retained as a blocker`);
+      } else {
+        const originallyAutonomous = evaluation.finding.autonomous_eligibility === "YES" &&
+          evaluation.finding.disposition !== "FIX_IN_PR";
+        evaluation.finding = repairReportedFinding(evaluation.finding, prior.stable_id);
+        if (originallyAutonomous) {
+          unreconciledKnownIds.add(prior.stable_id);
+          warnings.push(`${prior.stable_id}: non-fix disposition made non-autonomous`);
+        }
+      }
+    }
+    const validateReportedEvaluation = (finding) => normalizeFinding({ ...finding,
+      disposition: "FIX_IN_PR", autonomous_eligibility: "NO", decision_ref: null,
+      follow_up: null, attribution: "introduced" }, { target: reviewTarget });
+    try {
+      validateReportedEvaluation(evaluation.finding);
+    } catch (error) {
+      if (!(error instanceof ContractError)) throw error;
+      if (evaluation.result !== "still_open") {
+        evaluationById.delete(prior.stable_id);
+        warnings.push(`${prior.stable_id}: invalid prior evaluation metadata; prior finding carried forward (${error.code})`);
+        continue;
+      }
+      const repaired = repairReportedFinding(evaluation.finding, prior.stable_id);
+      try {
+        validateReportedEvaluation(repaired);
+        evaluation.finding = repaired;
+        warnings.push(`${prior.stable_id}: invalid still_open metadata repaired (${error.code})`);
+      } catch (repairError) {
+        if (!(repairError instanceof ContractError)) throw repairError;
+        evaluation.finding = minimalBlockingFinding(repaired, prior.stable_id,
+          reviewTarget, repairError.code);
+        unreconciledKnownIds.add(prior.stable_id);
+        warnings.push(`${prior.stable_id}: invalid still_open metadata retained as a blocker (${repairError.code})`);
+      }
+    }
   }
   // Ruling D1: omitted evaluations retain every prior finding and warn.
   const missingEvaluationIds = new Set();
   for (const prior of priorFindings) {
-    if (evaluationById.has(prior.stable_id)) continue;
+    if (evaluationById.has(prior.stable_id) || conflictIds.has(prior.stable_id)) continue;
     missingEvaluationIds.add(prior.stable_id);
     warnings.push(`${prior.stable_id}: missing prior evaluation; carried forward as still_open`);
     evaluationById.set(prior.stable_id, {
@@ -736,6 +981,18 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
   const openFindings = [];
   const evaluations = [];
   for (const priorFinding of priorFindings) {
+    if (conflictIds.has(priorFinding.stable_id)) {
+      const storedFinding = (priorProjection?.open_findings || []).find(
+        (finding) => finding.stable_id === priorFinding.stable_id) || priorFinding;
+      const carried = normalizeFinding({ ...structuredClone(storedFinding),
+        last_evaluated_target: hashReviewTarget(reviewTarget),
+        disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO", follow_up: null,
+      }, { target: reviewTarget, conflictRetained: true });
+      openFindings.push(carried);
+      evaluations.push({ stable_id: priorFinding.stable_id, result: "still_open",
+        finding: structuredClone(carried) });
+      continue;
+    }
     const evaluation = evaluationById.get(priorFinding.stable_id);
     const latestDecision = decisionsByIssue.get(priorFinding.stable_id) || null;
     const missingEvaluation = missingEvaluationIds.has(priorFinding.stable_id);
@@ -757,13 +1014,19 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
               decision_ref: missingEvaluation ? evaluation.finding.decision_ref : priorFinding.decision_ref,
             }
           : null;
-      const finding = normalizeFinding(
-        {
-          ...evaluation.finding,
-          ...canonicalInvariantFields,
-        },
-        { target: reviewTarget, priorFinding, warnings },
-      );
+      let finding;
+      try {
+        finding = normalizeFinding({ ...evaluation.finding, ...canonicalInvariantFields },
+          { target: reviewTarget, priorFinding, warnings });
+      } catch (error) {
+        if (evaluation.result !== "still_open" || !(error instanceof ContractError)) throw error;
+        evaluation.finding = minimalBlockingFinding(evaluation.finding, priorFinding.stable_id,
+          reviewTarget, error.code);
+        unreconciledKnownIds.add(priorFinding.stable_id);
+        finding = normalizeFinding({ ...evaluation.finding, ...canonicalInvariantFields },
+          { target: reviewTarget, priorFinding, warnings });
+        warnings.push(`${priorFinding.stable_id}: inconsistent reassessment retained as a blocker (${error.code})`);
+      }
       if (
         !decision && !missingEvaluation &&
         (finding.approved_invariant !== priorFinding.approved_invariant ||
@@ -829,6 +1092,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           finding: carried,
           priorFinding,
           warnings,
+          reconciliationUncertain: unreconciledKnownIds.has(priorFinding.stable_id),
         });
       else if (!missingEvaluation && (
         carried.approved_invariant !== priorFinding.approved_invariant ||
@@ -946,22 +1210,54 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     ...historicalFindingStatesById.keys(),
     ...priorById.keys(),
   ]);
-  const newFindings = [];
-  for (const rawFinding of rawOutput.new_findings) {
-    const normalized = normalizeFinding(rawFinding, {
-      target: reviewTarget,
-      newFinding: true,
-      warnings,
-    });
+  const normalizedNewFindings = [];
+  for (const rawFinding of candidateById.values()) {
+    let normalized;
+    try {
+      normalized = normalizeFinding(convertedNewFindings.has(rawFinding)
+        ? repairReportedFinding(rawFinding, rawFinding.stable_id) : rawFinding, {
+        target: reviewTarget,
+        newFinding: true,
+        conflictRetained: conflictRetainedFindingIds.has(rawFinding.stable_id),
+        warnings,
+      });
+    } catch (error) {
+      if (!convertedNewFindings.has(rawFinding) || !(error instanceof ContractError)) throw error;
+      normalized = normalizeFinding(minimalBlockingFinding(rawFinding, rawFinding.stable_id,
+        reviewTarget, error.code), { target: reviewTarget, newFinding: true,
+          conflictRetained: conflictRetainedFindingIds.has(rawFinding.stable_id) });
+      warnings.push(`${normalized.stable_id}: invalid reported finding retained as a blocker (${error.code})`);
+    }
     if (reservedIds.has(normalized.stable_id))
       fail(
         "duplicate_or_reused_stable_id",
         "A new finding must use a genuinely new stable ID",
       );
     reservedIds.add(normalized.stable_id);
-    newFindings.push(normalized);
-    openFindings.push(normalized);
+    if (convertedNewFindings.has(rawFinding))
+      warnings.push(`${normalized.stable_id}: unknown prior still_open evaluation became a new finding`);
+    normalizedNewFindings.push(normalized);
   }
+  const isNewBlocker = (finding) =>
+    conflictRetainedFindingIds.has(finding.stable_id) || isMergeBlocker(finding);
+  const blockers = normalizedNewFindings.filter(isNewBlocker);
+  const advisorySlots = Math.max(0, MAX_NEW_FINDINGS - blockers.length);
+  const advisories = normalizedNewFindings.filter((finding) => !isNewBlocker(finding));
+  const keptAdvisories = new Set(advisories
+    .toSorted((left, right) => {
+      const a = findingRisk(left);
+      const b = findingRisk(right);
+      return b[1] - a[1] || b[2] - a[2];
+    }).slice(0, advisorySlots));
+  const newFindings = normalizedNewFindings.filter((finding) =>
+    isNewBlocker(finding) || keptAdvisories.has(finding));
+  for (const finding of normalizedNewFindings) {
+    if (!newFindings.includes(finding))
+      warnings.push(`${finding.stable_id}: advisory finding omitted to make room within the ${MAX_NEW_FINDINGS}-finding cap`);
+  }
+  if (blockers.length > MAX_NEW_FINDINGS)
+    warnings.push(`${blockers.length} reachable blockers exceed the ${MAX_NEW_FINDINGS}-finding cap; all blockers remain open and the review is blocked`);
+  openFindings.push(...newFindings);
   for (const finding of openFindings) {
     closedFindingsById.delete(finding.stable_id);
   }
@@ -987,6 +1283,7 @@ function validateDecisionTransition({
   finding,
   priorFinding,
   warnings,
+  reconciliationUncertain = false,
 }) {
   const ref = decisionRef(decision);
   if (finding.decision_ref !== ref)
@@ -1014,7 +1311,8 @@ function validateDecisionTransition({
   if (decision.kind === "DEFER_FOLLOW_UP") {
     // Ruling D1: widened risk remains published and blocked until a new
     // owner decision; the old approval cannot reapply in a subsequent review.
-    if ((priorFinding.disposition === "AUTHOR_DECISION" && priorFinding.decision_ref === ref) ||
+    if (reconciliationUncertain ||
+      (priorFinding.disposition === "AUTHOR_DECISION" && priorFinding.decision_ref === ref) ||
       deferredFollowUpRiskDrifted({ currentFinding: evaluation.finding, priorFinding })) {
       finding.disposition = "AUTHOR_DECISION";
       finding.autonomous_eligibility = "NO";
@@ -1095,9 +1393,9 @@ function normalizeCheckIdentity(identity, target) {
   };
 }
 
-function deriveCandidateSettlement(candidate) {
+function deriveCandidateSettlement(candidate, blockerPredicate = isMergeBlocker) {
   const openFindings = candidate.open_findings || [];
-  const blockers = openFindings.filter(isMergeBlocker);
+  const blockers = openFindings.filter(blockerPredicate);
   const conclusion = blockers.length > 0 ? "block" : "pass";
   const eligibleIssueIds = blockers
     .filter((finding) => finding.autonomous_eligibility === "YES")
@@ -1479,7 +1777,8 @@ function verifyProjection({ projection, allowLegacySettlement = false }) {
     fail("invalid_projection", "eligible_issue_ids must be a unique array");
   const currentSettlement = deriveCandidateSettlement(projection);
   const acceptedSettlements = allowLegacySettlement
-    ? [currentSettlement, deriveLegacySettlement(projection)]
+    ? [currentSettlement, deriveCandidateSettlement(projection, wasMergeBlocker),
+        deriveLegacySettlement(projection)]
     : [currentSettlement];
   if (
     !acceptedSettlements.some((settlement) =>
@@ -1858,10 +2157,11 @@ function foldReview({ output, target, priorProjection = null, humanDecisions = [
       review_markdown: output.review_markdown || "",
       inline_comments: output.inline_comments || [],
       new_findings: output.new_findings.map((finding) => bindFinding(finding)),
-      prior_issue_evaluations: output.prior_issue_evaluations.map((evaluation) => ({
-        ...evaluation,
-        finding: bindFinding(evaluation.finding, priorById.get(evaluation.stable_id)),
-      })),
+      prior_issue_evaluations: output.prior_issue_evaluations.map((evaluation) =>
+        isObject(evaluation) ? {
+          ...evaluation,
+          finding: bindFinding(evaluation.finding, priorById.get(evaluation.stable_id)),
+        } : evaluation),
     },
     target,
     priorProjection,

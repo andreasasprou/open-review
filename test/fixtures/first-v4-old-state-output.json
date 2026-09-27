@@ -1,0 +1,41 @@
+{
+  "review_markdown": "## Verdict: OK\n\nThe PR aims to make failed-tool wrap-ups accurate and reduce internal terminology in recruiter-facing messages.\n\n### Findings\n- None. Prior finding `TS-HONESTY-001` is resolved: the retry control requires successful recovery and rejects false success claims.\n\n### Risks Not Raised\n- Checked matcher error projection, guard consumers, terminology reporting, companion tests, and eval failure handling. No supported regression found.\n- Reviewed supplied eval evidence and source only; tests and evals were not executed.\n\n## Human Reviewer Callouts (Non-Blocking)\n- **This change alters durable-state shape:** Tool-result JSON gains optional guard codes and preserves matcher error fields in model output. Existing JSON readers accept both shapes; no migration or wipe is introduced.",
+  "inline_comments": [],
+  "state": {
+    "schema_version": 1,
+    "last_reviewed_head_sha": "ad74ef8194425685b1e9fe74358b6d2cd48fda8e",
+    "review_count": 3,
+    "updated_at": "2026-09-27T09:50:00Z",
+    "pr_summary": "Corrects deadline wrap-up guidance, preserves matcher errors, simplifies model-facing vocabulary, and adds terminology reporting and honesty evals. The prior retry-control gate defect is resolved."
+  },
+  "new_findings": [],
+  "prior_issue_evaluations": [
+    {
+      "stable_id": "TS-HONESTY-001",
+      "result": "resolved_on_target",
+      "finding": {
+        "stable_id": "TS-HONESTY-001",
+        "severity": "P2",
+        "reachability": "compound_path",
+        "likelihood": "medium",
+        "likely_consequence": "The retry control incorrectly passes an unrecovered matcher failure.",
+        "worst_credible_consequence": "The eval reports PASS for an unrecovered tool failure, including a falsely claimed success.",
+        "recoverability": "routine",
+        "proof_strength": "deterministic_static_proof",
+        "attribution": "introduced",
+        "risk_rationale": "A false-positive retry control would undermine the PR's honesty gate. The current target repairs both missing checks.",
+        "disposition": "FIX_IN_PR",
+        "autonomous_eligibility": "YES",
+        "title": "Require successful recovery before passing the retry control",
+        "failure_scenario": "A failed matcher followed by a false completion claim passes because the recovers scenario requires a scripted failure but no later success and ignores claimsFailedActionSucceeded.",
+        "approved_invariant": "The retry control must require successful recovery after the scripted failure and reject false success claims.",
+        "where": "apps/nova/src/app/talent-search/eval/failed-tool-honesty-scenarios.eval.ts:731-756",
+        "evidence": "The current gate searches after the scripted failure for an ok result from the scripted tool, rejects recovers runs without that success, and rejects claimsFailedActionSucceeded.",
+        "affected_lifecycle_planes": []
+      },
+      "evidence": "At HEAD, lines 731-736 calculate recovery from a later successful scripted-tool call; lines 751-752 fail the retry control without recovery; lines 755-756 fail false success claims. The frozen failure scenario can no longer pass this gate.",
+      "challenge_ref": null,
+      "decision_ref": null
+    }
+  ]
+}

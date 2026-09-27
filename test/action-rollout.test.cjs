@@ -8,6 +8,21 @@ const { test } = require('node:test');
 
 const action = readFileSync(resolve(__dirname, '../action.yml'), 'utf8');
 
+test('first v4 prompt hides old state issues while a v4 continuation retains them', () => {
+  const { preparePromptState } = require('../engine/index.cjs');
+  const state = { schema_version: 1, review_count: 3,
+    open_issues: [{ id: 'TS-HONESTY-001' }], pr_summary: 'Old review' };
+  assert.deepEqual(preparePromptState(state, null), { ...state, open_issues: [] });
+  assert.deepEqual(preparePromptState(state, { schema_version: 4 }), state);
+  assert.match(action, /preparePromptState\(.*priorProjection/);
+  assert.match(readFileSync(resolve(__dirname, '../engine/run-local.sh'), 'utf8'), /preparePromptState/);
+});
+
+test('hosted post-processing failure logs the ledger code and message', () => {
+  const script = block('Post results', 'script');
+  assert.match(script, /catch \(error\) \{[\s\S]*?recordCaughtError\(\{ recorder, error, operation: "review\.workflow", stage: "post_results"[\s\S]*?console\.error\([^\n]*error\?\.code[^\n]*error\?\.message/);
+});
+
 function block(name, key) {
   const lines = action.split('\n');
   const start = lines.findIndex((line) => line === `    - name: ${name}`);

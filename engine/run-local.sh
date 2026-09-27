@@ -587,6 +587,17 @@ echo "Session: ${RESUME_SESSION_ID:-fresh} ($REVIEW_SCOPE_REASON)" | tee -a "$RU
   fi
   jq '{priorProjection: ., reservedFindingIds: (([.open_findings[]?.stable_id] + [.closed_findings[]?.finding.stable_id]) | unique), humanDecisions: [], evidenceChallenges: []}' \
     .codex-ci/prior-projection.json > .codex-ci/ledger-evidence.json
+  node - "$ENGINE_DIR/index.cjs" <<'NODE'
+const fs = require('node:fs');
+const { preparePromptState } = require(process.argv[2]);
+const statePath = '.codex-ci/state-prev.json';
+const stateText = fs.readFileSync(statePath, 'utf8');
+const priorProjection = JSON.parse(fs.readFileSync('.codex-ci/prior-projection.json', 'utf8'));
+if (stateText.trim()) {
+  fs.writeFileSync(statePath, JSON.stringify(preparePromptState(JSON.parse(stateText), priorProjection), null, 2));
+}
+if (priorProjection.schema_version !== 4) fs.writeFileSync('.codex-ci/review-prev.md', '');
+NODE
   LOCAL_COMMIT_COUNT="$(git rev-list --count "$DIFF_BASE_SHA".."$HEAD_SHA")"
   COMMIT_RANGE="${DIFF_BASE_SHA:0:8}..${HEAD_SHA:0:8}"
 

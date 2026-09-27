@@ -439,6 +439,14 @@ runs:
           console.log(formatReviewTargetAttestation(ledgerEvidence.target));
           fs.writeFileSync('.codex-ci/ledger-evidence.json', JSON.stringify(ledgerEvidence));
           fs.writeFileSync('.codex-ci/prior-projection.json', JSON.stringify(ledgerEvidence.reviewPriorProjection || {}));
+          const { preparePromptState } = require(path.join(engineDir, 'index.cjs'));
+          const previousStatePath = '.codex-ci/state-prev.json';
+          const previousStateText = fs.readFileSync(previousStatePath, 'utf8');
+          if (previousStateText.trim()) {
+            const promptState = preparePromptState(JSON.parse(previousStateText), ledgerEvidence.priorProjection);
+            fs.writeFileSync(previousStatePath, JSON.stringify(promptState, null, 2));
+          }
+          if (!ledgerEvidence.priorProjection) fs.writeFileSync('.codex-ci/review-prev.md', '');
 
     - name: Determine review scope
       id: scope
@@ -1553,6 +1561,7 @@ runs:
             }
           } catch (error) {
             recordCaughtError({ recorder, error, operation: "review.workflow", stage: "post_results", disposition: "recover", context: {} });
+            console.error(`[codex-review] Post-processing error ${error?.code || 'unknown'}: ${error?.message || String(error)}`);
             core.setFailed('Review post-processing failed; no trusted projection was completed.');
 
             if (checkId) {

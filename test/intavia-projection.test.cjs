@@ -354,24 +354,23 @@ test("missing prior evaluations carry still_open with a warning and cannot chang
   assert.equal(carried.prior_issue_evaluations[0].result, "still_open");
   assert.match(carried.warnings[0], /missing prior evaluation/);
   assert.equal(deriveCandidateSettlement(carried).conclusion, "block");
-  assert.throws(
-    () =>
-      validateCandidate({
-        rawOutput: output({
-          prior_issue_evaluations: [
-            {
-              stable_id: "AG2-001",
-              result: "still_open",
-              finding: finding({ stable_id: "AG2-RENAMED" }),
-            },
-          ],
-        }),
-        target: target(),
-        priorProjection: prior,
-        evidence: evidence(),
-      }),
-    /renamed/,
-  );
+  const renamed = validateCandidate({
+    rawOutput: output({
+      prior_issue_evaluations: [
+        {
+          stable_id: "AG2-001",
+          result: "still_open",
+          finding: finding({ stable_id: "AG2-RENAMED" }),
+        },
+      ],
+    }),
+    target: target(),
+    priorProjection: prior,
+    evidence: evidence(),
+  });
+  assert.equal(renamed.open_findings[0].stable_id, "AG2-001");
+  assert.equal(deriveCandidateSettlement(renamed).conclusion, "block");
+  assert.match(renamed.warnings.join("\n"), /inconsistent nested finding ID/);
 });
 
 test("retained wording drift preserves canonical identity and invariant with current evidence", () => {
@@ -1642,6 +1641,22 @@ test("a projection comment written under the old settlement still parses", () =>
 
   const body = formatLegacyProjectionComment(legacy);
   assert.deepEqual(parseProjectionComment({ body }), legacy);
+});
+
+test("a prior v4 advisory owner-decision settlement still parses", () => {
+  const candidate = validateCandidate({
+    rawOutput: output({ new_findings: [finding({ severity: "P2", reachability: "theoretical",
+      disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO" })] }),
+    target: target(), priorProjection: null, evidence: evidence(),
+  });
+  const current = project({ candidate });
+  assert.equal(current.conclusion, "block");
+  const priorSettlement = rehashProjection({ ...current, conclusion: "pass",
+    watcher_action: "settled", eligible_issue_ids: [] });
+  assert.deepEqual(parseProjectionComment({
+    body: formatLegacyProjectionComment(priorSettlement),
+  }), priorSettlement);
+  assert.throws(() => verifyProjection({ projection: priorSettlement }), ContractError);
 });
 
 test("an old-settlement projection cannot be published by this run", () => {

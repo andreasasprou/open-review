@@ -8,6 +8,40 @@ const { postResults, MARKERS } = require("../engine/index.cjs");
 const { readProjectionComment } = require("../engine/ledger/projection.cjs");
 const { createRecordingCaughtErrorDiagnosticRecorder } = require("./helpers/recording-recorder.cjs");
 
+test("first v4 publisher round completes from recorded old-state model output", async (t) => {
+	const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-first-v4-"));
+	t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));
+	const output = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/first-v4-old-state-output.json"), "utf8"));
+	const headSha = output.state.last_reviewed_head_sha;
+	const oldState = { ...output.state, open_issues: [{ id: "TS-HONESTY-001", severity: "P2", title: "Retry control" }] };
+	fs.writeFileSync(path.join(outputDir, "codex-review-output.json"), JSON.stringify(output));
+	fs.writeFileSync(path.join(outputDir, "ledger-evidence.json"), JSON.stringify({ priorProjection: null,
+		humanDecisions: [], evidenceChallenges: [] }));
+	const posted = [];
+	const github = { rest: { issues: { createComment: async ({ body }) => {
+		posted.push(body);
+		return { data: { id: posted.length } };
+	} }, pulls: { get: async () => ({ data: { head: { sha: headSha, repo: { full_name: "o/r" } },
+		base: { sha: headSha, ref: "main" } } }) },
+	checks: { update: async () => ({ data: {} }) } } };
+	const ledgerTarget = { repository: "o/r", pr_number: 1, base_ref: "main", base_sha: headSha,
+		merge_base_sha: headSha, head_sha: headSha, trusted_reviewer_ref: headSha,
+		evidence_bundle_sha256: "c".repeat(64), evidence_schema_version: 2 };
+	const checkIdentity = { workflow_path: ".github/workflows/review.yml",
+		workflow_ref: "o/r/.github/workflows/review.yml@refs/heads/main", trusted_workflow_sha: headSha,
+		workflow_run_id: "1", workflow_run_attempt: 1, workflow_job_id: 1, check_run_id: 2,
+		check_suite_id: 3, app_slug: "github-actions", head_sha: headSha };
+	const result = await postResults({ recorder: createRecordingCaughtErrorDiagnosticRecorder(), github,
+		owner: "o", repo: "r", prNumber: 1, headSha, checkId: 2,
+		previousState: { state: oldState, reviewCount: 3 }, outputDir, ledgerTarget, checkIdentity,
+		metadata: {} });
+	assert.equal(result.mergeGate.openCount, 0);
+	const projectionBody = posted.find((body) => body.startsWith("<!-- codex-review:projection:v4 -->"));
+	assert.ok(projectionBody);
+	assert.deepEqual(readProjectionComment(projectionBody).open_findings, []);
+	assert.match(posted[0], /TS-HONESTY-001.*unknown prior/);
+});
+
 test("publisher keeps eight findings in summary, inline review, gate, and state", async (t) => {
 	const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-eight-"));
 	t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));

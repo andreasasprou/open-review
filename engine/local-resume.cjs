@@ -9,6 +9,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { findRolloutFiles } = require("./rollout-usage.cjs");
 const { readRollout, readStreamIdentity, sessionDateDir, installResumedRollout } = require("./resume.cjs");
+const { settlement } = require("./ledger/projection.cjs");
 
 function json(file) {
 	return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -39,6 +40,23 @@ function readReview(runDir, headSha) {
 		throw new Error("saved review state does not identify the reviewed head");
 	}
 	return review;
+}
+
+function hasUsableLocalLedger(runDir, headSha) {
+	try {
+		const saved = json(path.join(runDir, "local-settlement.json"));
+		const ledger = saved.ledger;
+		return ledger?.review_target?.head_sha === headSha &&
+			Array.isArray(ledger.open_findings) &&
+			Array.isArray(ledger.closed_findings) &&
+			Array.isArray(ledger.prior_issue_evaluations) &&
+			ledger.open_findings.every((finding) => typeof finding.stable_id === "string" &&
+				["P0", "P1", "P2"].includes(finding.severity) &&
+				["normal_path", "compound_path", "theoretical"].includes(finding.reachability)) &&
+			saved.mergeGate?.status === (settlement(ledger.open_findings).conclusion === "block" ? "BLOCK" : "PASS");
+	} catch {
+		return false;
+	}
 }
 
 function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob }) {
@@ -80,6 +98,7 @@ function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, m
 	}
 	if (!git(["diff", "--name-only", metadata.headSha, headSha]).trim()) return refuse("empty_repair_delta");
 	readReview(runDir, metadata.headSha);
+	if (!hasUsableLocalLedger(runDir, metadata.headSha)) return refuse("missing_local_ledger");
 	const rolloutPath = path.join(runDir, "parent-session", metadata.basename);
 	if (path.basename(metadata.basename) !== metadata.basename) throw new Error("invalid rollout basename");
 	if (typeof metadata.rolloutDigest !== "string") return refuse("missing_transcript_digest");
@@ -90,10 +109,12 @@ function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, m
 
 function install({ recorder, selectionFile, codexHome }) {
 	const selection = json(selectionFile);
+	if (!hasUsableLocalLedger(selection.runDir, selection.headSha))
+		throw new Error("saved local ledger is unavailable; start a full review");
 	const parent = readParent(recorder, path.join(selection.runDir, "parent-session", selection.basename), selection.sessionId, selection.model, selection.rolloutDigest);
 	fs.copyFileSync(path.join(selection.runDir, "codex-review-output.json"), path.join(path.dirname(selectionFile), "resumed-review.json"));
 	const settlement = path.join(selection.runDir, "local-settlement.json");
-	if (fs.existsSync(settlement)) fs.copyFileSync(settlement, path.join(path.dirname(selectionFile), "resumed-settlement.json"));
+	fs.copyFileSync(settlement, path.join(path.dirname(selectionFile), "resumed-settlement.json"));
 	installResumedRollout({ codexHome, rollout: {
 		basename: selection.basename,
 		dateDir: sessionDateDir(parent.file),
@@ -103,6 +124,7 @@ function install({ recorder, selectionFile, codexHome }) {
 
 function save({ recorder, runDir, codexHome, repository, prNumber, headSha, mergeBaseSha, model, promptBlob }) {
 	readReview(runDir, headSha);
+	if (!hasUsableLocalLedger(runDir, headSha)) throw new Error("settled local ledger is unavailable");
 	const sessionId = readStreamIdentity(recorder, fs, runDir, "codex-output.jsonl")?.threadId;
 	if (!sessionId) throw new Error("review stream has no parent thread identity");
 	const matches = findRolloutFiles(path.join(codexHome, "sessions"), recorder)
@@ -140,3 +162,5 @@ if (require.main === module) runReviewCli(recorder => {
 		console.log(JSON.stringify({ resumable: false, reason: "unavailable_local_history" }));
 	}
 });
+
+module.exports = { select, hasUsableLocalLedger };

@@ -82,6 +82,18 @@ test("canonical JSON and ReviewTarget hashes are independent of object insertion
   );
 });
 
+test("ledger converts plain-object provider failures to Errors with code and message", async () => {
+  await assert.rejects(collectPaginated({
+    fetchPage: async () => { throw { code: "provider_failure", message: "provider refused request" }; },
+    ceiling: 1, sleep: async () => {},
+  }), (error) => {
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.cause.code, "provider_failure");
+    assert.match(error.cause.message, /provider refused request/);
+    return true;
+  });
+});
+
 test("bounded pagination retries pages, preserves order, and fails closed at ceilings", async () => {
   const sleeps = [];
   let secondPageAttempts = 0;

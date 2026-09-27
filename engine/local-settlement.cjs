@@ -85,7 +85,8 @@ function buildLocalSettlement({ output, patch, priorProjection = null }) {
 		evidence_schema_version: 2, ...priorProjection?.review_target, head_sha: headSha };
 	const ledger = foldReview({ output, target, priorProjection });
 	const mergeGate = deriveMergeGate({ open_findings: ledger.open_findings });
-	const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
+	const capWarning = ledger.warnings.find((warning) => warning.includes("reachable blockers exceed"));
+	const mergeGateSummary = `${formatMergeGateSummary(mergeGate, verdict)}${capWarning ? `\n${capWarning}` : ""}`;
 	const mergeGateLine = mergeGateSummary.split("\n", 1)[0];
 	const inline = buildInlineApiComments({
 		inlineComments: output?.inline_comments,
