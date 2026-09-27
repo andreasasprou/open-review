@@ -9,6 +9,23 @@ test("parseLocations reads path:line and path:start-end", () => {
   assert.deepEqual(parseLocations("no line"), []);
 });
 
+test("extensionless paths score in old location and new where outputs", () => {
+  const defects = [{ id: "dockerfile", file: "apps/api/Dockerfile", line: 55 }];
+  for (const output of [
+    { state: { open_issues: [{ location: "apps/api/Dockerfile:55" }] } },
+    { new_findings: [{ where: "apps/api/Dockerfile:55" }] },
+  ]) {
+    assert.deepEqual(scoreRun(defects, output).hits, [{ id: "dockerfile", hit: true }]);
+  }
+});
+
+test("same file after an extensionless path resolves to the previous path", () => {
+  assert.deepEqual(parseLocations("apps/api/Dockerfile:55; the same file:140"), [
+    { file: "apps/api/Dockerfile", start: 55, end: 55 },
+    { file: "apps/api/Dockerfile", start: 140, end: 140 },
+  ]);
+});
+
 test("scoreRun accepts alternate anchors", () => {
   const defects = [{ id: "E", file: "test/e.test.ts", line: 115, anchors: [{ file: "src/e.ts", line: 8 }] }];
   const output = { state: { open_issues: [{ severity: "P2", title: "x", location: "src/e.ts:8-8" }] } };

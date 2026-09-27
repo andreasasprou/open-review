@@ -14,9 +14,9 @@ function parseLocations(location) {
   const spans = [];
   let lastFile = null;
   const range = "\\d+(?:\\s*[-\\u2013\\u2014]\\s*\\d+)?";
-  const re = new RegExp("(?:([A-Za-z0-9_.\\-\\/\\[\\]@+()]+\\.[A-Za-z0-9]+)|(same file)):(" + range + "(?:\\s*,\\s*" + range + ")*)", "g");
+  const re = new RegExp("(?:(same file)|([A-Za-z0-9_.\\-\\/\\[\\]@+()]+)):(" + range + "(?:\\s*,\\s*" + range + ")*)", "g");
   for (const match of text.matchAll(re)) {
-    const file = match[1] ?? lastFile;
+    const file = match[2] ?? lastFile;
     if (!file) continue;
     lastFile = file;
     for (const part of match[3].split(",")) {
