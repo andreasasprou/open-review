@@ -24,7 +24,7 @@ structured output, not the model's verdict word.
 
 | Input | Default | Purpose |
 |---|---|---|
-| `rules-path` | (required) | Rule pack path. It is read from the PR base commit. |
+| `rules-path` | (required) | Rule pack path. It is read from the default branch. |
 | `parent-model` / `parent-reasoning-effort` | `gpt-6-astra` / `high` | Parent reviewer |
 | `child-model` / `child-reasoning-effort` | `gpt-6-luna` / `max` | Default for child agents |
 | `codex-cli-version` | `0.157.1` | Exact `@openai/codex` version |
@@ -42,14 +42,15 @@ structured output, not the model's verdict word.
 | `pr-number` | empty | PR number for `workflow_dispatch` |
 
 The action has one output, `rules_changed`. It is `true` when the PR edits the
-rule pack. In that case the review used the base-branch version and says so.
+rule pack. In that case the review used the default-branch version and says so.
 
 ## Trust model
 
 - The action's code and prompt come from the pinned action ref. The action
   copies them outside the workspace before it checks out the PR head.
-- The rule pack comes from the PR base commit, so a PR cannot rewrite the
-  rules it is judged by.
+- The rule pack comes from the PR base commit when it targets the default
+  branch and has the pack. Otherwise, it comes from the default branch's
+  current head. A PR cannot rewrite the rules it is judged by.
 - The PR head is checked out without credentials. `GITHUB_TOKEN` never reaches
   Codex.
 - Codex runs read-only with web search disabled. The action probes the sandbox

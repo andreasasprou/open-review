@@ -13,9 +13,9 @@
 # Trust model:
 #   - The engine (scripts and prompt) comes from the pinned action ref and is
 #     staged outside the workspace before the PR head is checked out.
-#   - The repository rule pack is read from the PR's BASE commit, never from
-#     the PR head. A PR that edits the rule pack sets `rules_changed=true` and
-#     the posted review says so.
+#   - The repository rule pack is read from the default branch: the PR base
+#     commit when it targets that branch and has the pack, otherwise its
+#     current head. A PR that edits the pack sets `rules_changed=true`.
 #   - Checkout uses the PR head SHA directly, with persist-credentials: false.
 #   - GITHUB_TOKEN is NOT passed to Codex.
 #   - Codex runs in a read-only sandbox (legacy Landlock on Linux) with web
@@ -31,12 +31,12 @@
 # permissions, the runner, and any network setup the provider needs.
 # ============================================================
 name: Open Review
-description: Review a pull request with Codex against a repository rule pack read from the base branch.
+description: Review a pull request with Codex against a repository rule pack read from the default branch.
 author: Andreas Asprou
 
 inputs:
   rules-path:
-    description: Repository-relative path of the rule pack (Part 2 of the prompt). Read from the PR base commit.
+    description: Repository-relative path of the rule pack (Part 2 of the prompt). Read from the default branch.
     required: true
   parent-model:
     description: Codex model for the parent reviewer.
@@ -101,7 +101,7 @@ inputs:
 
 outputs:
   rules_changed:
-    description: '"true" when the PR modifies the rule pack (the review used the base-branch version).'
+    description: '"true" when the PR modifies the rule pack (the review used the default-branch version).'
     value: ${{ steps.rules.outputs.changed }}
 
 runs:
@@ -170,12 +170,27 @@ runs:
           const { data: pr } = await github.rest.pulls.get({
             ...context.repo, pull_number: prNumber,
           });
+          const defaultBranch = context.payload.repository?.default_branch;
+          if (!defaultBranch) {
+            core.setFailed('Could not determine the repository default branch');
+            return;
+          }
+          const { data: defaultBranchData } = await github.rest.repos.getBranch({
+            ...context.repo, branch: defaultBranch,
+          });
+          const defaultBranchSha = defaultBranchData.commit?.sha;
+          if (!/^[0-9a-f]{40}$/i.test(defaultBranchSha || '')) {
+            core.setFailed('Could not resolve the repository default branch commit');
+            return;
+          }
 
           core.setOutput('number', pr.number);
           core.setOutput('head_sha', pr.head.sha);
           core.setOutput('base_sha', pr.base.sha);
           core.setOutput('head_ref', pr.head.ref);
           core.setOutput('base_ref', pr.base.ref);
+          core.setOutput('default_branch', defaultBranch);
+          core.setOutput('default_branch_sha', defaultBranchSha);
           core.setOutput('title', pr.title);
           core.setOutput('author_login', pr.user?.login || '');
           core.setOutput('author_type', pr.user?.type || '');
@@ -436,6 +451,7 @@ runs:
         FORCE_FULL_REVIEW: ${{ steps.pr.outputs.force_full_review }}
         RESET_STATE: ${{ steps.pr.outputs.reset_state }}
         SINCE_SHA: ${{ steps.pr.outputs.since_sha }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         set -euo pipefail
 
@@ -456,6 +472,9 @@ runs:
           REASON="reset_requested"
         elif [ "${FORCE_FULL_REVIEW:-false}" = "true" ]; then
           REASON="forced_full_review"
+        elif [ "$EVENT_NAME" = "workflow_dispatch" ] ||
+             { [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$SINCE_SHA" ]; }; then
+          REASON="explicit_review_requested"
         elif [ -n "$SINCE" ]; then
           if git cat-file -e "${SINCE}^{commit}" 2>/dev/null; then
             if git merge-base --is-ancestor "$SINCE" "$HEAD_SHA"; then
@@ -502,17 +521,21 @@ runs:
 
         echo "Scope: mode=$MODE reason=$REASON commits=$COMMIT_COUNT range=$COMMIT_RANGE"
 
-    # The rule pack is review policy, so it comes from the base commit — the PR
-    # under review cannot rewrite the rules it is judged by.
-    - name: Load rule pack from base
+    # The rule pack is review policy. The PR base commit is authoritative only
+    # when it belongs to the default branch; otherwise use its current head.
+    - name: Load trusted rule pack
       id: rules
       if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
       shell: bash
       env:
         RULES_PATH: ${{ inputs.rules-path }}
         BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        BASE_REF: ${{ steps.pr.outputs.base_ref }}
+        DEFAULT_BRANCH: ${{ steps.pr.outputs.default_branch }}
+        DEFAULT_BRANCH_SHA: ${{ steps.pr.outputs.default_branch_sha }}
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         RULES_FILE="$RUNNER_TEMP/open-review/rules.md"
@@ -520,18 +543,30 @@ runs:
           echo "::error::rules-path must be a repository-relative path; got '$RULES_PATH'"
           exit 1
         fi
-        if ! git cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
-          echo "::error::Rule pack '$RULES_PATH' does not exist at the PR base commit $BASE_SHA. Merge the rule pack before enabling reviews."
-          exit 1
+        RULES_SOURCE="$DEFAULT_BRANCH_SHA"
+        RULES_SOURCE_KIND="default_branch"
+        if [ "$BASE_REF" = "$DEFAULT_BRANCH" ] &&
+           git cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
+          RULES_SOURCE="$BASE_SHA"
+          RULES_SOURCE_KIND="base"
+        else
+          if ! git cat-file -e "${RULES_SOURCE}^{commit}" 2>/dev/null; then
+            auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+            git -c "http.extraheader=$auth_header" fetch --no-tags --depth=1 origin "$RULES_SOURCE"
+          fi
+          if ! git cat-file -e "$RULES_SOURCE:$RULES_PATH" 2>/dev/null; then
+            echo "::error::Rule pack '$RULES_PATH' does not exist at the default branch $DEFAULT_BRANCH commit $DEFAULT_BRANCH_SHA."
+            exit 1
+          fi
         fi
-        git show "$BASE_SHA:$RULES_PATH" > "$RULES_FILE"
+        git show "$RULES_SOURCE:$RULES_PATH" > "$RULES_FILE"
         CHANGED=false
         if ! git diff --quiet "$MERGE_BASE_SHA" "$HEAD_SHA" -- "$RULES_PATH"; then
           CHANGED=true
-          echo "::notice::This PR changes the rule pack '$RULES_PATH'; the review uses the base-branch version."
+          echo "::notice::This PR changes the rule pack '$RULES_PATH'; the review uses the trusted version."
         fi
         echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
-        echo "Rule pack: $RULES_PATH @ ${BASE_SHA:0:8} ($(wc -c < "$RULES_FILE") bytes, changed_by_pr=$CHANGED)"
+        echo "Rule pack: $RULES_PATH @ ${RULES_SOURCE:0:8} (source=$RULES_SOURCE_KIND, $(wc -c < "$RULES_FILE") bytes, changed_by_pr=$CHANGED)"
 
     # ── Diff Generation ──────────────────────────────────────
     - name: Fetch diff base for incremental review
@@ -823,7 +858,6 @@ runs:
       env:
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         PR_TITLE: ${{ steps.pr.outputs.title }}
-        PR_BODY: ""
         BASE_REF: ${{ steps.pr.outputs.base_ref }}
         HEAD_REF: ${{ steps.pr.outputs.head_ref }}
         REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}
@@ -837,16 +871,15 @@ runs:
         CHILD_MODEL: ${{ inputs.child-model }}
       run: |
         REVIEW_TMP="$RUNNER_TEMP/open-review"
-        # Engine prompt (pinned action ref) + rule pack (base commit).
+        # Engine prompt (pinned action ref) + trusted rule pack.
         python3 "$REVIEW_TMP/engine/interpolate-code-review.py" assemble \
           --rules "$REVIEW_TMP/rules.md" \
           --parent-model "$PARENT_MODEL" \
           --child-model "$CHILD_MODEL" \
           > "$REVIEW_TMP/review-template.md"
 
-        # Read PR body from file (avoids env var escaping issues)
-        export PR_BODY="$(cat "$REVIEW_TMP/pr-body.txt" | head -c 4000)"
         CODE_REVIEW_TEMPLATE_PATH="$REVIEW_TMP/review-template.md" \
+        PR_BODY_FILE="$REVIEW_TMP/pr-body.txt" \
           python3 "$REVIEW_TMP/engine/interpolate-code-review.py" > .codex-ci/review-prompt.md
 
         # Copy output schema into workspace

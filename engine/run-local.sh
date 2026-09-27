@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Trusted local Code Review runner: same engine prompt, output schema, and
-# base-commit rule-pack staging as the hosted action. Run it from a checkout of
+# trusted rule-pack staging as the hosted action. Run it from a checkout of
 # the repository under review; the engine is this script's own directory.
 
 usage() {
@@ -36,8 +36,8 @@ Options:
   --allow-modified-runner
                          Permit runner-development changes, but never publish a
                          settlement, status, or inline review.
-  --rules-ref <ref>      Stage the rule pack from <ref>:<rules path> instead of the PR
-                         base commit (rule-pack A/B runs). Implies
+  --rules-ref <ref>      Stage the rule pack from <ref>:<rules path> instead of the
+                         default-branch policy (rule-pack A/B runs). Implies
                          --allow-modified-runner: nothing is published.
   --withhold-discussion  Do not feed PR comments/threads or the live PR description
                          to the reviewer (recall evaluations on pre-fix heads).
@@ -443,12 +443,31 @@ git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA" >>"$SETUP_LOG" 2>&1 || {
 }
 
 # Stage the trusted review prompt so local reviews match CI: the engine prompt
-# comes from this (verified) engine and the rule pack from the PR base commit,
-# never from the PR worktree.
+# comes from this (verified) engine and the rule pack from the repository
+# default branch, never from the PR worktree.
 REVIEW_PROMPTS_DIR="$RUN_DIR/review-prompts"
 mkdir -p "$REVIEW_PROMPTS_DIR"
 RULES_SOURCE="${RULES_REF:-$BASE_SHA}"
-echo "Staging rule pack from $RULES_SOURCE:$RULES_PATH..."
+RULES_SOURCE_KIND="base"
+if [ -n "$RULES_REF" ]; then
+  RULES_SOURCE_KIND="override"
+else
+  DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)"
+  if [ -z "$DEFAULT_BRANCH" ] || [ "$DEFAULT_BRANCH" = "null" ]; then
+    echo "error: could not determine the repository default branch" >&2
+    exit 1
+  fi
+  if [ "$BASE_REF" != "$DEFAULT_BRANCH" ] || [ -n "$BASE_SHA_OVERRIDE" ] ||
+     ! git -C "$ROOT" cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
+    RULES_SOURCE="$(gh api "repos/$CURRENT_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
+    RULES_SOURCE_KIND="trusted_default_branch"
+    git -C "$ROOT" fetch --no-tags origin "$RULES_SOURCE" >>"$SETUP_LOG" 2>&1 || {
+      echo "error: failed to fetch trusted default-branch commit $RULES_SOURCE; see $SETUP_LOG" >&2
+      exit 1
+    }
+  fi
+fi
+echo "Staging rule pack from $RULES_SOURCE:$RULES_PATH (source=$RULES_SOURCE_KIND)..."
 git -C "$ROOT" show "$RULES_SOURCE:$RULES_PATH" > "$REVIEW_PROMPTS_DIR/rules.md" 2>>"$SETUP_LOG" || {
   echo "error: failed to stage rule pack $RULES_SOURCE:$RULES_PATH; see $SETUP_LOG" >&2
   exit 1
@@ -464,7 +483,7 @@ git -C "$ROOT" show "$RULES_SOURCE:$RULES_PATH" > "$REVIEW_PROMPTS_DIR/rules.md"
 # Identity of the prompt this run stages; a saved parent from a different
 # prompt is not resumed (local-resume.cjs: prompt_changed).
 PROMPT_BLOB="$(git hash-object "$REVIEW_PROMPTS_DIR/review-template.md")"
-echo "Rule pack ref: $RULES_SOURCE ($(git -C "$ROOT" rev-parse --short "$RULES_SOURCE")); prompt $PROMPT_BLOB" | tee -a "$RUN_DIR/summary.txt"
+echo "Rule pack ref: $RULES_SOURCE (source=$RULES_SOURCE_KIND); prompt $PROMPT_BLOB" | tee -a "$RUN_DIR/summary.txt"
 
 echo "Creating detached worktree..."
 git worktree add --detach "$WORKTREE" "$HEAD_SHA" >>"$SETUP_LOG" 2>&1 || {
@@ -601,7 +620,7 @@ echo "Session: ${RESUME_SESSION_ID:-fresh} ($REVIEW_SCOPE_REASON)" | tee -a "$RU
   CODE_REVIEW_TEMPLATE_PATH="$REVIEW_PROMPTS_DIR/review-template.md" \
   PR_NUMBER="$PR_NUMBER" \
   PR_TITLE="$PR_TITLE" \
-  PR_BODY="$(head -c 4000 "$RUN_DIR/pr-body.txt")" \
+  PR_BODY_FILE="$RUN_DIR/pr-body.txt" \
   BASE_REF="$BASE_REF" \
   HEAD_REF="$HEAD_REF" \
   REVIEW_MODE="$REVIEW_MODE" \

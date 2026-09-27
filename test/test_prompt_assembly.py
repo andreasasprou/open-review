@@ -2,8 +2,10 @@
 """Assembly contract for the review prompt and the example rule pack."""
 
 import importlib.util
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -85,6 +87,36 @@ class AssemblyContractTest(unittest.TestCase):
         result = assemble_cli(ROOT / "does-not-exist.md")
         self.assertEqual(result.returncode, 1)
         self.assertIn("Could not read rule pack", result.stderr)
+
+    def test_pr_body_truncation_keeps_utf8_character_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.md"
+            template.write_text("${PR_BODY}", encoding="utf-8")
+            body = Path(directory) / "body.txt"
+            body.write_text("a" * 3998 + "—", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ENGINE_SCRIPT)],
+                env={**os.environ, "CODE_REVIEW_TEMPLATE_PATH": str(template),
+                     "PR_BODY_FILE": str(body)},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "a" * 3998)
+
+    def test_large_cjk_pr_body_reads_from_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.md"
+            template.write_text("${PR_BODY}", encoding="utf-8")
+            body = Path(directory) / "body.txt"
+            body.write_text("界" * 50000, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ENGINE_SCRIPT)],
+                env={**os.environ, "CODE_REVIEW_TEMPLATE_PATH": str(template),
+                     "PR_BODY_FILE": str(body)},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "界" * 1333)
 
     def test_example_rule_pack_defines_the_terms_core_relies_on(self):
         result = assemble_cli(EXAMPLE_RULES)

@@ -87,6 +87,6 @@ test("the rule-pack note appears only when the PR changes the rule pack", () => 
 	const note = formatRulesChangedNote({ rulesChanged: true, rulesPath: ".github/review-rules.md" });
 	assert.match(note, /^> \*\*Rule pack changed:\*\*/);
 	assert.match(note, /`\.github\/review-rules\.md`/);
-	assert.match(note, /base-branch version/);
+	assert.match(note, /default-branch version/);
 	assert.ok(note.endsWith("\n\n"));
 });

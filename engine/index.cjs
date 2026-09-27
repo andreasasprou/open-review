@@ -1735,13 +1735,13 @@ function buildMetadataFooter(metadata) {
 }
 
 /**
- * The rule pack is always read from the base branch. When the PR edits it, say
- * so on the review: the edited rules take effect only after merge.
+ * The rule pack is always read from the default branch. When the PR edits it,
+ * say so on the review: the edited rules take effect only on that branch.
  */
 function formatRulesChangedNote(metadata) {
 	if (!metadata?.rulesChanged) return "";
 	const where = metadata.rulesPath ? ` (\`${metadata.rulesPath}\`)` : "";
-	return `> **Rule pack changed:** this PR modifies the review rule pack${where}. This review used the base-branch version; the PR's version applies after merge.\n\n`;
+	return `> **Rule pack changed:** this PR modifies the review rule pack${where}. This review used the default-branch version; the PR's version applies after it reaches the default branch.\n\n`;
 }
 
 // ─── Post-Processing Orchestrator ─────────────────────────────────────────────

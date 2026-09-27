@@ -141,6 +141,13 @@ def main():
     if not template:
         print(f"ERROR: Could not read {template_path or 'CODE_REVIEW_TEMPLATE_PATH (unset)'}", file=sys.stderr)
         sys.exit(1)
+    body_path = os.environ.get("PR_BODY_FILE", "")
+    try:
+        with open(body_path, "r", encoding="utf-8") as body_file:
+            body = body_file.read().encode("utf-8")[:4000].decode("utf-8", errors="ignore")
+    except (OSError, UnicodeError) as error:
+        print(f"ERROR: Could not read PR body file {body_path or '(unset)'}: {error}", file=sys.stderr)
+        sys.exit(1)
 
     prompt = template
 
@@ -160,9 +167,7 @@ def main():
         "HEAD_SHA",
     ]
     for var in env_vars:
-        value = os.environ.get(var, "")
-        if var == "PR_BODY":
-            value = value[:4000]
+        value = body if var == "PR_BODY" else os.environ.get(var, "")
         prompt = prompt.replace(f"${{{var}}}", value)
 
     # Inline small metadata (always useful, < 1KB each)
