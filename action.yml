@@ -590,6 +590,10 @@ runs:
         fi
 
         node "$RUNNER_TEMP/open-review/engine/inventory-diff.cjs" .codex-ci/pr-diff.patch > .codex-ci/review-inventory.md
+        if ! timeout -k 5s 120s node "$RUNNER_TEMP/open-review/engine/change-impact.cjs" .codex-ci/pr-diff.patch "$PWD"; then
+          echo "::warning::Change-impact inventory unavailable"
+          rm -f .codex-ci/change-impact.json .codex-ci/change-impact.md
+        fi
 
         echo "Changed files (scoped):"
         cat .codex-ci/changed-files.txt

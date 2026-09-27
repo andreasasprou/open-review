@@ -232,6 +232,7 @@ TRUSTED_RUNNER_FILES=(
   "ledger/projection.cjs"
   "ledger/publisher.cjs"
   "ledger/evidence.cjs"
+  "change-impact.cjs"
 )
 
 # A consumer may pin the engine to the same commit as its hosted action.
@@ -576,6 +577,10 @@ echo "Session: ${RESUME_SESSION_ID:-fresh} ($REVIEW_SCOPE_REASON)" | tee -a "$RU
   git diff --name-only "$DIFF_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files.txt
   git log --oneline "$DIFF_BASE_SHA".."$HEAD_SHA" > .codex-ci/review-commits.txt
   node "$ENGINE_DIR/inventory-diff.cjs" .codex-ci/pr-diff.patch > .codex-ci/review-inventory.md
+  if ! timeout -k 5s 120s node "$ENGINE_DIR/change-impact.cjs" .codex-ci/pr-diff.patch "$PWD"; then
+    echo "Warning: change-impact inventory unavailable"
+    rm -f .codex-ci/change-impact.json .codex-ci/change-impact.md
+  fi
 
   # Refresh human replies on every round. GitHub bodies remain review data;
   # retain author identities/associations so maintainer dispositions are visible.
