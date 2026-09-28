@@ -2251,6 +2251,15 @@ test("correction 2: dispatch provenance binds the actual workflow branch and rev
   await assert.rejects(loadCheckIdentity(args), /native review job|trusted workflow revision/);
 });
 
+test("a pull_request_target run no longer bound to its pull request fails identity", async () => {
+  const { args, run } = correctionNative({ event: "pull_request_target", headBranch: "feature" });
+  args.headSha = SHA_D;
+  run.pull_requests = [];
+  await assert.rejects(loadCheckIdentity(args), /identity disagree/);
+  run.pull_requests = [{ number: 42, head: { sha: SHA_D }, base: { ref: "main" } }];
+  assert.equal((await loadCheckIdentity(args)).workflow_job_id, 10);
+});
+
 test("correction 2: native discovery rejects a lone sibling and selects the exact caller among two runners", async () => {
   await assert.rejects(loadCheckIdentity(correctionNative({ jobs: (native) => [native(11, "Sibling")] }).args),
     /exact native review job/);

@@ -1515,6 +1515,19 @@ runs:
 
           // ── Review completed — run post-processing pipeline ──
           try {
+            // A PR merged while the model ran is no longer on its workflow run, so
+            // the identity check cannot bind it. A merged PR cannot reopen:
+            // cancel the check and publish nothing. A closed, unmerged PR can
+            // reopen, so it stays on the fail-closed path.
+            const { data: currentPr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            if (currentPr.merged) {
+              if (checkId) await github.rest.checks.update({ owner, repo, check_run_id: checkId,
+                status: 'completed', conclusion: 'cancelled',
+                output: { title: 'Review Cancelled', summary: 'The pull request was merged during the review; nothing was published.' } });
+              console.log('Cancelled: the pull request was merged during the review.');
+              return;
+            }
+
             const { postResults } = require(path.join(engineDir, 'index.cjs'));
 
             let previousState = { stateCommentId: null, reviewCommentId: null, reviewCount: 0 };
