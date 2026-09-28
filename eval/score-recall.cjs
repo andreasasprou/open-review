@@ -4,33 +4,10 @@
 // usage: score-recall.cjs <manifest.json> <results.jsonl>
 // results.jsonl rows: {"arm":"v2","pr":2352,"head":"...","outputPath":".../codex-review-output.json"}
 const fs = require("node:fs");
+const path = require("node:path");
+const { parseLocations, spansForPath } = require("../engine/location-spans.cjs");
 
 const LINE_TOLERANCE = 15;
-
-function parseLocations(location) {
-  // V4 `where` is prose naming several file:line spans; take every one.
-  // Accept en/em-dash ranges, comma lists, and "the same file:N".
-  const text = String(location ?? "");
-  const spans = [];
-  let lastFile = null;
-  const range = "\\d+(?:\\s*[-\\u2013\\u2014]\\s*\\d+)?";
-  const re = new RegExp("(?:(same file)|([A-Za-z0-9_.\\-\\/\\[\\]@+()]+)):(" + range + "(?:\\s*,\\s*" + range + ")*)", "g");
-  for (const match of text.matchAll(re)) {
-    const file = match[2] ?? lastFile;
-    if (!file) continue;
-    lastFile = file;
-    for (const part of match[3].split(",")) {
-      const [start, end] = part.split(/[-\u2013\u2014]/).map((value) => Number(value.trim()));
-      spans.push({ file, start, end: Number.isFinite(end) ? end : start });
-    }
-  }
-  return spans;
-}
-
-function sameFile(anchorFile, locationFile) {
-  return anchorFile === locationFile ||
-    (!locationFile.includes("/") && anchorFile.endsWith("/" + locationFile));
-}
 
 // A defect may be anchored at more than one place (a bot's original anchor and
 // the line the fix touched); any anchor within tolerance counts.
@@ -39,11 +16,13 @@ function defectAnchors(defect) {
 }
 
 function issueHits(issue, defect) {
-  const locations = parseLocations(issue.where ?? issue.location);
-  return locations.some((location) => defectAnchors(defect).some(
-    (anchor) => sameFile(anchor.file, location.file) &&
-      anchor.line >= location.start - LINE_TOLERANCE && anchor.line <= location.end + LINE_TOLERANCE,
-  ));
+  const where = issue.where ?? issue.location;
+  return defectAnchors(defect).some((anchor) => {
+    const names = [anchor.file];
+    if (anchor.file.includes("/")) names.push(path.posix.basename(anchor.file));
+    return names.some((name) => spansForPath(where, name).some((location) =>
+      anchor.line >= location.start - LINE_TOLERANCE && anchor.line <= location.end + LINE_TOLERANCE));
+  });
 }
 
 function scoreRun(allDefects, output) {
@@ -64,6 +43,17 @@ function scoreRun(allDefects, output) {
   return { hits, unmatched: unmatched.map((issue) => `${issue.severity} ${issue.title} @ ${issue.where ?? issue.location}`) };
 }
 
+function scoreWorkers(allDefects, outputPath) {
+  let workers;
+  try {
+    workers = JSON.parse(fs.readFileSync(path.join(path.dirname(outputPath), "focused-workers.json"), "utf8"));
+  } catch { return null; }
+  if (!Array.isArray(workers)) return null;
+  const issues = workers.flatMap((worker) => worker?.status === "ok" && Array.isArray(worker.candidates)
+    ? worker.candidates.map((candidate) => ({ ...candidate, where: `${candidate.file}:${candidate.line}` })) : []);
+  return scoreRun(allDefects, { new_findings: issues });
+}
+
 function main() {
   const [manifestPath, resultsPath] = process.argv.slice(2);
   if (!manifestPath || !resultsPath) {
@@ -75,11 +65,14 @@ function main() {
   const arms = [...new Set(rows.map((row) => row.arm))];
   const table = [];
   const totals = Object.fromEntries(arms.map((arm) => [arm, { hit: 0, total: 0, unmatched: [] }]));
+  const workerTotals = Object.fromEntries(arms.map((arm) => [arm, { hit: 0, total: 0, unmatched: [] }]));
   for (const testCase of manifest.cases) {
     const scoresByArm = {};
+    const workerScoresByArm = {};
     for (const arm of arms) {
       const sampleRows = rows.filter((candidate) => candidate.arm === arm && candidate.pr === testCase.pr && candidate.head === testCase.head);
       scoresByArm[arm] = sampleRows.map((row) => scoreRun(testCase.defects, JSON.parse(fs.readFileSync(row.outputPath, "utf8"))));
+      workerScoresByArm[arm] = sampleRows.map((row) => scoreWorkers(testCase.defects, row.outputPath)).filter(Boolean);
     }
     for (const defect of testCase.defects) {
       if (defect.excluded) continue;
@@ -91,6 +84,9 @@ function main() {
         cells[arm] = scores.length === 1 ? (hits ? "✓" : "✗") : `${hits}/${scores.length}`;
         totals[arm].total += scores.length;
         totals[arm].hit += hits;
+        const workerScores = workerScoresByArm[arm];
+        workerTotals[arm].total += workerScores.length;
+        workerTotals[arm].hit += workerScores.filter((score) => score.hits.find((entry) => entry.id === defect.id)?.hit).length;
       }
       table.push({ case: `#${testCase.pr} @ ${testCase.head.slice(0, 8)}`, defect: `${defect.id} ${defect.summary}`, ...cells });
     }
@@ -98,6 +94,7 @@ function main() {
       for (const score of scoresByArm[arm]) {
         totals[arm].unmatched.push(...score.unmatched.map((entry) => `#${testCase.pr}: ${entry}`));
       }
+      for (const score of workerScoresByArm[arm]) workerTotals[arm].unmatched.push(...score.unmatched.map((entry) => `#${testCase.pr}: ${entry}`));
     }
   }
   console.log(`| case | defect | ${arms.join(" | ")} |`);
@@ -108,8 +105,11 @@ function main() {
     const t = totals[arm];
     console.log(`${arm}: ${t.hit}/${t.total} defect-samples found (${t.total ? Math.round((100 * t.hit) / t.total) : 0}%); ${t.unmatched.length} finding(s) outside the known set (inspect: real defect or false positive)`);
     for (const entry of t.unmatched) console.log(`  - ${entry}`);
+    const w = workerTotals[arm];
+    console.log(`${arm} focused workers: ${w.hit}/${w.total} defect-samples found (${w.total ? Math.round((100 * w.hit) / w.total) : 0}%); ${w.unmatched.length} finding(s) outside the known set`);
+    for (const entry of w.unmatched) console.log(`  - ${entry}`);
   }
 }
 
-module.exports = { parseLocations, sameFile, issueHits, scoreRun };
+module.exports = { parseLocations, issueHits, scoreRun, scoreWorkers };
 if (require.main === module) main();

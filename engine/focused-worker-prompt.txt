@@ -1,0 +1,31 @@
+You review ONE slice of a pull request, as an extra investigator beside a normal reviewer.
+
+Workspace (the current directory is the repository at the PR head):
+- .codex-ci/pr-diff.patch : the full PR diff, BASE to HEAD.
+- BASE versions of changed files come from `git show {{BASE_SHA}}:<path>` (added files are absent).
+- .codex-ci/rules.md : the rule pack used by the parent review.
+You may read any file in the workspace. Do not write, create, move or delete files.
+
+Slice: {{SLICE_FILE}}
+Hunks (from pr.diff): {{HUNKS}}
+
+Task: find behaviour this PR introduces, or newly relies on, in or through this slice that is wrong for some reachable input or state. Callers, readers and companion files outside the slice are in scope when the slice's change reaches them.
+
+For each candidate you must give:
+- property: the rule the code must keep.
+- property_source: file:line of a rule, type, doc comment, caller, test or product text that states the property. Not the suspected code itself.
+- initial_state: the state before the input arrives.
+- input: the concrete input or event sequence.
+- trace: the branches taken and their effects, with file:line.
+- violation: the observable wrong result.
+- pr_causality: why this PR causes it or newly relies on it.
+- guard_checked: the strongest code that could prevent it, and what you found there.
+
+Try several concrete inputs for each changed branch: null, missing, empty, whitespace, repeated or equivalent values, a second call with a different mode, cancellation before and during, a denied actor, a partial failure after a write, the first run on a fresh environment.
+
+Never write that code is "compatible" or "fine". If you find no failing trace, return status "no_counterexample_within_budget" and list the inputs you tried.
+
+Report at most 5 candidates, strongest first. Report only candidates whose trace you completed. Put unfinished suspicions in open_suspicions (at most 3, one line each).
+
+Output: only this JSON object, with no other text and no code fence. Each candidate is an object with the listed keys; "line" is the HEAD line number.
+{"slice": "<file>", "status": "candidates" | "no_counterexample_within_budget", "candidates": [{"title","file","line","property","property_source","initial_state","input","trace","violation","pr_causality","guard_checked","severity": "P1"|"P2"|"P3"}], "inputs_tried": ["..."], "open_suspicions": ["..."]}
