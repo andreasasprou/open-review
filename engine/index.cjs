@@ -1803,7 +1803,9 @@ function renderFocusedWorkerSection(workers, ledgerFindings, before = "", after 
 			!ledgerFindingNear(candidate.file, candidate.line, ledgerFindings))
 		.sort((a, b) => ["P1", "P2", "P3"].indexOf(a.candidate.severity) - ["P1", "P2", "P3"].indexOf(b.candidate.severity) ||
 			a.sliceOrder - b.sliceOrder || a.candidateOrder - b.candidateOrder)
-		.slice(0, 5);
+		// Two workers can report one defect; keep the first within 15 lines, as for ledger findings.
+		.reduce((kept, item) => kept.length < 5 && !kept.some(({ candidate }) => candidate.file === item.candidate.file &&
+			Math.abs(candidate.line - item.candidate.line) <= 15) ? [...kept, item] : kept, []);
 	const heading = "\n\n### Focused worker findings (advisory; they do not block merge)\n";
 	for (let count = findings.length; count > 0; count--) {
 		const section = heading + findings.slice(0, count).map(({ candidate }) =>
