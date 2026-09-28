@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "properties": {
+    "slice": { "type": "string", "maxLength": 2000 },
+    "status": { "type": "string", "maxLength": 2000, "enum": ["candidates", "no_counterexample_within_budget"] },
+    "candidates": {
+      "type": "array", "maxItems": 5,
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "maxLength": 200 },
+          "file": { "type": "string", "maxLength": 2000 },
+          "line": { "type": "integer", "minimum": 1 },
+          "property": { "type": "string", "maxLength": 2000 },
+          "property_source": { "type": "string", "maxLength": 2000 },
+          "initial_state": { "type": "string", "maxLength": 2000 },
+          "input": { "type": "string", "maxLength": 2000 },
+          "trace": { "type": "string", "maxLength": 2000 },
+          "violation": { "type": "string", "maxLength": 2000 },
+          "pr_causality": { "type": "string", "maxLength": 2000 },
+          "guard_checked": { "type": "string", "maxLength": 2000 },
+          "severity": { "type": "string", "maxLength": 2000, "enum": ["P1", "P2", "P3"] }
+        },
+        "required": ["title", "file", "line", "property", "property_source", "initial_state", "input", "trace", "violation", "pr_causality", "guard_checked", "severity"],
+        "additionalProperties": false
+      }
+    },
+    "inputs_tried": { "type": "array", "items": { "type": "string", "maxLength": 2000 } },
+    "open_suspicions": { "type": "array", "maxItems": 3, "items": { "type": "string", "maxLength": 2000 } }
+  },
+  "required": ["slice", "status", "candidates", "inputs_tried", "open_suspicions"],
+  "additionalProperties": false
+}

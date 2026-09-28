@@ -50,6 +50,9 @@ inputs:
   child-reasoning-effort:
     description: Default reasoning effort for child investigations.
     default: max
+  focused-workers:
+    description: Maximum advisory focused file slices per review (0 disables them).
+    default: "4"
   codex-cli-version:
     description: Exact @openai/codex version to install and verify.
     default: 0.157.1
@@ -1255,6 +1258,28 @@ runs:
           git diff --stat -- ':!.codex-ci'
           exit 1
         fi
+
+    - name: Run focused workers
+      if: steps.codex.outputs.review_generated == 'true' && steps.scope.outputs.review_mode != 'skip' && steps.skip.outputs.skip != 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        FOCUSED_WORKERS: ${{ inputs.focused-workers }}
+        DIFF_BASE_SHA: ${{ steps.scope.outputs.diff_base_sha }}
+        PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
+        PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
+      run: |
+        if ! [[ "$FOCUSED_WORKERS" =~ ^[0-4]$ ]]; then
+          echo "::warning::focused-workers must be an integer from 0 to 4" >&2
+          exit 1
+        fi
+        WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)"
+        trap 'rm -rf -- "$WORKER_HOME_ROOT"' EXIT
+        rm -f .codex-ci/focused-workers.json
+        cp "$RUNNER_TEMP/open-review/rules.md" .codex-ci/rules.md
+        node "$RUNNER_TEMP/open-review/engine/focused-workers.cjs" run \
+          "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" "$WORKER_HOME_ROOT" \
+          "${CODEX_HOME:-$RUNNER_TEMP/codex-home}/auth.json" ".codex-ci" "$PWD"
 
     # Credentials must be gone before any upload action runs, even though
     # the artifact paths never include auth.json.

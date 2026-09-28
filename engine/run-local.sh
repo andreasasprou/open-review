@@ -22,6 +22,7 @@ Options:
                          Extra time before force-killing after timeout. Default: 60s.
   --model <model>        Codex model. Default: CODEX_MODEL or gpt-6-astra.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
+  --focused-workers <n> Maximum advisory focused file slices. Default: 4; 0 disables.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
   --use-user-codex-home  Use the current CODEX_HOME/~/.codex instead of a clean temp home.
   --provider-base-url <url>
@@ -71,6 +72,7 @@ export CODEX_REASONING="${CODEX_REASONING:-high}"
 export CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-gpt-6-luna}"
 export CODEX_SUBAGENT_REASONING="${CODEX_SUBAGENT_REASONING:-max}"
 CODEX_WEB_SEARCH_MODE="${CODEX_WEB_SEARCH_MODE:-disabled}"
+FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-4}"
 PROVIDER_BASE_URL="${OPEN_REVIEW_PROVIDER_BASE_URL:-}"
 PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
 RULES_PATH="${OPEN_REVIEW_RULES_PATH:-}"
@@ -113,6 +115,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --reasoning)
       CODEX_REASONING="${2:-}"
+      shift 2
+      ;;
+    --focused-workers)
+      FOCUSED_WORKERS="${2:-}"
       shift 2
       ;;
     --stream-raw)
@@ -172,6 +178,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if ! [[ "$FOCUSED_WORKERS" =~ ^[0-4]$ ]]; then
+  echo "error: --focused-workers must be an integer from 0 to 4" >&2
+  exit 1
+fi
+
 if [ -z "$PR_NUMBER" ]; then
   echo "error: --pr is required" >&2
   usage >&2
@@ -226,7 +237,11 @@ TRUSTED_RUNNER_FILES=(
   "resume.cjs"
   "retain-local-run.sh"
   "output-schema.json"
+  "focused-worker-schema.json"
+  "focused-worker-prompt.txt"
+  "focused-workers.cjs"
   "index.cjs"
+  "location-spans.cjs"
   "diagnostics-runtime.cjs"
   "inventory-diff.cjs"
   "ledger/projection.cjs"
@@ -373,11 +388,13 @@ SETTLEMENT_BODY="$RUN_DIR/settlement-comment.md"
 INLINE_REVIEW_PAYLOAD="$RUN_DIR/inline-review.json"
 CLEAN_CODEX_HOME=""
 ACTIVE_CODEX_HOME=""
+WORKER_HOME_ROOT=""
 
 cleanup_auth_copy() {
   if [ -n "$CLEAN_CODEX_HOME" ]; then
     rm -rf "$CLEAN_CODEX_HOME"
   fi
+  if [ -n "$WORKER_HOME_ROOT" ]; then rm -rf -- "$WORKER_HOME_ROOT"; fi
 }
 trap cleanup_auth_copy EXIT
 
@@ -572,7 +589,10 @@ echo "Session: ${RESUME_SESSION_ID:-fresh} ($REVIEW_SCOPE_REASON)" | tee -a "$RU
 (
   cd "$WORKTREE"
 
-  mkdir -p .codex-ci
+  rm -rf -- .codex-ci
+  mkdir -m 700 .codex-ci
+  test -d .codex-ci
+  test ! -L .codex-ci
   printf '%s\n' "$PR_BODY" > "$RUN_DIR/pr-body.txt"
   : > .codex-ci/state-prev.json
   : > .codex-ci/review-prev.md
@@ -947,6 +967,23 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
     echo "error: execution-evidence gate failed; refusing settlement (raw log: $CODEX_LOG)" >&2
     exit 1
   fi
+  if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
+     (rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
+      cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md" &&
+      cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
+      node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
+        "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}"); then
+    if [ -f "$WORKTREE/.codex-ci/focused-workers.json" ] &&
+       ! cp "$WORKTREE/.codex-ci/focused-workers.json" "$RUN_DIR/focused-workers.json"; then
+      echo "warning: focused worker output could not be retained; parent review settlement continues." >&2
+    fi
+  else
+    echo "warning: focused workers failed; parent review settlement continues." >&2
+  fi
+  if [ -n "$WORKER_HOME_ROOT" ]; then
+    if rm -rf -- "$WORKER_HOME_ROOT"; then WORKER_HOME_ROOT="";
+    else echo "warning: private worker homes could not be removed yet" >&2; fi
+  fi
   # Compare against the tip observed at start: a --head-sha review of an older
   # commit is deliberate and must not be refused because the PR has since moved.
   FINAL_REMOTE_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
@@ -964,11 +1001,8 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
   STATUS_STATE="$(jq -r '.statusState' "$SETTLEMENT_JSON")"
   STATUS_DESCRIPTION="$(jq -r '.statusDescription' "$SETTLEMENT_JSON")"
 
-  {
-    printf '%s\n' "$MERGE_GATE_SUMMARY"
-  } | tee -a "$RUN_DIR/summary.txt"
-
-  if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ]; then
+  write_settlement_body() {
+    local include_focused="$1"
     {
       printf '<!-- %s head=%s -->\n\n' "$SETTLEMENT_MARKER" "$HEAD_SHA"
       printf '%s\n\n' "$MERGE_GATE_SUMMARY"
@@ -976,9 +1010,43 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
         printf '> **Rule pack changed:** this PR modifies the review rule pack (`%s`). This review used %s; the PR'"'"'s version applies after merge.\n\n' "$RULES_PATH" "$RULES_SOURCE"
       fi
       printf '%s\n\n' "$REVIEW_MARKDOWN"
+      if [ "$include_focused" = "true" ] && [ -s "$RUN_DIR/focused-worker-section.md" ]; then
+        cat "$RUN_DIR/focused-worker-section.md"
+        printf '\n\n'
+      fi
       printf 'Local Code Review settlement: head=%s; runner=trusted-local; codex_cli=%s; sandbox_backend=%s; model_provider=%s; %s.\n' \
         "$HEAD_SHA" "$REQUIRED_CODEX_CLI_VERSION" "$SANDBOX_BACKEND" "$MODEL_PROVIDER" "$EXECUTION_EVIDENCE_OUTPUT"
     } > "$SETTLEMENT_BODY"
+  }
+
+  # Render against the exact comment bytes without the advisory section.
+  write_settlement_body false
+  if [ -f "$RUN_DIR/focused-workers.json" ]; then
+    if ! node - "$ENGINE_DIR/index.cjs" "$SETTLEMENT_JSON" "$RUN_DIR/focused-workers.json" "$RUN_DIR/focused-worker-section.md" "$SETTLEMENT_BODY" <<'NODE'
+const fs = require('node:fs');
+const { renderFocusedWorkerSection } = require(process.argv[2]);
+const settlement = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+let workers = [];
+try { workers = JSON.parse(fs.readFileSync(process.argv[4], 'utf8')); } catch { /* advisory */ }
+const baseBytes = fs.statSync(process.argv[6]).size;
+const section = renderFocusedWorkerSection(workers, settlement.ledger.open_findings,
+  'x'.repeat(baseBytes), '\n\n');
+fs.writeFileSync(process.argv[5], section);
+NODE
+    then
+      echo "warning: focused worker section unavailable; parent settlement continues." >&2
+    fi
+    if [ -s "$RUN_DIR/focused-worker-section.md" ]; then
+      cat "$RUN_DIR/focused-worker-section.md" | tee -a "$RUN_DIR/summary.txt"
+    fi
+  fi
+  write_settlement_body true
+
+  {
+    printf '%s\n' "$MERGE_GATE_SUMMARY"
+  } | tee -a "$RUN_DIR/summary.txt"
+
+  if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ]; then
     verify_trusted_runner_files_unchanged
     SETTLEMENT_COMMENT_URL="$(
       jq -n --rawfile body "$SETTLEMENT_BODY" '{ body: $body }' |

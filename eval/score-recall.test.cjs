@@ -73,6 +73,39 @@ test("prose locations score every producer and consumer span", () => {
     [{ id: "producer", hit: true }, { id: "consumer", hit: true }]);
 });
 
+test("known anchor paths survive connective prose and retain complete filenames", () => {
+  const output = { new_findings: [{ severity: "P1", title: "handoff",
+    where: "src/a.ts:10 and src/b.ts:80" }] };
+  assert.deepEqual(scoreRun([{ id: "b", file: "src/b.ts", line: 80 }], output).hits,
+    [{ id: "b", hit: true }]);
+  const spaced = { new_findings: [{ severity: "P1", title: "other file",
+    where: "src/my file.ts:30" }] };
+  assert.deepEqual(scoreRun([{ id: "different", file: "file.ts", line: 30 }], spaced).hits,
+    [{ id: "different", hit: false }]);
+  for (const where of ["Producer: src/a.ts:80-85", "`src/a.ts:80-85`",
+    "src/a.ts:10; the same file:80-85"]) {
+    assert.deepEqual(scoreRun([{ id: "a", file: "src/a.ts", line: 80 }],
+      { new_findings: [{ severity: "P1", title: "same file", where }] }).hits,
+    [{ id: "a", hit: true }], where);
+  }
+});
+
+test("repeated same-file references keep every anchored span", () => {
+  const output = { new_findings: [{ severity: "P1", title: "three sites",
+    where: "src/a.ts:10; the same file:80; the same file:150" }] };
+  assert.deepEqual(scoreRun([{ id: "last", file: "src/a.ts", line: 150 }], output).hits,
+    [{ id: "last", hit: true }]);
+});
+
+test("a same-file reference after a different file does not return to the earlier path", () => {
+  const output = { new_findings: [{ severity: "P1", title: "two files",
+    where: "src/a.ts:10; other/src/a.ts:80; the same file:150" }] };
+  assert.deepEqual(scoreRun([{ id: "earlier", file: "src/a.ts", line: 150 }], output).hits,
+    [{ id: "earlier", hit: false }]);
+  assert.deepEqual(scoreRun([{ id: "same", file: "src/a.ts", line: 10 }], output).hits,
+    [{ id: "same", hit: true }]);
+});
+
 test("en and em dash ranges score the lines inside them", () => {
   for (const dash of ["–", "—"]) {
     const output = { new_findings: [{ severity: "P1", title: "route",
@@ -114,4 +147,20 @@ test("old single-location output scores exactly as before", () => {
   });
   assert.deepEqual(parseLocations("src/x.ts:40-45"),
     [{ file: "src/x.ts", start: 40, end: 45 }]);
+});
+
+test("focused workers score separately from parent output", (t) => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const { scoreWorkers } = require('./score-recall.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-worker-score-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const outputPath = path.join(root, 'codex-review-output.json');
+  fs.writeFileSync(outputPath, JSON.stringify({ new_findings: [] }));
+  const defects = [{ id: 'hit', file: 'src/a.ts', line: 20 }];
+  fs.writeFileSync(path.join(root, 'focused-workers.json'), JSON.stringify([
+    { status: 'ok', candidates: [{ file: 'src/a.ts', line: 20, severity: 'P2', title: 'found' }] },
+    { status: 'error', candidates: [{ file: 'src/b.ts', line: 2, severity: 'P1', title: 'ignored' }] },
+  ]));
+  assert.deepEqual(scoreRun(defects, JSON.parse(fs.readFileSync(outputPath))).hits, [{ id: 'hit', hit: false }]);
+  assert.deepEqual(scoreWorkers(defects, outputPath).hits, [{ id: 'hit', hit: true }]);
 });

@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { cpSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } = require('node:fs');
+const { cpSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -309,3 +309,56 @@ exit 1
     }
   });
 }
+
+test('focused worker action step is guarded, fail-open and uses the staged engine', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'open-review-action-fw-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, '.codex-ci'));
+  writeFileSync(join(root, '.codex-ci/focused-workers.json'), 'stale');
+  mkdirSync(join(root, 'open-review'));
+  writeFileSync(join(root, 'open-review/rules.md'), 'review rules\n');
+  mkdirSync(join(root, 'bin'));
+  writeFileSync(join(root, 'bin/node'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$NODE_RECORD"\n', { mode: 0o755 });
+  const start = action.indexOf('    - name: Run focused workers');
+  const end = action.indexOf('    - name: Remove Codex auth before transcript upload', start);
+  const step = action.slice(start, end);
+  assert.match(step, /review_generated == 'true'/);
+  assert.match(step, /review_mode != 'skip'/);
+  assert.match(step, /steps\.skip\.outputs\.skip != 'true'/);
+  assert.match(step, /continue-on-error: true/);
+  assert.ok(start > action.indexOf('    - name: Verify checkout not modified'));
+  const result = runShell(block('Run focused workers', 'run'), root, {
+    PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root,
+    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '4',
+    DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: join(root, 'node-call'),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(root, '.codex-ci/focused-workers.json')), false);
+  assert.equal(readFileSync(join(root, '.codex-ci/rules.md'), 'utf8'), 'review rules\n');
+  assert.match(readFileSync(join(root, 'node-call'), 'utf8'), /focused-workers\.cjs run 4 a{40}/);
+  assert.match(readFileSync(join(root, 'node-call'), 'utf8'), /parent-home\/auth\.json/);
+  const privateHomeRoot = readFileSync(join(root, 'node-call'), 'utf8').match(/\/tmp\/open-review-fw\.[A-Za-z0-9]+/)?.[0];
+  assert.ok(privateHomeRoot, 'worker home root must be outside the runner temp directory');
+  assert.equal(existsSync(privateHomeRoot), false, 'worker stage removes its private home root');
+  rmSync(join(root, 'node-call'));
+  const invalid = runShell(block('Run focused workers', 'run'), root, {
+    PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root,
+    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '5',
+    DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: join(root, 'node-call'),
+  });
+  assert.notEqual(invalid.status, 0);
+  assert.equal(existsSync(join(root, 'node-call')), false);
+});
+
+test('both auth removal steps erase the parent home after worker homes are cleaned by the worker stage', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'open-review-action-auth-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'parent')); writeFileSync(join(root, 'parent/auth.json'), '{}');
+  const env = { RUNNER_TEMP: root, CODEX_HOME: join(root, 'parent') };
+  let result = runShell(block('Remove Codex auth before transcript upload', 'run'), root, env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(root, 'parent/auth.json')), false);
+  result = runShell(block('Remove Codex auth', 'run'), root, env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(root, 'parent')), false);
+});

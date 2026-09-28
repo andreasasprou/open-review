@@ -5,6 +5,7 @@
 const fs = require("node:fs");
 const { recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require("./diagnostics-runtime.cjs");
 const path = require("node:path");
+const { spansForPath } = require("./location-spans.cjs");
 const { foldReview } = require("./ledger/projection.cjs");
 const { postResults: publishLedger } = require("./ledger/publisher.cjs");
 
@@ -1764,6 +1765,55 @@ function formatRulesChangedNote(metadata) {
  *   4. Mark previous review as stale (cosmetic)
  *   5. Update check run (least critical)
  */
+function readFocusedWorkers(outputDir) {
+	try {
+		const file = path.join(outputDir, "focused-workers.json");
+		if (fs.statSync(file).size > 256 * 1024) {
+			console.warn("[codex-review] Focused worker output exceeds 256 KB; advisory section omitted");
+			return [];
+		}
+		const value = JSON.parse(fs.readFileSync(file, "utf8"));
+		return Array.isArray(value) ? value : [];
+	} catch { return []; }
+}
+
+function ledgerFindingNear(file, line, ledgerFindings) {
+	return ledgerFindings.some((finding) => {
+		return spansForPath(finding.where, file).some((span) =>
+			line >= span.start - 15 && line <= span.end + 15);
+	});
+}
+
+function escapeFocusedWorkerText(value) {
+	return String(value).replace(/\s+/gu, " ").trim()
+		.replace(/\\/g, "\\\\")
+		.replace(/([`*_{}\[\]()#+!|~-])/g, "\\$1")
+		.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function renderFocusedWorkerSection(workers, ledgerFindings, before = "", after = "", marker = "") {
+	if (!Array.isArray(workers)) return "";
+	const findings = workers.flatMap((worker, sliceOrder) => worker?.status === "ok" && Array.isArray(worker.candidates)
+		? worker.candidates.map((candidate, candidateOrder) => ({ candidate, sliceOrder, candidateOrder })) : [])
+		.filter(({ candidate }) => candidate && ["P1", "P2", "P3"].includes(candidate.severity) &&
+			["title", "file", "input", "violation", "property_source"].every((key) =>
+				typeof candidate[key] === "string" && candidate[key].length <= (key === "title" ? 200 : 2000)) &&
+			Number.isInteger(candidate.line) && candidate.line > 0 &&
+			!ledgerFindingNear(candidate.file, candidate.line, ledgerFindings))
+		.sort((a, b) => ["P1", "P2", "P3"].indexOf(a.candidate.severity) - ["P1", "P2", "P3"].indexOf(b.candidate.severity) ||
+			a.sliceOrder - b.sliceOrder || a.candidateOrder - b.candidateOrder)
+		.slice(0, 5);
+	const heading = "\n\n### Focused worker findings (advisory; they do not block merge)\n";
+	for (let count = findings.length; count > 0; count--) {
+		const section = heading + findings.slice(0, count).map(({ candidate }) =>
+			`- **${candidate.severity} ${escapeFocusedWorkerText(candidate.title)}** — ${escapeFocusedWorkerText(candidate.file)}:${candidate.line}; ${escapeFocusedWorkerText(candidate.input)} -> ${escapeFocusedWorkerText(candidate.violation)}; property_source: ${escapeFocusedWorkerText(candidate.property_source)}`)
+			.join("\n");
+		if (Buffer.byteLength(`${marker}${before}${section}${after}`, "utf8") < 65_000) return section;
+	}
+	return "";
+}
+
 async function postResults({ recorder,
 	github,
 	owner,
@@ -1841,7 +1891,12 @@ async function postResults({ recorder,
 	const footer = buildMetadataFooter(metadata);
 	const ledgerSummary = ledgerCandidate ? `\n\n### Ledger findings (${ledgerCandidate.open_findings.length})\n${ledgerCandidate.open_findings.map((finding) => `- **${finding.severity} ${finding.stable_id}: ${finding.title}** — ${finding.failure_scenario} (${finding.where})`).join("\n") || "- None."}` : "";
 	const ledgerWarnings = ledgerCandidate?.warnings.length ? `\n\n### Ledger warnings\n${ledgerCandidate.warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
-	const reviewBodyWithFooter = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${ledgerSummary}${ledgerWarnings}${footer}`;
+	const bodyBeforeWorkers = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${ledgerSummary}`;
+	const bodyAfterWorkers = `${ledgerWarnings}${footer}`;
+	const focusedWorkers = readFocusedWorkers(outputDir);
+	const focusedSection = renderFocusedWorkerSection(focusedWorkers, ledgerCandidate?.open_findings || [],
+		bodyBeforeWorkers, bodyAfterWorkers, `<!-- ${MARKERS.review} -->\n`);
+	const reviewBodyWithFooter = `${bodyBeforeWorkers}${focusedSection}${bodyAfterWorkers}`;
 	if (ledgerCandidate && Buffer.byteLength(`<!-- ${MARKERS.review} -->\n${reviewBodyWithFooter}`, "utf8") >= 65_000) {
 		throw new Error("Visible review exceeds GitHub comment size limit");
 	}
@@ -2106,6 +2161,8 @@ module.exports = {
 	formatMergeGateSummary,
 	parseCommand,
 	postResults,
+	readFocusedWorkers,
+	renderFocusedWorkerSection,
 	summarizePreviousState,
 	normalizeActiveInlineReviewIds,
 	buildInlineReviewTrackingState,
