@@ -1037,7 +1037,7 @@ NODE
       echo "warning: focused worker section unavailable; parent settlement continues." >&2
     fi
     if [ -s "$RUN_DIR/focused-worker-section.md" ]; then
-      cat "$RUN_DIR/focused-worker-section.md" | tee -a "$RUN_DIR/summary.txt"
+      { cat "$RUN_DIR/focused-worker-section.md"; printf '\n'; } | tee -a "$RUN_DIR/summary.txt"
     fi
   fi
   write_settlement_body true

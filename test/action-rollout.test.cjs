@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { cpSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync } = require('node:fs');
+const { cpSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -21,6 +21,39 @@ test('first v4 prompt hides old state issues while a v4 continuation retains the
 test('hosted post-processing failure logs the ledger code and message', () => {
   const script = block('Post results', 'script');
   assert.match(script, /catch \(error\) \{[\s\S]*?recordCaughtError\(\{ recorder, error, operation: "review\.workflow", stage: "post_results"[\s\S]*?console\.error\([^\n]*error\?\.code[^\n]*error\?\.message/);
+});
+
+async function postResultsWithPr(getPr) {
+  const updates = [];
+  const root = mkdtempSync(join(tmpdir(), 'open-review-post-'));
+  mkdirSync(join(root, 'open-review'));
+  symlinkSync(resolve(__dirname, '../engine'), join(root, 'open-review/engine'));
+  const github = { rest: {
+    pulls: { get: getPr },
+    checks: { update: async ({ check_run_id, conclusion }) => { updates.push([check_run_id, conclusion]); } },
+  } };
+  const core = { setFailed: (reason) => { updates.push(['failed', reason]); } };
+  const vars = { RUNNER_TEMP: root, PR_NUMBER: '7', CHECK_ID: '11', SHOULD_SKIP: 'false', REVIEW_MODE: 'full',
+    REVIEW_GENERATED: 'true', JOB_STATUS: 'success' };
+  const old = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, vars);
+  try {
+    await new AsyncFunction('github', 'context', 'core', 'require', 'console', block('Post results', 'script'))(
+      github, { repo: { owner: 'owner', repo: 'repo' } }, core, require, { log() {}, error() {} });
+  } finally {
+    for (const [key, value] of Object.entries(old)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    rmSync(root, { recursive: true, force: true });
+  }
+  return updates;
+}
+
+test('a PR merged during the review cancels the check and publishes nothing', async () => {
+  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'closed', merged: true } })), [[11, 'cancelled']]);
+});
+
+test('a failed PR lookup completes the check as failed', async () => {
+  assert.deepEqual(await postResultsWithPr(async () => { throw new Error('lookup failed'); }),
+    [['failed', 'Review post-processing failed; no trusted projection was completed.'], [11, 'failure']]);
 });
 
 function block(name, key) {

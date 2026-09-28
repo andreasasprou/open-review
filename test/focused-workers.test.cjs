@@ -117,7 +117,7 @@ test('advisory rendering deduplicates, orders, caps and trims before byte limit'
     candidate({ title: 'near ledger', line: 30, severity: 'P1' }),
     candidate({ title: 'later P3', line: 50, severity: 'P3' }),
     candidate({ title: 'first P2', line: 60, severity: 'P2' }),
-  ]), worker(Array.from({ length: 4 }, (_, i) => candidate({ title: `P1 ${i}`, line: 100 + i, severity: 'P1' })))];
+  ]), worker(Array.from({ length: 4 }, (_, i) => candidate({ title: `P1 ${i}`, line: 100 + i * 20, severity: 'P1' })))];
   const ledger = [{ where: 'src/a.ts:15-15' }];
   const section = renderFocusedWorkerSection(workers, ledger);
   assert.doesNotMatch(section, /near ledger/);
@@ -125,9 +125,17 @@ test('advisory rendering deduplicates, orders, caps and trims before byte limit'
   assert.ok(section.indexOf('P1 0') < section.indexOf('first P2'));
   assert.equal((section.match(/^- \*\*/gm) || []).length, 5);
   assert.match(section, /a write -> write fails; property_source: src\/rules.ts:1/);
-  const firstOnly = renderFocusedWorkerSection([worker([candidate({ title: 'a' }), candidate({ title: 'b' })])], [], 'a'.repeat(64800), '', '');
+  const firstOnly = renderFocusedWorkerSection([worker([candidate({ title: 'a' }), candidate({ title: 'b', line: 80 })])], [], 'a'.repeat(64800), '', '');
   assert.equal((firstOnly.match(/^- \*\*/gm) || []).length, 1);
   assert.equal(renderFocusedWorkerSection([worker([candidate()])], [], 'a'.repeat(64999)), '');
+});
+
+test('advisory rendering keeps one worker finding per nearby location in a file', () => {
+  const section = renderFocusedWorkerSection([
+    worker([candidate({ title: 'stall P2', line: 209 }), candidate({ title: 'other file', file: 'src/b.ts', line: 209 })]),
+    worker([candidate({ title: 'stall P1', line: 215, severity: 'P1' }), candidate({ title: 'far', line: 231 })]),
+  ], []);
+  assert.deepEqual(section.match(/^- \*\*P\d [^*]+/gm), ['- **P1 stall P1', '- **P2 other file', '- **P2 far']);
 });
 
 test('advisory dedup matches complete paths containing spaces and Unicode', () => {
