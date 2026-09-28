@@ -8,11 +8,11 @@ const { hashReviewTarget } = require("../engine/ledger/evidence.cjs");
 
 const A = "a".repeat(40);
 const B = "b".repeat(40);
-const target = (head_sha = A) => ({ repository: "Intavia-Ai/web", pr_number: 1, base_ref: "main",
+const target = (head_sha = A) => ({ repository: "example-org/sample-app", pr_number: 1, base_ref: "main",
 	base_sha: A, merge_base_sha: A, head_sha, trusted_reviewer_ref: B,
 	evidence_bundle_sha256: "c".repeat(64), evidence_schema_version: 2 });
 const checkIdentity = (head_sha = A) => ({ workflow_path: ".github/workflows/code-review.yaml",
-	workflow_ref: "Intavia-Ai/web/.github/workflows/code-review.yaml@refs/heads/main",
+	workflow_ref: "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
 	trusted_workflow_sha: B, workflow_run_id: "10", workflow_run_attempt: 1,
 	workflow_job_id: 11, check_run_id: 12, check_suite_id: 13, app_slug: "github-actions", head_sha });
 
@@ -20,7 +20,7 @@ function modelFinding(overrides = {}) {
 	return { stable_id: "OR-1", severity: "P1", reachability: "normal_path", likelihood: "medium",
 		likely_consequence: "A request fails.", worst_credible_consequence: "A request fails and needs repair.",
 		recoverability: "operational_intervention", proof_strength: "deterministic_static_proof",
-		attribution: "introduced", risk_rationale: "A supported caller loses data.",
+		attribution: "introduced", risk_rationale: "A supported customer loses data.",
 		disposition: "FIX_IN_PR", autonomous_eligibility: "YES", title: "Lost request",
 		failure_scenario: "A normal request is lost.", approved_invariant: "Preserve every request.",
 		where: "src/request.ts:10", evidence: "The changed write omits the requested row.",
@@ -67,7 +67,7 @@ test("first v4 round drops an unknown closing evaluation with a warning", () => 
 	const folded = foldReview({ output, target: target(B), priorProjection: null });
 	assert.deepEqual(folded.open_findings, []);
 	assert.deepEqual(folded.prior_issue_evaluations, []);
-	assert.match(folded.warnings.join("\n"), /TS-HONESTY-001.*unknown prior.*resolved_on_target/);
+	assert.match(folded.warnings.join("\n"), /RETRY-CONTROL-001.*unknown prior.*resolved_on_target/);
 });
 
 test("unknown still-open evaluation becomes a new finding", () => {
@@ -203,7 +203,7 @@ test("a malformed duplicate risk object publishes a blocker without throwing", (
 test("a stale duplicate challenge reference keeps the prior finding and publishes BLOCK", () => {
 	const prior = published();
 	const challenge = { stable_id: "OR-1", evidence: "Reassess this finding.", challenge_head_sha: A,
-		comment_id: 52, actor_login: "andreasasprou" };
+		comment_id: 52, actor_login: "sample-maintainer" };
 	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", challenge_ref: "github-comment:51",
 			finding: modelFinding({ severity: "P1" }) },
@@ -328,8 +328,8 @@ test("generated reconciliation mixtures never pass or lose the open conflict fin
 	const prior = published();
 	const deferredBaseline = modelFinding({ reachability: "compound_path" });
 	const deferDecision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: deferredBaseline },
 	] }, target: target(B), priorProjection: published(deferredBaseline), humanDecisions: [deferDecision] });
@@ -449,7 +449,7 @@ test("duplicate conflicts across finding fields and references always retain and
 		["first_evidence_sha", B], ["last_evaluated_target", "bad hash"],
 		["affected_lifecycle_planes", ["external"]],
 		["decision_ref", "github-comment:999"],
-		["follow_up", { tracker: "ENG-1", owner_or_triage: "Andreas" }],
+		["follow_up", { tracker: "ENG-1", owner_or_triage: "the sample owner" }],
 		["likelihood", { toString: null }], ["recoverability", { toString: null }],
 		["attribution", { toString: null }],
 	];
@@ -594,7 +594,7 @@ test("authenticated DEFER_FOLLOW_UP decision settles a reachable P1", () => {
 	const first = published();
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
 		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123",
-		owner_or_triage: "Andreas", decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		owner_or_triage: "the sample owner", decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const second = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
 		result: "still_open", finding: modelFinding() }] }, target: target(B), priorProjection: first,
 		humanDecisions: [decision] });
@@ -609,8 +609,8 @@ test("authenticated DEFER_FOLLOW_UP decision settles a reachable P1", () => {
 test("missing evaluation does not silently apply a new deferral", () => {
 	const first = published();
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track request loss.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [] },
 		target: target(B), priorProjection: first, humanDecisions: [decision] });
 	assert.equal(folded.open_findings[0].disposition, "FIX_IN_PR");
@@ -621,7 +621,7 @@ test("missing evaluation does not silently apply a new deferral", () => {
 test("challenge-backed withdrawal closes once and retains a closed snapshot", () => {
 	const first = published();
 	const challenge = { stable_id: "OR-1", evidence: "Baseline disproves this", challenge_head_sha: A,
-		comment_id: 51, actor_login: "andreasasprou" };
+		comment_id: 51, actor_login: "sample-maintainer" };
 	const second = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
 		result: "withdrawn_as_unsupported", challenge_ref: "github-comment:51", evidence: "Baseline has the row.",
 		finding: modelFinding() }] }, target: target(B), priorProjection: first, evidenceChallenges: [challenge] });
@@ -633,7 +633,7 @@ test("challenge-backed withdrawal closes once and retains a closed snapshot", ()
 test("conflicting challenge references leave the authenticated challenge unconsumed", () => {
 	const prior = published();
 	const challenge = { stable_id: "OR-1", evidence: "The report needs a second look.",
-		challenge_head_sha: A, comment_id: 51, actor_login: "andreasasprou" };
+		challenge_head_sha: A, comment_id: 51, actor_login: "sample-maintainer" };
 	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: modelFinding() },
 		{ stable_id: "OR-1", result: "still_open", challenge_ref: "github-comment:51",
@@ -668,7 +668,7 @@ test("a later design decision reopens a closed finding with its frozen scenario"
 		summaryCommentId: 100 });
 	const decision = { stable_id: "OR-1", kind: "NARROW_BEHAVIOR", invariant: "Preserve request writes.",
 		scope: "This PR", evidence: null, tracker: null, owner_or_triage: null,
-		decision_head_sha: B, comment_id: 101, actor_login: "andreasasprou" };
+		decision_head_sha: B, comment_id: 101, actor_login: "sample-maintainer" };
 	const reopened = foldReview({ output: { new_findings: [], prior_issue_evaluations: [] }, target: target(B),
 		priorProjection: secondProjection, humanDecisions: [decision] });
 	assert.equal(reopened.open_findings[0].stable_id, "OR-1");
@@ -681,8 +681,8 @@ test("deferred risk expansion restores an owner decision without losing the find
 	const first = published(modelFinding({ severity: "P2", reachability: "compound_path", likelihood: "low",
 		recoverability: "routine", disposition: "FOLLOW_UP", autonomous_eligibility: "NO" }));
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const next = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
 		result: "still_open", finding: modelFinding({ severity: "P1" }) }] },
 		target: target(B), priorProjection: first, humanDecisions: [decision] });
@@ -694,8 +694,8 @@ test("deferred risk expansion restores an owner decision without losing the find
 test("duplicate deferred reassessments invalidate approval for likelihood and recoverability conflicts", () => {
 	const first = published();
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: modelFinding() },
 	] }, target: target(B), priorProjection: first, humanDecisions: [decision] });
@@ -723,8 +723,8 @@ test("conflicting consequence evaluations invalidate an approved deferral", () =
 		likely_consequence: "A normal request is lost.",
 		worst_credible_consequence: "A normal request is lost." });
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: baseline },
 	] }, target: target(B), priorProjection: published(baseline), humanDecisions: [decision] });
@@ -752,8 +752,8 @@ test("a conflict invalidates an advisory deferral and stays blocked until a newe
 	const baseline = modelFinding({ severity: "P2", reachability: "compound_path",
 		likelihood: "low", recoverability: "routine", attribution: "introduced" });
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: baseline },
 	] }, target: target(B), priorProjection: published(baseline), humanDecisions: [decision] });
@@ -780,8 +780,8 @@ test("a conflict invalidates an advisory deferral and stays blocked until a newe
 test("malformed duplicate deferred risk cannot reapply an old deferral", () => {
 	const baseline = modelFinding({ likelihood: "unknown", recoverability: "unknown", proof_strength: "speculative" });
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
-		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "Andreas",
-		decision_head_sha: A, comment_id: 50, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: baseline },
 	] }, target: target(B), priorProjection: published(baseline), humanDecisions: [decision] });
@@ -863,8 +863,8 @@ test("local settlement keeps prior findings when the model emits no new findings
 test("a later design decision revokes a deferred P1 even without an evaluation", () => {
 	const first = published();
 	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
-		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "Andreas", decision_head_sha: A,
-		comment_id: 50, actor_login: "andreasasprou" };
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: A,
+		comment_id: 50, actor_login: "sample-maintainer" };
 	const second = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
 		result: "still_open", finding: modelFinding() }] }, target: target(B), priorProjection: first, humanDecisions: [defer] });
 	const deferred = buildProjection({ candidate: second, target: target(B), checkIdentity: checkIdentity(B),
@@ -881,8 +881,8 @@ test("a later design decision revokes a deferred P1 even without an evaluation",
 test("expanded deferred risk remains blocking on two later rounds", () => {
 	const first = published();
 	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
-		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "Andreas", decision_head_sha: A,
-		comment_id: 50, actor_login: "andreasasprou" };
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: A,
+		comment_id: 50, actor_login: "sample-maintainer" };
 	const settled = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
 		result: "still_open", finding: modelFinding() }] }, target: target(B), priorProjection: first, humanDecisions: [defer] });
 	const projection = buildProjection({ candidate: settled, target: target(B), checkIdentity: checkIdentity(B),
@@ -906,7 +906,7 @@ test("an owner-reopened finding accepts its explicit evaluation", () => {
 	const projection = buildProjection({ candidate: closed, target: target(B), checkIdentity: checkIdentity(B), summaryCommentId: 100 });
 	const decision = { stable_id: "OR-1", kind: "REDESIGN_IN_PR", invariant: "Preserve requests",
 		scope: "This PR", evidence: null, tracker: null, owner_or_triage: null, decision_head_sha: B,
-		comment_id: 101, actor_login: "andreasasprou" };
+		comment_id: 101, actor_login: "sample-maintainer" };
 	const contextFinding = prepareReviewPriorProjection(projection, [decision]).open_findings[0];
 	assert.equal(contextFinding.stable_id, "OR-1");
 	assert.equal(contextFinding.disposition, "FIX_IN_PR");
@@ -923,8 +923,8 @@ test("a deferral reopening a closed finding needs an evaluation before it can pa
 		result: "resolved_on_target", evidence: "Fixed", finding: modelFinding() }] }, target: target(B), priorProjection: first });
 	const projection = buildProjection({ candidate: closed, target: target(B), checkIdentity: checkIdentity(B), summaryCommentId: 100 });
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it",
-		scope: "This PR", evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "Andreas",
-		decision_head_sha: B, comment_id: 101, actor_login: "andreasasprou" };
+		scope: "This PR", evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner",
+		decision_head_sha: B, comment_id: 101, actor_login: "sample-maintainer" };
 	const prepared = prepareReviewPriorProjection(projection, [decision]);
 	// The moved source prepares the canonical proposal; only an evaluation may settle it.
 	assert.equal(prepared.open_findings[0].disposition, "FOLLOW_UP");
@@ -939,7 +939,7 @@ test("same-head design decisions cannot close a P1 through resolved_on_target", 
 	for (const kind of ["REDESIGN_IN_PR", "NARROW_BEHAVIOR", "EVOLVE_FRAMEWORK"]) {
 		const decision = { stable_id: "OR-1", kind, invariant: "Preserve every request.",
 			scope: "Current request path", evidence: null, tracker: null, owner_or_triage: null,
-			decision_head_sha: A, comment_id: 105, actor_login: "andreasasprou" };
+			decision_head_sha: A, comment_id: 105, actor_login: "sample-maintainer" };
 		assert.throws(() => foldReview({
 			output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
 				result: "resolved_on_target", evidence: "The proposed design solves this.", finding: modelFinding() }] },

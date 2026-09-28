@@ -13,7 +13,7 @@ test("first v4 publisher round completes from recorded old-state model output", 
 	t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));
 	const output = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/first-v4-old-state-output.json"), "utf8"));
 	const headSha = output.state.last_reviewed_head_sha;
-	const oldState = { ...output.state, open_issues: [{ id: "TS-HONESTY-001", severity: "P2", title: "Retry control" }] };
+	const oldState = { ...output.state, open_issues: [{ id: "RETRY-CONTROL-001", severity: "P2", title: "Retry control" }] };
 	fs.writeFileSync(path.join(outputDir, "codex-review-output.json"), JSON.stringify(output));
 	fs.writeFileSync(path.join(outputDir, "ledger-evidence.json"), JSON.stringify({ priorProjection: null,
 		humanDecisions: [], evidenceChallenges: [] }));
@@ -39,7 +39,7 @@ test("first v4 publisher round completes from recorded old-state model output", 
 	const projectionBody = posted.find((body) => body.startsWith("<!-- codex-review:projection:v4 -->"));
 	assert.ok(projectionBody);
 	assert.deepEqual(readProjectionComment(projectionBody).open_findings, []);
-	assert.match(posted[0], /TS-HONESTY-001.*unknown prior/);
+	assert.match(posted[0], /RETRY-CONTROL-001.*unknown prior/);
 });
 
 test("publisher keeps eight findings in summary, inline review, gate, and state", async (t) => {

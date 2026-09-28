@@ -1,0 +1,8 @@
+{
+  "source_pr": 47,
+  "source_run": 1002,
+  "stable_id": "urgent-handoff-message-conflict",
+  "prior_failure_scenario": "An order fails during a live handoff. The priority branch must tell the customer to retry later and then route to support. The shared handoff sequence requires the same message to contain only the connecting line and action. With one guaranteed response, the assistant can omit the retry guidance or leave the customer waiting without starting the handoff.",
+  "regenerated_failure_scenario": "An order fails during a live handoff. The priority branch must tell the customer to retry later and then route to support. The shared handoff sequence requires the same message to contain only the handoff message and action. With one guaranteed response, the assistant can omit the retry guidance or leave the customer waiting without starting the handoff.",
+  "expected_old_error": "frozen_scenario_changed"
+}

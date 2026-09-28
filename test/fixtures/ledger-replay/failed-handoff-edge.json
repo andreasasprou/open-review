@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-review-replay-v1",
+  "fixture_id": "failed-handoff-edge",
+  "phase": "deterministic_validator",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [
+      47
+    ],
+    "source_commits": [
+      "54c2d38ae7ed2258a43f68b073b1d27e54cb618a"
+    ]
+  },
+  "inclusions": [
+    "Failed support handoff recovery in one request flow",
+    "One lateral route from another request type"
+  ],
+  "exclusions": [
+    "The rest of the sample workflow",
+    "Unrelated support routing",
+    "Settlement of unrelated findings"
+  ],
+  "input": {
+    "target": {
+      "repository": "example-org/sample-app",
+      "pr_number": 47,
+      "base_ref": "main",
+      "base_sha": "48d9a02c15c467c877fb51d214b5256dc8b32b69",
+      "merge_base_sha": "48d9a02c15c467c877fb51d214b5256dc8b32b69",
+      "head_sha": "54c2d38ae7ed2258a43f68b073b1d27e54cb618a"
+    },
+    "head_ref": "example/failed-handoff",
+    "pr_title": "Recover from a failed support handoff",
+    "pr_body": "Add a support handoff path with a recovery step.",
+    "changed_files": [
+      "src/app/requests/handoff-flow.ts",
+      "src/app/requests/failed-handoff.ts"
+    ],
+    "commits": [
+      {
+        "sha": "54c2d38ae7ed2258a43f68b073b1d27e54cb618a",
+        "message": "Add support handoff recovery"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/app/requests/handoff-flow.ts",
+        "src/app/requests/failed-handoff.ts"
+      ],
+      "lifecycle_planes": [
+        "prompt_workflow",
+        "tools_live_state"
+      ],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\nThe bounded scenario requires a failed live handoff, one specific workflow node, cross-intent customer wording, and an LLM lateral-edge match.\n",
+    "diff": "diff --git a/src/app/requests/handoff-flow.ts b/src/app/requests/handoff-flow.ts\n--- a/src/app/requests/handoff-flow.ts\n+++ b/src/app/requests/handoff-flow.ts\n@@ -40,3 +40,4 @@\n+route({ from: handoffRecoveryStep, to: orderHelp, when: intentMatches });\n"
+  }
+}

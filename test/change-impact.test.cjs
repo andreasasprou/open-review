@@ -31,13 +31,13 @@ function one(t, files, diff, kind) {
 }
 
 test("status emission locates an unchanged pending-only reader", (t) => {
-  const relative = "src/dentally/treatment.ts";
+  const relative = "src/orders/order.ts";
   const { item } = one(t, {
     [relative]: 'export function map(item) {\n  return { status: item.link ? "scheduled" : "pending" };\n}\n',
-    "src/features/treatment-reader.ts": 'export const open = (items) => items.filter((item) => item.status === "pending");\n',
+    "src/features/order-reader.ts": 'export const open = (items) => items.filter((item) => item.status === "pending");\n',
   }, patch(relative, ['  return { status: "pending" };'], ['  return { status: item.link ? "scheduled" : "pending" };'], 2), "status_value");
   assert.equal(item.anchor, "scheduled");
-  assert.ok(item.counterparts.some((ref) => ref.path === "src/features/treatment-reader.ts" && ref.line === 1 && !ref.changed));
+  assert.ok(item.counterparts.some((ref) => ref.path === "src/features/order-reader.ts" && ref.line === 1 && !ref.changed));
 });
 
 test("discriminator change creates a variant obligation", (t) => {
@@ -47,69 +47,84 @@ test("discriminator change creates a variant obligation", (t) => {
 });
 
 test("write shape searches backward for omitted linkage fields", (t) => {
-  const relative = "src/booking-writer.ts";
+  const relative = "src/order-writer.ts";
   const { item } = one(t, {
-    [relative]: 'export const save = (db, patientId) => db.bookAppointment({ patientId });\n',
-    "src/plan-reader.ts": 'export const linked = (appointments, id) => appointments.filter((appointment) => appointment.planItemId === id);\n',
-  }, patch(relative, ['export const save = (db, patientId) => db.bookAppointment({ patientId, planItemId });'], ['export const save = (db, patientId) => db.bookAppointment({ patientId });']), "write_shape");
+    [relative]: 'export const save = (db, customerId) => db.createOrder({ customerId });\n',
+    "src/plan-reader.ts": 'export const linked = (orders, id) => orders.filter((order) => order.itemId === id);\n',
+  }, patch(relative, ['export const save = (db, customerId) => db.createOrder({ customerId, itemId });'], ['export const save = (db, customerId) => db.createOrder({ customerId });']), "write_shape");
   assert.ok(item.counterparts.some((ref) => ref.path === "src/plan-reader.ts"));
-  assert.ok(item.fields.includes("planItemId"), item.fields.join(","));
-  assert.match(renderMarkdown([item]), /reader predicates on planItemId/);
+  assert.ok(item.fields.includes("itemId"), item.fields.join(","));
+  assert.match(renderMarkdown([item]), /reader predicates on itemId/);
 });
 
 test("adapter book call uses the appointment entity from its file path", (t) => {
-  const relative = "src/pms-appointment-action-executor.ts";
+  const relative = "src/appointment-action.ts";
   const { item } = one(t, {
-    [relative]: "const booked = await action.adapter.book({ patientId });\n",
-    "src/planned-reader.ts": "const linked = appointments.filter((appointment) => appointment.planItemId === id);\n",
-  }, patch(relative, ["const booked = await action.adapter.book({ patientId, planItemId });"], ["const booked = await action.adapter.book({ patientId });"]), "write_shape");
+    [relative]: "const reservation = await action.adapter.book({ accountId });\n",
+    "src/plan-reader.ts": "const linked = appointments.filter((appointment) => appointment.planId === id);\n",
+  }, patch(relative, ["const reservation = await action.adapter.book({ accountId, planId });"], ["const reservation = await action.adapter.book({ accountId });"]), "write_shape");
   assert.equal(item.entity, "appointment");
-  assert.ok(item.fields.includes("planItemId"));
+  assert.ok(item.fields.includes("planId"));
 });
 
-test("unchanged write beside a changed booking path still gets a backward search", (t) => {
-  const relative = "src/pms-appointment-action-executor.ts";
+test("unchanged book call beside a changed payload still gets a backward search", (t) => {
+  const relative = "src/appointment-action.ts";
   const { item } = one(t, {
-    [relative]: "const payload = { patientId };\nconst booked = await action.adapter.book(payload);\n",
-    "src/planned-reader.ts": "const linked = appointments.filter((appointment) => appointment.planItemId === id);\n",
-  }, `diff --git a/${relative} b/${relative}\n--- a/${relative}\n+++ b/${relative}\n@@ -1,2 +1,2 @@\n-const payload = { patientId, planItemId };\n+const payload = { patientId };\n const booked = await action.adapter.book(payload);\n`, "write_shape");
+    [relative]: "const payload = { accountId };\nconst reservation = await action.adapter.book(payload);\n",
+    "src/plan-reader.ts": "const linked = appointments.filter((appointment) => appointment.planId === id);\n",
+  }, `diff --git a/${relative} b/${relative}\n--- a/${relative}\n+++ b/${relative}\n@@ -1,2 +1,2 @@\n-const payload = { accountId, planId };\n+const payload = { accountId };\n const reservation = await action.adapter.book(payload);\n`, "write_shape");
   assert.equal(item.line, 1);
   assert.equal(item.writerLine, 2);
-  assert.ok(item.fields.includes("planItemId"));
+  assert.ok(item.fields.includes("planId"));
 });
 
-test("backward search names the treatment appointment linkage predicate", (t) => {
-  const relative = "src/pms-appointment-action-executor.ts";
-  const { item } = one(t, {
-    [relative]: "const booked = await action.adapter.book({ patientId });\n",
-    "src/treatment-plan-reader.ts": "if (item.treatment_appointment_id == null) continue;\n",
-  }, patch(relative, ["const booked = await action.adapter.book({ patientId, itemId });"], ["const booked = await action.adapter.book({ patientId });"]), "write_shape");
-  assert.ok(item.fields.includes("treatment_appointment_id"));
+test("appointment linkage readers receive both plan and exact-predicate ranking bonuses", (t) => {
+  const relative = "src/appointment-action.ts";
+  const writer = "const reservation = await action.adapter.book({ accountId });\n";
+  const diff = patch(relative,
+    ["const reservation = await action.adapter.book({ accountId, slotId });"],
+    ["const reservation = await action.adapter.book({ accountId });"]);
+  const { item: planMatch } = one(t, {
+    [relative]: writer,
+    "src/plan.ts": "if (item.appointment_id == null) return false;\n",
+    "src/appointment-audit.ts": "if (item.appointment_id == null) return false;\n",
+  }, diff, "write_shape");
+  // The audit path is a closer name match; the plan-linkage score must win.
+  assert.equal(planMatch.counterparts[0].path, "src/plan.ts");
+  assert.ok(planMatch.fields.includes("appointment_id"));
+
+  const { item: exactMatch } = one(t, {
+    [relative]: writer,
+    "src/plan.ts": "if (item.appointment_id == null) return false;\nif (item.treatment_appointment_id == null) return false;\n",
+  }, diff, "write_shape");
+  // Both lines share a file and search term; the exact-predicate score ranks line 2 first.
+  assert.deepEqual(exactMatch.counterparts[0], { path: "src/plan.ts", line: 2, changed: false });
+  assert.ok(exactMatch.fields.includes("treatment_appointment_id"));
 });
 
 test("shared vendor response schema tracks all schema consumers", (t) => {
-  const relative = "src/vendor/gohighlevel-response-schemas.ts";
+  const relative = "src/vendor/example-response-schemas.ts";
   const { item } = one(t, {
-    [relative]: 'export const ghlContactSchema = z.object({\n  dateOfBirth: optionalString,\n});\n',
-    "src/vendor/search.ts": 'export const search = (raw) => ghlContactSchema.parse(raw);\n',
-    "src/vendor/get.ts": 'export const get = (raw) => ghlContactSchema.safeParse(raw);\n',
-  }, patch(relative, [], ['  dateOfBirth: optionalString,'], 2), "shared_schema");
-  assert.equal(item.anchor, "dateOfBirth");
+    [relative]: 'export const exampleContactSchema = z.object({\n  externalId: optionalString,\n});\n',
+    "src/vendor/search.ts": 'export const search = (raw) => exampleContactSchema.parse(raw);\n',
+    "src/vendor/get.ts": 'export const get = (raw) => exampleContactSchema.safeParse(raw);\n',
+  }, patch(relative, [], ['  externalId: optionalString,'], 2), "shared_schema");
+  assert.equal(item.anchor, "externalId");
   assert.deepEqual(item.counterparts.map((ref) => ref.path), ["src/vendor/get.ts", "src/vendor/search.ts"]);
 });
 
 test("external page envelope union is an acceptance obligation", (t) => {
-  const relative = "src/vendor/dentally-types.ts";
+  const relative = "src/vendor/example-types.ts";
   const { item } = one(t, {
-    [relative]: 'export const dentallyPaginationMetaSchema = z.union([\n  z.object({ total: z.number(), page: z.number() }),\n  z.object({ total: z.number(), total_pages: z.number() }),\n]);\n',
-    "src/vendor/appointment-client.ts": 'export const parse = (raw) => dentallyPaginationMetaSchema.parse(raw.meta);\n',
-  }, patch(relative, [], ['export const dentallyPaginationMetaSchema = z.union(['], 1), "external_parse");
-  assert.equal(item.anchor, "dentallyPaginationMetaSchema");
-  assert.ok(item.counterparts.some((ref) => ref.path === "src/vendor/appointment-client.ts"));
+    [relative]: 'export const examplePaginationMetaSchema = z.union([\n  z.object({ total: z.number(), page: z.number() }),\n  z.object({ total: z.number(), total_pages: z.number() }),\n]);\n',
+    "src/vendor/order-client.ts": 'export const parse = (raw) => examplePaginationMetaSchema.parse(raw.meta);\n',
+  }, patch(relative, [], ['export const examplePaginationMetaSchema = z.union(['], 1), "external_parse");
+  assert.equal(item.anchor, "examplePaginationMetaSchema");
+  assert.ok(item.counterparts.some((ref) => ref.path === "src/vendor/order-client.ts"));
 });
 
 test("exact pagination total check is an external parse obligation", (t) => {
-  const relative = "src/vendor/dentally-client.ts";
+  const relative = "src/vendor/example-client.ts";
   const { item } = one(t, {
     [relative]: 'if (allItems.length !== reportedTotal) throw invalidResponse();\n',
     "src/vendor/orders.ts": 'export const orders = (client) => client.getAllPages("orders");\n',

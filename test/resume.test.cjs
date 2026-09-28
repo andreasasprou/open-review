@@ -15,7 +15,7 @@ const {
 } = require("../engine/resume.cjs");
 
 const ARTIFACT_DIR = path.join(__dirname, "testdata", "resume-artifact");
-const ORCHESTRATOR_SESSION_ID = "01a0092f-0d9e-7e73-bfce-f5d25f1683fd";
+const ORCHESTRATOR_SESSION_ID = "01911111-1111-7111-8111-111111111111";
 const LAST_REVIEWED_SHA = "a".repeat(40);
 const MERGE_BASE_SHA = "c".repeat(40);
 const BASE_SHA = "b".repeat(40);

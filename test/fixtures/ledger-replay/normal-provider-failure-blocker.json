@@ -1,42 +1,59 @@
 {
   "schema_version": 1,
-  "dataset_id": "intavia-code-review-bounded-v1",
+  "dataset_id": "synthetic-review-replay-v1",
   "fixture_id": "normal-provider-failure-blocker",
   "phase": "deterministic_validator",
-  "frozen_at": "2026-08-01T18:10:00.000Z",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
   "provenance": {
-    "source_prs": [1137],
-    "source_commits": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+    "source_prs": [
+      41
+    ],
+    "source_commits": [
+      "77eb4bd169b17fc1215da14b3c522301201b4002"
+    ]
   },
-  "inclusions": ["Normal booking path", "Provider rejection response"],
-  "exclusions": ["Rare provider races", "Voice prompt wording"],
+  "inclusions": [
+    "Normal reservation path",
+    "Provider rejection response"
+  ],
+  "exclusions": [
+    "Rare vendor races",
+    "Unrelated UI copy"
+  ],
   "input": {
     "target": {
-      "repository": "Intavia-Ai/web",
-      "pr_number": 1137,
+      "repository": "example-org/sample-app",
+      "pr_number": 41,
       "base_ref": "main",
-      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "merge_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "base_sha": "48d9a02c15c467c877fb51d214b5256dc8b32b69",
+      "merge_base_sha": "48d9a02c15c467c877fb51d214b5256dc8b32b69",
+      "head_sha": "77eb4bd169b17fc1215da14b3c522301201b4002"
     },
-    "head_ref": "sanitized/provider-failure",
-    "pr_title": "Handle provider booking failures",
-    "pr_body": "Return booking results to the caller.",
-    "changed_files": ["src/agents2/tools/booking.ts"],
+    "head_ref": "example/provider-failure",
+    "pr_title": "Handle provider reservation failures",
+    "pr_body": "Return reservation results to the customer.",
+    "changed_files": [
+      "src/app/orders/reserve.ts"
+    ],
     "commits": [
       {
-        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "message": "Handle provider booking failures"
+        "sha": "77eb4bd169b17fc1215da14b3c522301201b4002",
+        "message": "Handle provider reservation failures"
       }
     ],
     "surface_classification": {
-      "changed_paths": ["src/agents2/tools/booking.ts"],
-      "lifecycle_planes": ["tools_live_state", "provider_action"],
+      "changed_paths": [
+        "src/app/orders/reserve.ts"
+      ],
+      "lifecycle_planes": [
+        "tools_live_state",
+        "provider_action"
+      ],
       "needs_vision_assessment": true
     },
     "prior_state": null,
     "human_decisions": [],
-    "trusted_thread_context": "# Review evidence context\n\nThe provider rejection occurs on the ordinary supported booking path.\n",
-    "diff": "diff --git a/src/agents2/tools/booking.ts b/src/agents2/tools/booking.ts\n--- a/src/agents2/tools/booking.ts\n+++ b/src/agents2/tools/booking.ts\n@@ -20,3 +20,4 @@\n+return success(await adapter.book(request));\n"
+    "trusted_thread_context": "# Review evidence context\n\nThe provider rejection occurs on the ordinary supported reservation path.\n",
+    "diff": "diff --git a/src/app/orders/reserve.ts b/src/app/orders/reserve.ts\n--- a/src/app/orders/reserve.ts\n+++ b/src/app/orders/reserve.ts\n@@ -20,3 +20,4 @@\n+return accepted(await vendor.reserve(order));\n"
   }
 }

@@ -43,7 +43,7 @@ const SHA_B = "b".repeat(40);
 const SHA_C = "c".repeat(40);
 const SHA_D = "d".repeat(40);
 const HASH_E = "e".repeat(64);
-const REPOSITORY_ID = 1082531693;
+const REPOSITORY_ID = 1001;
 
 
 test("canonical JSON and ReviewTarget hashes are independent of object insertion order", () => {
@@ -53,8 +53,8 @@ test("canonical JSON and ReviewTarget hashes are independent of object insertion
   );
 
   const target = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -65,8 +65,8 @@ test("canonical JSON and ReviewTarget hashes are independent of object insertion
   });
 
   assert.deepEqual(target, {
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -316,10 +316,10 @@ test("a human decision requires one model review after its latest projection", (
 
 test("human decision parser binds the actual allowlisted User and retained decision head", () => {
   const body = formatHumanDecisionComment({
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     kind: "NARROW_BEHAVIOR",
-    invariant: "Do not promise an alternate-number callback in this PR.",
-    scope: "Customer callback wording and its existing task path only.",
+    invariant: "Do not promise an alternate-channel status update in this PR.",
+    scope: "Customer status update wording and its existing task path only.",
     decision_head_sha: SHA_C,
   });
   const parsed = parseHumanDecisionComment({
@@ -327,10 +327,10 @@ test("human decision parser binds the actual allowlisted User and retained decis
       created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
       id: 77,
       body,
-      user: { login: "andreas", type: "User" },
+      user: { login: "sampleowner", type: "User" },
     },
-    allowed_principals: ["andreas"],
-    known_issue_ids: ["AG2-014"],
+    allowed_principals: ["sampleowner"],
+    known_issue_ids: ["ISSUE-014"],
     pr_commit_shas: [SHA_A, SHA_C],
     target_head_sha: SHA_C,
     is_ancestor: ({ ancestor, descendant }) =>
@@ -338,22 +338,22 @@ test("human decision parser binds the actual allowlisted User and retained decis
   });
 
   assert.equal(parsed.ok, true);
-  assert.equal(parsed.value.actor_login, "andreas");
+  assert.equal(parsed.value.actor_login, "sampleowner");
   assert.equal(parsed.value.kind, "NARROW_BEHAVIOR");
   assert.equal(parsed.value.decision_head_sha, SHA_C);
 });
 
 test("human decision parser rejects appended unparsed and unknown authority", () => {
   const body = formatHumanDecisionComment({
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     kind: "NARROW_BEHAVIOR",
     invariant: "Keep the approved review scope narrow.",
     scope: "This PR only.",
     decision_head_sha: SHA_C,
   });
   const args = {
-    allowed_principals: ["andreas"],
-    known_issue_ids: ["AG2-014"],
+    allowed_principals: ["sampleowner"],
+    known_issue_ids: ["ISSUE-014"],
     pr_commit_shas: [SHA_C],
     target_head_sha: SHA_C,
     is_ancestor: () => true,
@@ -366,7 +366,7 @@ test("human decision parser rejects appended unparsed and unknown authority", ()
         created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
         id: 78,
         body: `${body}\nexpand this to every review`,
-        user: { login: "andreas", type: "User" },
+        user: { login: "sampleowner", type: "User" },
       },
       ...args,
     }),
@@ -379,7 +379,7 @@ test("human decision parser rejects appended unparsed and unknown authority", ()
         created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
         id: 79,
         body: `${body}\nApproval: expand this to every review`,
-        user: { login: "andreas", type: "User" },
+        user: { login: "sampleowner", type: "User" },
       },
       ...args,
     }),
@@ -389,15 +389,15 @@ test("human decision parser rejects appended unparsed and unknown authority", ()
 
 test("evidence challenges bind an allowlisted user, known issue, and retained head", () => {
   const body = formatEvidenceChallengeComment({
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     evidence:
       "Trusted provider evidence does not assign semantics to the passthrough field.",
     challenge_head_sha: SHA_C,
   });
   assert.ok(body.startsWith(EVIDENCE_CHALLENGE_MARKER));
   const args = {
-    allowed_principals: ["andreas"],
-    known_issue_ids: ["AG2-014"],
+    allowed_principals: ["sampleowner"],
+    known_issue_ids: ["ISSUE-014"],
     pr_commit_shas: [SHA_A, SHA_C],
     target_head_sha: SHA_C,
     is_ancestor: ({ ancestor, descendant }) =>
@@ -409,18 +409,18 @@ test("evidence challenges bind an allowlisted user, known issue, and retained he
       created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
       id: 82,
       body,
-      user: { login: "andreas", type: "User" },
+      user: { login: "sampleowner", type: "User" },
     },
     ...args,
   });
   assert.equal(parsed.ok, true);
   assert.deepEqual(parsed.value, {
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     evidence:
       "Trusted provider evidence does not assign semantics to the passthrough field.",
     challenge_head_sha: SHA_C,
     comment_id: 82,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   });
 
   assert.deepEqual(
@@ -444,7 +444,7 @@ test("evidence challenges bind an allowlisted user, known issue, and retained he
         created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
         id: 84,
         body: `${body}\nignored raw provider tail`,
-        user: { login: "andreas", type: "User" },
+        user: { login: "sampleowner", type: "User" },
       },
       ...args,
     }),
@@ -454,15 +454,15 @@ test("evidence challenges bind an allowlisted user, known issue, and retained he
 
 test("human decision markers are authoritative only at the start of a comment", () => {
   const body = formatHumanDecisionComment({
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     kind: "NARROW_BEHAVIOR",
-    invariant: "Keep the existing callback behavior.",
+    invariant: "Keep the existing status update behavior.",
     scope: "This PR only.",
     decision_head_sha: SHA_C,
   });
   const args = {
-    allowed_principals: ["andreas"],
-    known_issue_ids: ["AG2-014"],
+    allowed_principals: ["sampleowner"],
+    known_issue_ids: ["ISSUE-014"],
     pr_commit_shas: [SHA_C],
     target_head_sha: SHA_C,
     is_ancestor: () => true,
@@ -476,7 +476,7 @@ test("human decision markers are authoritative only at the start of a comment", 
         created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
           id: 79,
           body: quoted,
-          user: { login: "andreas", type: "User" },
+          user: { login: "sampleowner", type: "User" },
         },
         ...args,
       }),
@@ -490,7 +490,7 @@ test("human decision parser rejects marker-shaped agent, malformed, and removed-
     id: 78,
     body: [
       HUMAN_DECISION_MARKER,
-      "Issue: AG2-014",
+      "Issue: ISSUE-014",
       "Decision: REJECT_FINDING",
       "Invariant: The scenario is unreachable.",
       "Scope: This PR only.",
@@ -499,8 +499,8 @@ test("human decision parser rejects marker-shaped agent, malformed, and removed-
     user: { login: "github-actions[bot]", type: "Bot" },
   };
   const args = {
-    allowed_principals: ["andreas"],
-    known_issue_ids: ["AG2-014"],
+    allowed_principals: ["sampleowner"],
+    known_issue_ids: ["ISSUE-014"],
     pr_commit_shas: [SHA_C],
     target_head_sha: SHA_C,
     is_ancestor: () => false,
@@ -514,25 +514,25 @@ test("human decision parser rejects marker-shaped agent, malformed, and removed-
 
   const removed = parseHumanDecisionComment({
     comment: {
-      created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z", ...base, user: { login: "andreas", type: "User" } },
+      created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z", ...base, user: { login: "sampleowner", type: "User" } },
     ...args,
   });
   assert.equal(removed.ok, false);
   assert.equal(removed.reason, "reject_finding_requires_evidence");
 });
 
-test("only Andreas can approve framework evolution", () => {
+test("only the sample owner can approve framework evolution", () => {
   const body = formatHumanDecisionComment({
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     kind: "EVOLVE_FRAMEWORK",
-    invariant: "Use the approved callback seam across the framework.",
-    scope: "The shared callback framework only.",
+    invariant: "Use the approved status update seam across the framework.",
+    scope: "The shared status update framework only.",
     decision_head_sha: SHA_C,
   });
   const args = {
-    allowed_principals: ["andreasasprou", "loicalixbrown"],
-    framework_principals: ["andreasasprou"],
-    known_issue_ids: ["AG2-014"],
+    allowed_principals: ["sample-maintainer", "sample-contributor"],
+    framework_principals: ["sample-maintainer"],
+    known_issue_ids: ["ISSUE-014"],
     pr_commit_shas: [SHA_C],
     target_head_sha: SHA_C,
     is_ancestor: () => true,
@@ -545,7 +545,7 @@ test("only Andreas can approve framework evolution", () => {
         created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
         id: 80,
         body,
-        user: { login: "andreasasprou", type: "User" },
+        user: { login: "sample-maintainer", type: "User" },
       },
       ...args,
     }).ok,
@@ -558,7 +558,7 @@ test("only Andreas can approve framework evolution", () => {
         created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z",
         id: 81,
         body,
-        user: { login: "loicalixbrown", type: "User" },
+        user: { login: "sample-contributor", type: "User" },
       },
       ...args,
     }),
@@ -624,12 +624,12 @@ function fakeGithub({
         head_sha: projection.review_target.head_sha,
         run_attempt: projection.check_identity.workflow_run_attempt,
         check_suite_id: projection.check_identity.check_suite_id,
-        repository: { id: REPOSITORY_ID, full_name: "Intavia-Ai/web" },
+        repository: { id: REPOSITORY_ID, full_name: "example-org/sample-app" },
         pull_requests: [
           {
-            number: 1249,
-            head: { repo: { id: REPOSITORY_ID, name: "web" } },
-            base: { repo: { id: REPOSITORY_ID, name: "web" } },
+            number: 42,
+            head: { repo: { id: REPOSITORY_ID, name: "sample-app" } },
+            base: { repo: { id: REPOSITORY_ID, name: "sample-app" } },
           },
         ],
       }));
@@ -641,7 +641,7 @@ function fakeGithub({
       run_id: Number(projection.check_identity.workflow_run_id),
       run_attempt: projection.check_identity.workflow_run_attempt,
       head_sha: projection.review_target.head_sha,
-      check_run_url: `https://api.github.com/repos/Intavia-Ai/web/check-runs/${projection.check_identity.check_run_id}`,
+      check_run_url: `https://api.github.com/repos/example-org/sample-app/check-runs/${projection.check_identity.check_run_id}`,
     }));
   return {
     rest: {
@@ -652,7 +652,7 @@ function fakeGithub({
             data: {
               title: "Review contract",
               body: "Keep review authority narrow.",
-              user: { login: "andreas", type: "User" },
+              user: { login: "sampleowner", type: "User" },
               base: {
                 ref: "main",
                 sha: moveOnFinalRead && pullReads > 1 ? SHA_B : baseSha,
@@ -739,13 +739,13 @@ function fakeGithub({
 
 function findingForTarget({ target, decisionRef = null }) {
   return {
-    stable_id: "AG2-LEGACY-001",
+    stable_id: "ISSUE-LEGACY-001",
     severity: "P1",
     disposition: "FIX_IN_PR",
     autonomous_eligibility: decisionRef ? "NO" : "YES",
     title: "Legacy provider result can be reported as successful",
     failure_scenario:
-      "The provider rejects the write but the caller receives a success confirmation.",
+      "The provider rejects the write but the customer receives a success confirmation.",
     approved_invariant: decisionRef
       ? "Report the provider result truthfully within the existing tool boundary."
       : "A rejected provider action must return a truthful failure.",
@@ -768,7 +768,7 @@ function currentFindingForTarget({ target, stableId, decisionRef = null }) {
     likelihood: "medium",
     likely_consequence: "The provider result is reported incorrectly.",
     worst_credible_consequence:
-      "The caller relies on a provider change that was not persisted.",
+      "The customer relies on a provider change that was not persisted.",
     recoverability: "operational_intervention",
     proof_strength: "deterministic_static_proof",
     attribution: "introduced",
@@ -863,8 +863,8 @@ function v4ProjectionWithClosedDecision({ target, decision }) {
 
 test("collectEvidenceBundle returns one deterministic fail-closed hosted/local contract", async () => {
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -872,7 +872,7 @@ test("collectEvidenceBundle returns one deterministic fail-closed hosted/local c
     github: fakeGithub(),
     git: { mergeBase: async () => SHA_B },
     clock: () => "2026-07-27T10:00:00Z",
-    changedPaths: ["src/agents2/tools/callback.agent-tool.ts"],
+    changedPaths: ["src/app/orders/status-update.ts"],
     additionalArtifacts: { "pr-diff.patch": "diff --git a/x b/x\n" },
     sleep: async () => {},
   });
@@ -910,8 +910,8 @@ test("collectEvidenceBundle returns one deterministic fail-closed hosted/local c
 
 test("prior projection collection ignores obsolete shapes and keeps the newest valid projection", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -927,7 +927,7 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
   });
   candidate.open_findings = [
     {
-      stable_id: "AG2-014",
+      stable_id: "ISSUE-014",
       severity: "P2",
       reachability: "normal_path",
       likelihood: "medium",
@@ -981,13 +981,13 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
   const validLegacy = obsolete;
   const bot = { login: "github-actions[bot]", type: "Bot" };
   const challengeBody = formatEvidenceChallengeComment({
-    stable_id: "AG2-014",
+    stable_id: "ISSUE-014",
     evidence: "No trusted endpoint evidence assigns that field semantics.",
     challenge_head_sha: SHA_C,
   });
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1001,19 +1001,19 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
         {
           id: 4,
           body: challengeBody,
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
         {
           id: 5,
           body: `${challengeBody}\nignored raw provider tail`,
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
       ],
     }),
     git: { mergeBase: async () => SHA_B },
     clock: () => "2026-07-27T10:00:00Z",
-    allowedDecisionPrincipals: ["andreasasprou", "loicalixbrown"],
-    frameworkDecisionPrincipals: ["andreasasprou"],
+    allowedDecisionPrincipals: ["sample-maintainer", "sample-contributor"],
+    frameworkDecisionPrincipals: ["sample-maintainer"],
     sleep: async () => {},
   });
 
@@ -1031,11 +1031,11 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
   ]);
   assert.deepEqual(bundle.evidence.evidence_challenges, [
     {
-      stable_id: "AG2-014",
+      stable_id: "ISSUE-014",
       evidence: "No trusted endpoint evidence assigns that field semantics.",
       challenge_head_sha: SHA_C,
       comment_id: 4,
-      actor_login: "andreasasprou",
+      actor_login: "sample-maintainer",
     },
   ]);
   assert.match(
@@ -1053,7 +1053,7 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
       ...candidate,
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-014",
+          stable_id: "ISSUE-014",
           result: "still_open",
           challenge_ref: "github-comment:4",
           finding: candidate.open_findings[0],
@@ -1097,8 +1097,8 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
     summaryCommentId: 299,
   });
   const consumedBundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1119,14 +1119,14 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
         {
           id: 4,
           body: challengeBody,
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
       ],
     }),
     git: { mergeBase: async () => SHA_B },
     clock: () => "2026-07-27T11:00:00Z",
-    allowedDecisionPrincipals: ["andreasasprou", "loicalixbrown"],
-    frameworkDecisionPrincipals: ["andreasasprou"],
+    allowedDecisionPrincipals: ["sample-maintainer", "sample-contributor"],
+    frameworkDecisionPrincipals: ["sample-maintainer"],
     sleep: async () => {},
   });
   const consumedModelEvidence = JSON.parse(
@@ -1151,8 +1151,8 @@ test("prior projection collection ignores obsolete shapes and keeps the newest v
 
 test("a valid v4 projection binds its comment ID and hash to the hosted run log", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1163,8 +1163,8 @@ test("a valid v4 projection binds its comment ID and hash to the hosted run log"
   });
   const projection = v4ProjectionForTarget({ target: reviewTarget });
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1191,8 +1191,8 @@ test("a valid v4 projection binds its comment ID and hash to the hosted run log"
 
 test("a canonical v4 projection does not depend on superseded workflow logs", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1212,8 +1212,8 @@ test("a canonical v4 projection does not depend on superseded workflow logs", as
   });
   const requestedRunIds = [];
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1258,8 +1258,8 @@ test("a canonical v4 projection does not depend on superseded workflow logs", as
 
 test("a self-hashed v4 preview without hosted provenance is rejected", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1272,8 +1272,8 @@ test("a self-hashed v4 preview without hosted provenance is rejected", async () 
 
   await assert.rejects(
     collectEvidenceBundle({
-      repository: "Intavia-Ai/web",
-      prNumber: 1249,
+      repository: "example-org/sample-app",
+      prNumber: 42,
       expectedBaseRef: "main",
       expectedBaseSha: SHA_A,
       expectedHeadSha: SHA_C,
@@ -1298,8 +1298,8 @@ test("a self-hashed v4 preview without hosted provenance is rejected", async () 
 
 test("a copied hosted tuple cannot authorize a different projection comment", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1316,8 +1316,8 @@ test("a copied hosted tuple cannot authorize a different projection comment", as
 
   await assert.rejects(
     collectEvidenceBundle({
-      repository: "Intavia-Ai/web",
-      prNumber: 1249,
+      repository: "example-org/sample-app",
+      prNumber: 42,
       expectedBaseRef: "main",
       expectedBaseSha: SHA_A,
       expectedHeadSha: SHA_C,
@@ -1344,8 +1344,8 @@ test("a copied hosted tuple cannot authorize a different projection comment", as
 
 test("an edited projection comment is rejected even with a recomputed self-hash", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1361,8 +1361,8 @@ test("an edited projection comment is rejected even with a recomputed self-hash"
 
   await assert.rejects(
     collectEvidenceBundle({
-      repository: "Intavia-Ai/web",
-      prNumber: 1249,
+      repository: "example-org/sample-app",
+      prNumber: 42,
       expectedBaseRef: "main",
       expectedBaseSha: SHA_A,
       expectedHeadSha: SHA_C,
@@ -1393,8 +1393,8 @@ test("an edited projection comment is rejected even with a recomputed self-hash"
 
 test("a v4 run revalidates a retained decision for a closed migration finding", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1404,7 +1404,7 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
     evidence_schema_version: 1,
   });
   const decision = {
-    stable_id: "AG2-LEGACY-CLOSED",
+    stable_id: "ISSUE-LEGACY-CLOSED",
     kind: "REJECT_FINDING",
     invariant: "The unsupported migration finding remains closed.",
     scope: "The migrated finding only.",
@@ -1413,7 +1413,7 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
     owner_or_triage: null,
     decision_head_sha: SHA_C,
     comment_id: 501,
-    actor_login: "andreasasprou",
+    actor_login: "sample-maintainer",
   };
   const projection = buildProjection({
     candidate: (() => {
@@ -1469,8 +1469,8 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
     decision_head_sha: decision.decision_head_sha,
   });
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1486,7 +1486,7 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
         {
           id: 501,
           body: decisionBody,
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
       ],
     }),
@@ -1495,7 +1495,7 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
         baseSha === SHA_C && headSha === SHA_C ? SHA_C : SHA_B,
     },
     clock: () => "2026-08-02T12:00:00Z",
-    allowedDecisionPrincipals: ["andreasasprou"],
+    allowedDecisionPrincipals: ["sample-maintainer"],
     sleep: async () => {},
   });
 
@@ -1511,8 +1511,8 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
 
 test("a retained decision stays valid after its decision head enters the current base", async () => {
   const priorTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_B,
     merge_base_sha: SHA_B,
@@ -1522,7 +1522,7 @@ test("a retained decision stays valid after its decision head enters the current
     evidence_schema_version: 1,
   });
   const decision = {
-    stable_id: "AG2-BASE-ADVANCED",
+    stable_id: "ISSUE-BASE-ADVANCED",
     kind: "EVOLVE_FRAMEWORK",
     invariant: "Keep the approved review boundary after the base advances.",
     scope: "The trusted review evidence collector only.",
@@ -1531,7 +1531,7 @@ test("a retained decision stays valid after its decision head enters the current
     owner_or_triage: null,
     decision_head_sha: SHA_A,
     comment_id: 501,
-    actor_login: "andreasasprou",
+    actor_login: "sample-maintainer",
   };
   const projection = v4ProjectionWithClosedDecision({
     target: priorTarget,
@@ -1551,8 +1551,8 @@ test("a retained decision stays valid after its decision head enters the current
     baseSha = SHA_A,
   } = {}) =>
     collectEvidenceBundle({
-      repository: "Intavia-Ai/web",
-      prNumber: 1249,
+      repository: "example-org/sample-app",
+      prNumber: 42,
       expectedBaseRef: "main",
       expectedBaseSha: baseSha,
       expectedHeadSha: SHA_C,
@@ -1570,7 +1570,7 @@ test("a retained decision stays valid after its decision head enters the current
           {
             id: decision.comment_id,
             body,
-            user: { login: "andreasasprou", type: "User" },
+            user: { login: "sample-maintainer", type: "User" },
           },
         ],
       }),
@@ -1583,7 +1583,7 @@ test("a retained decision stays valid after its decision head enters the current
               : SHA_B),
       },
       clock: () => "2026-08-27T20:00:00Z",
-      allowedDecisionPrincipals: ["andreasasprou"],
+      allowedDecisionPrincipals: ["sample-maintainer"],
       sleep: async () => {},
     });
 
@@ -1648,8 +1648,8 @@ test("a retained decision stays valid after its decision head enters the current
 
 test("a new decision cannot use a commit that exists only in the current base", async () => {
   const priorTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_B,
     merge_base_sha: SHA_B,
@@ -1658,7 +1658,7 @@ test("a new decision cannot use a commit that exists only in the current base", 
     evidence_bundle_sha256: HASH_E,
     evidence_schema_version: 1,
   });
-  const stableId = "AG2-UNRETAINED-BASE-DECISION";
+  const stableId = "ISSUE-UNRETAINED-BASE-DECISION";
   const decisionBody = formatHumanDecisionComment({
     stable_id: stableId,
     kind: "NARROW_BEHAVIOR",
@@ -1667,8 +1667,8 @@ test("a new decision cannot use a commit that exists only in the current base", 
     decision_head_sha: SHA_A,
   });
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1687,13 +1687,13 @@ test("a new decision cannot use a commit that exists only in the current base", 
         {
           id: 501,
           body: decisionBody,
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
       ],
     }),
     git: { mergeBase: async () => SHA_A },
     clock: () => "2026-08-27T20:00:00Z",
-    allowedDecisionPrincipals: ["andreasasprou"],
+    allowedDecisionPrincipals: ["sample-maintainer"],
     sleep: async () => {},
   });
 
@@ -1709,8 +1709,8 @@ test("a new decision cannot use a commit that exists only in the current base", 
 
 test("a later v4 run accepts a decision for a closed decisionless finding", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1719,7 +1719,7 @@ test("a later v4 run accepts a decision for a closed decisionless finding", asyn
     evidence_bundle_sha256: HASH_E,
     evidence_schema_version: 1,
   });
-  const stableId = "AG2-LEGACY-DECISIONLESS";
+  const stableId = "ISSUE-LEGACY-DECISIONLESS";
   const closedFinding = currentFindingForTarget({
     target: reviewTarget,
     stableId,
@@ -1768,8 +1768,8 @@ test("a later v4 run accepts a decision for a closed decisionless finding", asyn
     decision_head_sha: SHA_C,
   });
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1785,13 +1785,13 @@ test("a later v4 run accepts a decision for a closed decisionless finding", asyn
         {
           id: 502,
           body: decisionBody,
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
       ],
     }),
     git: { mergeBase: async () => SHA_B },
     clock: () => "2026-08-02T12:30:00Z",
-    allowedDecisionPrincipals: ["andreasasprou"],
+    allowedDecisionPrincipals: ["sample-maintainer"],
     sleep: async () => {},
   });
 
@@ -1810,10 +1810,10 @@ test("a later v4 run accepts a decision for a closed decisionless finding", asyn
 });
 
 
-test("Loic cannot supersede an Andreas framework decision with another decision kind", async () => {
+test("the sample contributor cannot supersede a sample owner framework decision with another decision kind", async () => {
   const reviewTarget = buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA_A,
     merge_base_sha: SHA_B,
@@ -1822,7 +1822,7 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
     evidence_bundle_sha256: HASH_E,
     evidence_schema_version: 1,
   });
-  const stableId = "AG2-014";
+  const stableId = "ISSUE-014";
   const projection = buildProjection({
     candidate: {
       prior_issue_evaluations: [],
@@ -1832,9 +1832,9 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
           severity: "P1",
           reachability: "normal_path",
           likelihood: "high",
-          likely_consequence: "The shared callback behavior has no owner.",
+          likely_consequence: "The shared status update behavior has no owner.",
           worst_credible_consequence:
-            "Customers receive conflicting callback behavior.",
+            "Customers receive conflicting status update behavior.",
           recoverability: "operational_intervention",
           proof_strength: "deterministic_static_proof",
           attribution: "introduced",
@@ -1842,11 +1842,11 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
             "The framework choice needs a human decision before merge.",
           disposition: "AUTHOR_DECISION",
           autonomous_eligibility: "NO",
-          title: "Choose the callback framework behavior",
-          failure_scenario: "The shared callback behavior is not approved.",
-          approved_invariant: "Only Andreas approves framework evolution.",
-          where: "The shared callback framework.",
-          evidence: "The proposed change affects every callback customer.",
+          title: "Choose the status update framework behavior",
+          failure_scenario: "The shared status update behavior is not approved.",
+          approved_invariant: "Only the sample owner approves framework evolution.",
+          where: "The shared status update framework.",
+          evidence: "The proposed change affects every status update customer.",
           first_evidence_sha: SHA_C,
           last_evaluated_target: hashReviewTarget(reviewTarget),
           affected_lifecycle_planes: ["proof"],
@@ -1872,25 +1872,25 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
   });
   const decisionFields = {
     stable_id: stableId,
-    invariant: "Only Andreas approves framework evolution.",
-    scope: "The shared callback framework only.",
+    invariant: "Only the sample owner approves framework evolution.",
+    scope: "The shared status update framework only.",
     decision_head_sha: SHA_C,
   };
-  const retainedLoicDecision = {
+  const retainedContributorDecision = {
     ...decisionFields,
     kind: "NARROW_BEHAVIOR",
     evidence: null,
     tracker: null,
     owner_or_triage: null,
     comment_id: 2,
-    actor_login: "loicalixbrown",
+    actor_login: "sample-contributor",
   };
-  projection.human_decisions = [retainedLoicDecision];
+  projection.human_decisions = [retainedContributorDecision];
   const { projection_sha256: _oldHash, ...unhashedProjection } = projection;
   projection.projection_sha256 = hashCanonical(unhashedProjection);
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -1909,7 +1909,7 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
             ...decisionFields,
             kind: "NARROW_BEHAVIOR",
           }),
-          user: { login: "loicalixbrown", type: "User" },
+          user: { login: "sample-contributor", type: "User" },
         },
         {
           id: 3,
@@ -1917,16 +1917,16 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
             ...decisionFields,
             kind: "EVOLVE_FRAMEWORK",
           }),
-          user: { login: "andreasasprou", type: "User" },
+          user: { login: "sample-maintainer", type: "User" },
         },
         {
           id: 4,
           body: formatHumanDecisionComment({
             ...decisionFields,
             kind: "REJECT_FINDING",
-            evidence: "Loic believes the change is unnecessary.",
+            evidence: "the sample contributor believes the change is unnecessary.",
           }),
-          user: { login: "loicalixbrown", type: "User" },
+          user: { login: "sample-contributor", type: "User" },
         },
       ],
     }),
@@ -1935,8 +1935,8 @@ test("Loic cannot supersede an Andreas framework decision with another decision 
         baseSha === SHA_C && headSha === SHA_C ? SHA_C : SHA_B,
     },
     clock: () => "2026-07-27T10:00:00Z",
-    allowedDecisionPrincipals: ["andreasasprou", "loicalixbrown"],
-    frameworkDecisionPrincipals: ["andreasasprou"],
+    allowedDecisionPrincipals: ["sample-maintainer", "sample-contributor"],
+    frameworkDecisionPrincipals: ["sample-maintainer"],
     sleep: async () => {},
   });
 
@@ -1962,7 +1962,7 @@ test("model evidence redacts raw discussion bodies outside the bounded trusted c
       {
         id: 1,
         body: issueBody,
-        user: { login: "andreas", type: "User" },
+        user: { login: "sampleowner", type: "User" },
       },
       {
         id: 2,
@@ -1974,14 +1974,14 @@ test("model evidence redacts raw discussion bodies outside the bounded trusted c
       {
         id: 3,
         body: reviewBody,
-        user: { login: "andreas", type: "User" },
+        user: { login: "sampleowner", type: "User" },
       },
     ],
     reviewComments: [
       {
         id: 4,
         body: selectedBody,
-        user: { login: "andreas", type: "User" },
+        user: { login: "sampleowner", type: "User" },
       },
     ],
     reviewThreads: [
@@ -1995,7 +1995,7 @@ test("model evidence redacts raw discussion bodies outside the bounded trusted c
             {
               databaseId: 4,
               body: selectedBody,
-              author: { login: "andreas", __typename: "User" },
+              author: { login: "sampleowner", __typename: "User" },
             },
             {
               databaseId: 5,
@@ -2009,8 +2009,8 @@ test("model evidence redacts raw discussion bodies outside the bounded trusted c
     ],
   });
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -2018,7 +2018,7 @@ test("model evidence redacts raw discussion bodies outside the bounded trusted c
     github,
     git: { mergeBase: async () => SHA_B },
     clock: () => "2026-07-27T10:00:00Z",
-    allowedDecisionPrincipals: ["andreas"],
+    allowedDecisionPrincipals: ["sampleowner"],
     contextLimits: { max_entries: 1 },
     sleep: async () => {},
   });
@@ -2046,7 +2046,7 @@ test("model evidence redacts raw discussion bodies outside the bounded trusted c
     created_at: "2026-07-27T10:00:00Z",
     id: 1,
     updated_at: "2026-07-27T10:00:00Z",
-    user: { login: "andreas", type: "User" },
+    user: { login: "sampleowner", type: "User" },
   });
   assert.equal(modelEvidence.review_comments[0].body_in_trusted_context, true);
   assert.equal(
@@ -2061,8 +2061,8 @@ test("the latest created or edited review refresh is required model context", as
   const laterCreatedRefresh = "/code-review Older evidence summary.";
   const laterReview = "A later ordinary review comment.";
   const bundle = await collectEvidenceBundle({
-    repository: "Intavia-Ai/web",
-    prNumber: 1249,
+    repository: "example-org/sample-app",
+    prNumber: 42,
     expectedBaseRef: "main",
     expectedBaseSha: SHA_A,
     expectedHeadSha: SHA_C,
@@ -2074,14 +2074,14 @@ test("the latest created or edited review refresh is required model context", as
           body: editedRefresh,
           created_at: "2026-07-27T10:00:00Z",
           updated_at: "2026-07-27T10:05:00Z",
-          user: { login: "andreas", type: "User" },
+          user: { login: "sampleowner", type: "User" },
         },
         {
           id: 2,
           body: laterCreatedRefresh,
           created_at: "2026-07-27T10:02:00Z",
           updated_at: "2026-07-27T10:02:00Z",
-          user: { login: "andreas", type: "User" },
+          user: { login: "sampleowner", type: "User" },
         },
         {
           id: 3,
@@ -2093,13 +2093,13 @@ test("the latest created or edited review refresh is required model context", as
         {
           id: 4,
           body: laterReview,
-          user: { login: "andreas", type: "User" },
+          user: { login: "sampleowner", type: "User" },
         },
       ],
     }),
     git: { mergeBase: async () => SHA_B },
     clock: () => "2026-07-27T10:00:00Z",
-    allowedDecisionPrincipals: ["andreas"],
+    allowedDecisionPrincipals: ["sampleowner"],
     contextLimits: { max_entries: 1 },
     sleep: async () => {},
   });
@@ -2118,8 +2118,8 @@ test("the latest created or edited review refresh is required model context", as
 test("collectEvidenceBundle rejects base movement during final revalidation", async () => {
   await assert.rejects(
     collectEvidenceBundle({
-      repository: "Intavia-Ai/web",
-      prNumber: 1249,
+      repository: "example-org/sample-app",
+      prNumber: 42,
       expectedBaseRef: "main",
       expectedBaseSha: SHA_A,
       expectedHeadSha: SHA_C,
@@ -2136,7 +2136,7 @@ test("collectEvidenceBundle rejects base movement during final revalidation", as
 
 // Correction 2 regressions exercise the shared-action adapters and moved collector.
 function correctionTarget() {
-  return buildReviewTarget({ repository: "Intavia-Ai/web", pr_number: 1249,
+  return buildReviewTarget({ repository: "example-org/sample-app", pr_number: 42,
     base_ref: "main", base_sha: SHA_A, merge_base_sha: SHA_B, head_sha: SHA_C,
     trusted_reviewer_ref: SHA_D, evidence_bundle_sha256: HASH_E, evidence_schema_version: 2 });
 }
@@ -2145,7 +2145,7 @@ function correctionComment(id, projection) {
     user: { login: "github-actions[bot]", type: "Bot" } };
 }
 function correctionCollect(github) {
-  return collectEvidenceBundle({ repository: "Intavia-Ai/web", prNumber: 1249,
+  return collectEvidenceBundle({ repository: "example-org/sample-app", prNumber: 42,
     expectedBaseRef: "main", expectedBaseSha: SHA_A, expectedHeadSha: SHA_C,
     reviewerRef: SHA_D, github, git: { mergeBase: async () => SHA_C },
     allowedDecisionPrincipals: ["framework-owner", "ordinary-owner"],
@@ -2170,7 +2170,7 @@ test("correction 5: hosted evidence retains authenticated projection history for
   assert.equal(bundle.priorProjection.projection_sha256, second.projection_sha256);
   const args = { github: fakeGithub({ hostedProvenance: true,
     issueComments: [correctionComment(100, first), correctionComment(101, second)] }),
-    owner: "Intavia-Ai", repo: "web", prNumber: 1249, headSha: SHA_C,
+    owner: "example-org", repo: "sample-app", prNumber: 42, headSha: SHA_C,
     expectedBaseRef: "main", expectedBaseSha: SHA_A, reviewerRef: SHA_D,
     git: { mergeBase: async () => SHA_C } };
   const snapshot = await collectLedgerEvidence(args);
@@ -2226,9 +2226,9 @@ test("correction 2: retained framework ownership survives edited and deleted aut
 
 function correctionNative({ event = "workflow_dispatch", headBranch = "main", jobs = null } = {}) {
   const run = { id: 12345, run_attempt: 1, event, path: ".github/workflows/code-review.yaml",
-    head_sha: SHA_D, head_branch: headBranch, repository: { full_name: "Intavia-Ai/web" }, check_suite_id: 12 };
+    head_sha: SHA_D, head_branch: headBranch, repository: { full_name: "example-org/sample-app" }, check_suite_id: 12 };
   const native = (id, name) => ({ id, run_id: 12345, run_attempt: 1, runner_name: "shared-runner",
-    head_sha: SHA_D, status: "in_progress", name, check_run_url: `https://api.github.com/repos/Intavia-Ai/web/check-runs/${id}` });
+    head_sha: SHA_D, status: "in_progress", name, check_run_url: `https://api.github.com/repos/example-org/sample-app/check-runs/${id}` });
   const github = { paginate: async () => jobs ? jobs(native) : [native(10, "Review result")],
     rest: { actions: { getWorkflowRunAttempt: async () => ({ data: run }), listJobsForWorkflowRunAttempt: () => {} },
       checks: { get: async ({ check_run_id }) => ({ data: { id: check_run_id, head_sha: SHA_D,
@@ -2237,8 +2237,8 @@ function correctionNative({ event = "workflow_dispatch", headBranch = "main", jo
         assert.equal(ref, SHA_D);
         return { data: { encoding: "base64", content: Buffer.from("name: Review\njobs:\n  review:\n    name: Review result\n    runs-on: ubuntu-latest\n  sibling:\n    name: Sibling\n").toString("base64") } };
       } } } };
-  const args = { github, owner: "Intavia-Ai", repo: "web", runId: 12345, runAttempt: 1,
-    headSha: SHA_C, baseRef: "main", prNumber: 1249, workflowRef: "Intavia-Ai/web/.github/workflows/code-review.yaml@refs/heads/main",
+  const args = { github, owner: "example-org", repo: "sample-app", runId: 12345, runAttempt: 1,
+    headSha: SHA_C, baseRef: "main", prNumber: 42, workflowRef: "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
     trustedWorkflowSha: SHA_D, runnerName: "shared-runner", callerJob: "review" };
   return { github, args, run };
 }
@@ -2265,8 +2265,8 @@ test("correction 3: caller job resolver handles a matrix sibling, valid indent a
     '      name: "Review result" # trusted display name', "      runs-on: ubuntu-latest", ""].join("\n");
   const github = { rest: { repos: { getContent: async () => ({ data: { encoding: "base64",
     content: Buffer.from(workflow).toString("base64") } }) } } };
-  const args = { github, owner: "Intavia-Ai", repo: "web", workflowRef:
-    "Intavia-Ai/web/.github/workflows/code-review.yaml@refs/heads/main",
+  const args = { github, owner: "example-org", repo: "sample-app", workflowRef:
+    "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
     trustedWorkflowSha: SHA_D, callerJob: "review" };
   assert.equal(await resolveCallerJobName(args), "Review result");
   await assert.rejects(resolveCallerJobName({ ...args, callerJob: "missing" }), /absent/);
@@ -2285,8 +2285,8 @@ test("correction 5: quoted caller job names ignore punctuation in YAML comments"
     const workflow = `jobs:\n  review:\n    name: ${literal}\n    runs-on: ubuntu-latest\n`;
     const github = { rest: { repos: { getContent: async () => ({ data: { encoding: "base64",
       content: Buffer.from(workflow).toString("base64") } }) } } };
-    assert.equal(await resolveCallerJobName({ github, owner: "Intavia-Ai", repo: "web",
-      workflowRef: "Intavia-Ai/web/.github/workflows/code-review.yaml@refs/heads/main",
+    assert.equal(await resolveCallerJobName({ github, owner: "example-org", repo: "sample-app",
+      workflowRef: "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
       trustedWorkflowSha: SHA_D, callerJob: "review" }), expected);
   }
 });
@@ -2295,22 +2295,22 @@ test("correction 6: an apostrophe in a plain caller job name is not a YAML quote
   const workflow = "jobs:\n  review:\n    name: Review team's work # note\n    runs-on: ubuntu-latest\n";
   const github = { rest: { repos: { getContent: async () => ({ data: { encoding: "base64",
     content: Buffer.from(workflow).toString("base64") } }) } } };
-  assert.equal(await resolveCallerJobName({ github, owner: "Intavia-Ai", repo: "web",
-    workflowRef: "Intavia-Ai/web/.github/workflows/code-review.yaml@refs/heads/main",
+  assert.equal(await resolveCallerJobName({ github, owner: "example-org", repo: "sample-app",
+    workflowRef: "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
     trustedWorkflowSha: SHA_D, callerJob: "review" }), "Review team's work");
 });
 
 test("correction 3: every configured command alias can authenticate a challenge", async () => {
   const target = correctionTarget();
   const base = v4ProjectionForTarget({ target });
-  const finding = currentFindingForTarget({ target, stableId: "AG2-014" });
+  const finding = currentFindingForTarget({ target, stableId: "ISSUE-014" });
   const projection = buildProjection({ candidate: { open_findings: [finding], closed_findings: [],
     prior_issue_evaluations: [] }, target, checkIdentity: base.check_identity, summaryCommentId: 99 });
   for (const alias of ["code-review", "codex-review", "polaris-review"]) {
-    const body = `/${alias} [review-evidence-challenge:v1]\nIssue: AG2-014\nEvidence: The provider returns the row.\nChallenge head: ${SHA_C}`;
+    const body = `/${alias} [review-evidence-challenge:v1]\nIssue: ISSUE-014\nEvidence: The provider returns the row.\nChallenge head: ${SHA_C}`;
     const github = fakeGithub({ hostedProvenance: true, issueComments: [correctionComment(100, projection),
       { id: 101, body, user: { login: "ordinary-owner", type: "User" } }] });
-    const bundle = await collectEvidenceBundle({ repository: "Intavia-Ai/web", prNumber: 1249,
+    const bundle = await collectEvidenceBundle({ repository: "example-org/sample-app", prNumber: 42,
       expectedBaseRef: "main", expectedBaseSha: SHA_A, expectedHeadSha: SHA_C,
       reviewerRef: SHA_D, github, git: { mergeBase: async () => SHA_B },
       allowedDecisionPrincipals: ["ordinary-owner"],
@@ -2328,7 +2328,7 @@ test("correction 2: publication revalidates the authority snapshot", async () =>
   const initial = v4ProjectionForTarget({ target });
   const newer = v4ProjectionForTarget({ target, workflowRunId: "12346" });
   const args = { github: fakeGithub({ hostedProvenance: true, issueComments: [correctionComment(100, initial)] }),
-    owner: "Intavia-Ai", repo: "web", prNumber: 1249, headSha: SHA_C,
+    owner: "example-org", repo: "sample-app", prNumber: 42, headSha: SHA_C,
     expectedBaseRef: "main", expectedBaseSha: SHA_A, reviewerRef: SHA_D,
     git: { mergeBase: async () => SHA_B } };
   const snapshot = await collectLedgerEvidence(args);
@@ -2349,7 +2349,7 @@ test("shared action authenticates direct events against their actual trusted che
     for (const check of (await github.rest.checks.listForRef()).data.check_runs) check.head_sha = SHA_D;
     for (const job of (await github.rest.actions.listJobsForWorkflowRunAttempt({ run_id: 12345 })).data.jobs) job.head_sha = SHA_D;
     const originalLog = github.loadWorkflowRunLog;
-    github.loadWorkflowRunLog = async (args) => `${await originalLog(args)}\nOPEN_REVIEW_TARGET: Intavia-Ai/web#1249 ${SHA_C} main`;
+    github.loadWorkflowRunLog = async (args) => `${await originalLog(args)}\nOPEN_REVIEW_TARGET: example-org/sample-app#42 ${SHA_C} main`;
     assert.equal((await correctionCollect(github)).priorProjection.check_identity.head_sha, SHA_D);
     run.head_branch = "feature";
     await assert.rejects(correctionCollect(github), /does not match its hosted/);

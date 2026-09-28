@@ -39,9 +39,9 @@ const SHA = {
   reviewer: "d".repeat(40),
   evidence: "e".repeat(64),
 };
-// Keeps the entropy-heavy PR 1357 regression representative across supported
+// Keeps the entropy-heavy synthetic projection regression representative across supported
 // Node/zlib versions without retaining customer review text.
-const PR_1357_FIXTURE_CLOSURE_EVIDENCE_BYTES = 1_000;
+const PROJECTION_FIXTURE_CLOSURE_EVIDENCE_BYTES = 1_000;
 
 function sizedFixtureText(prefix, length) {
   return `${prefix}${"x".repeat(Math.max(0, length - prefix.length))}`;
@@ -57,8 +57,8 @@ function entropyText(label, length) {
 
 function target(overrides = {}) {
   return buildReviewTarget({
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA.base,
     merge_base_sha: SHA.merge,
@@ -74,27 +74,27 @@ function finding(overrides = {}) {
   const reviewTarget = overrides.reviewTarget || target();
   const { reviewTarget: _reviewTarget, ...findingOverrides } = overrides;
   return {
-    stable_id: "AG2-001",
+    stable_id: "ISSUE-001",
     severity: "P1",
     reachability: "normal_path",
     likelihood: "high",
-    likely_consequence: "The promised callback is not created.",
+    likely_consequence: "The promised order status update is not sent.",
     worst_credible_consequence:
-      "The caller waits for staff contact that never occurs.",
+      "The customer waits for an update that never arrives.",
     recoverability: "operational_intervention",
     proof_strength: "deterministic_static_proof",
     attribution: "introduced",
     risk_rationale:
-      "A normal supported path breaks an approved caller promise and must be repaired in this PR.",
+      "A supported order request breaks the approved update promise and must be repaired in this PR.",
     disposition: "FIX_IN_PR",
     autonomous_eligibility: "YES",
-    title: "The callback promise is not fulfilled",
-    failure_scenario: "A caller accepts a callback but no task reaches staff.",
+    title: "The order status update is not sent",
+    failure_scenario: "A customer requests an order status update, but no task reaches the support queue.",
     approved_invariant:
-      "The receptionist must create the promised callback task.",
-    where: "src/agents2/callback.ts:42 → src/tasks/callback.ts:18",
+      "The order handler must queue the promised status update.",
+    where: "src/app/orders/status-update.ts:42 → src/tasks/status-update.ts:18",
     evidence:
-      "The prompt promises a callback, but the completion path never creates the staff task.",
+      "The request flow promises an update, but completion creates no queue task.",
     first_evidence_sha: reviewTarget.head_sha,
     last_evaluated_target: hashReviewTarget(reviewTarget),
     affected_lifecycle_planes: ["prompt_workflow", "post_call_fulfillment"],
@@ -222,7 +222,7 @@ test("projection is complete, independently hashed, and round-trips canonical ad
   );
   assert.equal(projection.conclusion, "block");
   assert.equal(projection.watcher_action, "autonomous_batch");
-  assert.deepEqual(projection.eligible_issue_ids, ["AG2-001"]);
+  assert.deepEqual(projection.eligible_issue_ids, ["ISSUE-001"]);
   assert.equal(verifyProjection({ projection }), true);
   const body = formatProjectionComment({ projection });
   assert.ok(body.startsWith(PROJECTION_MARKER));
@@ -350,7 +350,7 @@ test("missing prior evaluations carry still_open with a warning and cannot chang
   const prior = firstProjection();
   // Ruling D1: source non-exhaustive error becomes a conservative carry.
   const carried = validateCandidate({ rawOutput: output(), target: target(), priorProjection: prior, evidence: evidence() });
-  assert.equal(carried.open_findings[0].stable_id, "AG2-001");
+  assert.equal(carried.open_findings[0].stable_id, "ISSUE-001");
   assert.equal(carried.prior_issue_evaluations[0].result, "still_open");
   assert.match(carried.warnings[0], /missing prior evaluation/);
   assert.equal(deriveCandidateSettlement(carried).conclusion, "block");
@@ -358,9 +358,9 @@ test("missing prior evaluations carry still_open with a warning and cannot chang
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "still_open",
-          finding: finding({ stable_id: "AG2-RENAMED" }),
+          finding: finding({ stable_id: "ISSUE-RENAMED" }),
         },
       ],
     }),
@@ -368,7 +368,7 @@ test("missing prior evaluations carry still_open with a warning and cannot chang
     priorProjection: prior,
     evidence: evidence(),
   });
-  assert.equal(renamed.open_findings[0].stable_id, "AG2-001");
+  assert.equal(renamed.open_findings[0].stable_id, "ISSUE-001");
   assert.equal(deriveCandidateSettlement(renamed).conclusion, "block");
   assert.match(renamed.warnings.join("\n"), /inconsistent nested finding ID/);
 });
@@ -376,7 +376,7 @@ test("missing prior evaluations carry still_open with a warning and cannot chang
 test("retained wording drift preserves canonical identity and invariant with current evidence", () => {
   const fixture = JSON.parse(
     fs.readFileSync(
-      path.join(__dirname, "fixtures/ledger-replay/pr-1330-immutable-wording.json"),
+      path.join(__dirname, "fixtures/ledger-replay/immutable-wording.json"),
       "utf8",
     ),
   );
@@ -453,7 +453,7 @@ test("same-head unsupported findings require an authenticated challenge and inde
   const resolved = output({
     prior_issue_evaluations: [
       {
-        stable_id: "AG2-001",
+        stable_id: "ISSUE-001",
         result: "resolved_on_target",
         evidence: "The original premise was unsupported.",
       },
@@ -496,16 +496,16 @@ test("same-head unsupported findings require an authenticated challenge and inde
   );
 
   const challenge = {
-    stable_id: "AG2-001",
-    evidence: "Trusted evidence does not support the callback premise.",
+    stable_id: "ISSUE-001",
+    evidence: "Trusted evidence does not support the status update premise.",
     challenge_head_sha: SHA.head,
     comment_id: 601,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   };
   const withdrawn = output({
     prior_issue_evaluations: [
       {
-        stable_id: "AG2-001",
+        stable_id: "ISSUE-001",
         result: "withdrawn_as_unsupported",
         challenge_ref: "github-comment:601",
         evidence:
@@ -572,16 +572,16 @@ test("same-head unsupported findings require an authenticated challenge and inde
 test("a replacement review can consume a challenge while keeping the finding open", () => {
   const prior = firstProjection();
   const challenge = {
-    stable_id: "AG2-001",
-    evidence: "Trusted evidence does not support the callback premise.",
+    stable_id: "ISSUE-001",
+    evidence: "Trusted evidence does not support the status update premise.",
     challenge_head_sha: SHA.head,
     comment_id: 601,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   };
   const challengedStillOpen = output({
     prior_issue_evaluations: [
       {
-        stable_id: "AG2-001",
+        stable_id: "ISSUE-001",
         result: "still_open",
         challenge_ref: "github-comment:601",
         finding: finding(),
@@ -595,7 +595,7 @@ test("a replacement review can consume a challenge while keeping the finding ope
         rawOutput: output({
           prior_issue_evaluations: [
             {
-              stable_id: "AG2-001",
+              stable_id: "ISSUE-001",
               result: "still_open",
               finding: finding(),
             },
@@ -643,7 +643,7 @@ test("a replacement review can consume a challenge while keeping the finding ope
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "still_open",
           finding: finding(),
         },
@@ -665,7 +665,7 @@ test("a replacement review can consume a challenge while keeping the finding ope
         rawOutput: output({
           prior_issue_evaluations: [
             {
-              stable_id: "AG2-001",
+              stable_id: "ISSUE-001",
               result: "withdrawn_as_unsupported",
               challenge_ref: "github-comment:601",
               evidence:
@@ -691,16 +691,16 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
   ]) {
     const prior = firstProjection();
     const decision = {
-      stable_id: "AG2-001",
+      stable_id: "ISSUE-001",
       kind,
-      invariant: "Use the approved existing callback seam only.",
-      scope: "Current callback behavior only.",
+      invariant: "Use the approved existing status update seam only.",
+      scope: "Current status update behavior only.",
       evidence: null,
       tracker: null,
       owner_or_triage: null,
       decision_head_sha: SHA.head,
       comment_id: 500,
-      actor_login: "andreas",
+      actor_login: "sampleowner",
     };
     const carried = finding({
       disposition: "FOLLOW_UP",
@@ -708,7 +708,7 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
       approved_invariant: "Stale model-authored invariant.",
       decision_ref: "github-comment:499",
       follow_up: {
-        tracker: "INT-998",
+        tracker: "TEST-998",
         owner_or_triage: "Wrong owner",
       },
     });
@@ -718,7 +718,7 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
           rawOutput: output({
             prior_issue_evaluations: [
               {
-                stable_id: "AG2-001",
+                stable_id: "ISSUE-001",
                 result: "still_open",
                 challenge_ref: "github-comment:601",
                 finding: carried,
@@ -731,11 +731,11 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
             humanDecisions: [decision],
             evidenceChallenges: [
               {
-                stable_id: "AG2-001",
+                stable_id: "ISSUE-001",
                 evidence: "Later evidence disputes the original premise.",
                 challenge_head_sha: SHA.head,
                 comment_id: 601,
-                actor_login: "andreas",
+                actor_login: "sampleowner",
               },
             ],
           }),
@@ -747,7 +747,7 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
     const candidate = validateCandidate({
       rawOutput: output({
         prior_issue_evaluations: [
-          { stable_id: "AG2-001", result: "still_open", finding: carried },
+          { stable_id: "ISSUE-001", result: "still_open", finding: carried },
         ],
       }),
       target: target(),
@@ -756,11 +756,11 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
         humanDecisions: [decision],
         evidenceChallenges: [
           {
-            stable_id: "AG2-001",
+            stable_id: "ISSUE-001",
             evidence: "Later evidence disputes the original premise.",
             challenge_head_sha: SHA.head,
             comment_id: 601,
-            actor_login: "andreas",
+            actor_login: "sampleowner",
           },
         ],
       }),
@@ -779,7 +779,7 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
       rawOutput: output({
         prior_issue_evaluations: [
           {
-            stable_id: "AG2-001",
+            stable_id: "ISSUE-001",
             result: "resolved_on_target",
             evidence:
               "The current target already satisfies the newly approved invariant.",
@@ -792,11 +792,11 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
         humanDecisions: [decision],
         evidenceChallenges: [
           {
-            stable_id: "AG2-001",
+            stable_id: "ISSUE-001",
             evidence: "Later evidence disputes the original premise.",
             challenge_head_sha: SHA.head,
             comment_id: 601,
-            actor_login: "andreas",
+            actor_login: "sampleowner",
           },
         ],
       }),
@@ -807,23 +807,23 @@ test("redesign, narrow, and framework evolution stay FIX_IN_PR / NO", () => {
 test("the newest valid decision controls regardless of evidence order", () => {
   const prior = firstProjection();
   const earlier = {
-    stable_id: "AG2-001",
+    stable_id: "ISSUE-001",
     kind: "NARROW_BEHAVIOR",
-    invariant: "Keep the existing callback behavior.",
-    scope: "Current callback behavior only.",
+    invariant: "Keep the existing status update behavior.",
+    scope: "Current status update behavior only.",
     evidence: null,
     tracker: null,
     owner_or_triage: null,
     decision_head_sha: SHA.head,
     comment_id: 500,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   };
   const controlling = {
     ...earlier,
     kind: "EVOLVE_FRAMEWORK",
-    invariant: "Use the approved callback seam across the framework.",
+    invariant: "Use the approved status update seam across the framework.",
     comment_id: 700,
-    actor_login: "andreasasprou",
+    actor_login: "sample-maintainer",
   };
   const carried = finding({
     autonomous_eligibility: "NO",
@@ -833,7 +833,7 @@ test("the newest valid decision controls regardless of evidence order", () => {
   const candidate = validateCandidate({
     rawOutput: output({
       prior_issue_evaluations: [
-        { stable_id: "AG2-001", result: "still_open", finding: carried },
+        { stable_id: "ISSUE-001", result: "still_open", finding: carried },
       ],
     }),
     target: target(),
@@ -857,7 +857,7 @@ test("bounded exceptions and evidence-backed rejections may supersede directly",
   for (const kind of ["APPROVE_BOUNDED_EXCEPTION", "REJECT_FINDING"]) {
     const prior = firstProjection();
     const decision = {
-      stable_id: "AG2-001",
+      stable_id: "ISSUE-001",
       kind,
       invariant: prior.open_findings[0].approved_invariant,
       scope: "This frozen scenario and PR only.",
@@ -866,13 +866,13 @@ test("bounded exceptions and evidence-backed rejections may supersede directly",
       owner_or_triage: null,
       decision_head_sha: SHA.head,
       comment_id: 501,
-      actor_login: "andreas",
+      actor_login: "sampleowner",
     };
     const candidate = validateCandidate({
       rawOutput: output({
         prior_issue_evaluations: [
           {
-            stable_id: "AG2-001",
+            stable_id: "ISSUE-001",
             result: "superseded_by_human_decision",
             decision_ref: "github-comment:501",
             evidence: "The current target remains in the approved scope.",
@@ -885,11 +885,11 @@ test("bounded exceptions and evidence-backed rejections may supersede directly",
         humanDecisions: [decision],
         evidenceChallenges: [
           {
-            stable_id: "AG2-001",
+            stable_id: "ISSUE-001",
             evidence: "Later evidence disputes the original premise.",
             challenge_head_sha: SHA.head,
             comment_id: 601,
-            actor_login: "andreas",
+            actor_login: "sampleowner",
           },
         ],
       }),
@@ -902,7 +902,7 @@ test("bounded exceptions and evidence-backed rejections may supersede directly",
           rawOutput: output({
             prior_issue_evaluations: [
               {
-                stable_id: "AG2-001",
+                stable_id: "ISSUE-001",
                 result: "still_open",
                 finding: finding({ decision_ref: "github-comment:501" }),
               },
@@ -922,7 +922,7 @@ test("bounded exceptions and evidence-backed rejections may supersede directly",
 test("a later design decision is evaluated on the current target before reopening", () => {
   const historical = firstProjection();
   const rejection = {
-    stable_id: "AG2-001",
+    stable_id: "ISSUE-001",
     kind: "REJECT_FINDING",
     invariant: historical.open_findings[0].approved_invariant,
     scope: "This frozen scenario and PR only.",
@@ -931,13 +931,13 @@ test("a later design decision is evaluated on the current target before reopenin
     owner_or_triage: null,
     decision_head_sha: SHA.head,
     comment_id: 501,
-    actor_login: "andreasasprou",
+    actor_login: "sample-maintainer",
   };
   const closedCandidate = validateCandidate({
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "superseded_by_human_decision",
           decision_ref: "github-comment:501",
           evidence: "The current target remains in the rejected scope.",
@@ -958,7 +958,7 @@ test("a later design decision is evaluated on the current target before reopenin
   const redesign = {
     ...rejection,
     kind: "REDESIGN_IN_PR",
-    invariant: "Use the approved callback seam for this behavior.",
+    invariant: "Use the approved status update seam for this behavior.",
     evidence: null,
     comment_id: 550,
   };
@@ -969,7 +969,7 @@ test("a later design decision is evaluated on the current target before reopenin
   });
 
   assert.equal(reviewPrior.open_findings.length, 1);
-  assert.equal(reviewPrior.open_findings[0].stable_id, "AG2-001");
+  assert.equal(reviewPrior.open_findings[0].stable_id, "ISSUE-001");
   assert.equal(reviewPrior.open_findings[0].disposition, "FIX_IN_PR");
   assert.equal(reviewPrior.open_findings[0].autonomous_eligibility, "NO");
   assert.equal(
@@ -986,10 +986,10 @@ test("a later design decision is evaluated on the current target before reopenin
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "resolved_on_target",
           evidence:
-            "The approved callback redesign is implemented and verified.",
+            "The approved status update redesign is implemented and verified.",
           finding: finding({ reviewTarget: currentTarget }),
         },
       ],
@@ -1022,9 +1022,9 @@ test("a new finding cannot reuse an ID from closed projection history", () => {
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "resolved_on_target",
-          evidence: "The callback task path is now implemented and verified.",
+          evidence: "The status update task path is now implemented and verified.",
           finding: finding({ reviewTarget: changedTarget }),
         },
       ],
@@ -1065,7 +1065,7 @@ test("closed finding snapshots survive later v4 targets without additive history
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "resolved_on_target",
           evidence: "The current target removes the frozen failure path.",
           finding: finding({ reviewTarget: closureTarget }),
@@ -1103,7 +1103,7 @@ test("a later deferral reopens a closed historical finding as a tracked follow-u
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "resolved_on_target",
           evidence: "The original failure is absent on the reviewed target.",
           finding: finding({ reviewTarget: changedTarget }),
@@ -1120,16 +1120,16 @@ test("a later deferral reopens a closed historical finding as a tracked follow-u
     prior: historical,
   });
   const deferral = {
-    stable_id: "AG2-001",
+    stable_id: "ISSUE-001",
     kind: "DEFER_FOLLOW_UP",
     invariant: "This PR does not depend on the deferred cleanup.",
     scope: "Deferred cleanup only.",
     evidence: "The changed path does not consume the deferred behavior.",
-    tracker: "INT-999",
+    tracker: "TEST-999",
     owner_or_triage: "Framework owner",
     decision_head_sha: SHA.head,
     comment_id: 550,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   };
 
   const reviewPrior = prepareReviewPriorProjection({
@@ -1142,7 +1142,7 @@ test("a later deferral reopens a closed historical finding as a tracked follow-u
   });
 
   assert.equal(reviewPrior.open_findings.length, 1);
-  assert.equal(reviewPrior.open_findings[0].stable_id, "AG2-001");
+  assert.equal(reviewPrior.open_findings[0].stable_id, "ISSUE-001");
   assert.equal(reviewPrior.open_findings[0].disposition, "FOLLOW_UP");
   assert.equal(reviewPrior.open_findings[0].autonomous_eligibility, "NO");
   assert.equal(
@@ -1151,7 +1151,7 @@ test("a later deferral reopens a closed historical finding as a tracked follow-u
   );
   assert.equal(reviewPrior.open_findings[0].decision_ref, "github-comment:550");
   assert.deepEqual(reviewPrior.open_findings[0].follow_up, {
-    tracker: "INT-999",
+    tracker: "TEST-999",
     owner_or_triage: "Framework owner",
   });
 
@@ -1163,7 +1163,7 @@ test("a later deferral reopens a closed historical finding as a tracked follow-u
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "still_open",
           finding: reopenedFinding,
         },
@@ -1257,10 +1257,10 @@ test("one resolved prior finding makes room for one new open finding", () => {
   );
 });
 
-test("PR 1326 retained findings are stored once and remain publishable", () => {
+test("Synthetic retained findings are stored once and remain publishable", () => {
   const fixture = JSON.parse(
     fs.readFileSync(
-      path.join(__dirname, "fixtures/ledger-replay/pr-1326-projection-overflow.json"),
+      path.join(__dirname, "fixtures/ledger-replay/projection-overflow.json"),
       "utf8",
     ),
   );
@@ -1336,17 +1336,17 @@ test("PR 1326 retained findings are stored once and remain publishable", () => {
 test("a calibrated deferral stays a tracked non-autonomous follow-up and settles", () => {
   const prior = firstProjection();
   const decision = {
-    stable_id: "AG2-001",
+    stable_id: "ISSUE-001",
     kind: "DEFER_FOLLOW_UP",
     invariant:
       "This PR neither causes nor relies on the deferred catalogue cleanup.",
     scope: "Catalogue cleanup only.",
     evidence: "The changed path does not consume the catalogue.",
-    tracker: "INT-999",
+    tracker: "TEST-999",
     owner_or_triage: "Framework owner",
     decision_head_sha: SHA.head,
     comment_id: 502,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   };
   const carried = finding({
     severity: "P2",
@@ -1362,7 +1362,7 @@ test("a calibrated deferral stays a tracked non-autonomous follow-up and settles
   const candidate = validateCandidate({
     rawOutput: output({
       prior_issue_evaluations: [
-        { stable_id: "AG2-001", result: "still_open", finding: carried },
+        { stable_id: "ISSUE-001", result: "still_open", finding: carried },
       ],
     }),
     target: target(),
@@ -1371,11 +1371,11 @@ test("a calibrated deferral stays a tracked non-autonomous follow-up and settles
       humanDecisions: [decision],
       evidenceChallenges: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           evidence: "Later evidence disputes the original premise.",
           challenge_head_sha: SHA.head,
           comment_id: 601,
-          actor_login: "andreas",
+          actor_login: "sampleowner",
         },
       ],
     }),
@@ -1389,7 +1389,7 @@ test("a calibrated deferral stays a tracked non-autonomous follow-up and settles
   );
   assert.equal(candidate.open_findings[0].decision_ref, "github-comment:502");
   assert.deepEqual(candidate.open_findings[0].follow_up, {
-    tracker: "INT-999",
+    tracker: "TEST-999",
     owner_or_triage: "Framework owner",
   });
   assert.equal(projection.conclusion, "pass");
@@ -1417,7 +1417,7 @@ test("signed P0 and P1 deferrals stay tracked when their approved risk does not 
       owner_or_triage: "Engineering triage",
       decision_head_sha: SHA.head,
       comment_id: severity === "P0" ? 900 : 901,
-      actor_login: "andreas",
+      actor_login: "sampleowner",
     };
     const candidate = validateCandidate({
       rawOutput: output({
@@ -1464,7 +1464,7 @@ test("a deferral accepts rationale rewording but carries substantive risk drift 
   });
   const prior = project({ candidate: proposedCandidate, reviewTarget });
   const decision = {
-    stable_id: "AG2-001",
+    stable_id: "ISSUE-001",
     kind: "DEFER_FOLLOW_UP",
     invariant: "This PR does not rely on the deferred compound path.",
     scope: "The low-exposure compound path only.",
@@ -1473,7 +1473,7 @@ test("a deferral accepts rationale rewording but carries substantive risk drift 
     owner_or_triage: "Engineering triage",
     decision_head_sha: SHA.head,
     comment_id: 600,
-    actor_login: "andreas",
+    actor_login: "sampleowner",
   };
 
   const rewordedRiskRationale =
@@ -1482,7 +1482,7 @@ test("a deferral accepts rationale rewording but carries substantive risk drift 
     rawOutput: output({
       prior_issue_evaluations: [
         {
-          stable_id: "AG2-001",
+          stable_id: "ISSUE-001",
           result: "still_open",
           finding: {
             ...proposed,
@@ -1525,7 +1525,7 @@ test("a deferral accepts rationale rewording but carries substantive risk drift 
           rawOutput: output({
             prior_issue_evaluations: [
               {
-                stable_id: "AG2-001",
+                stable_id: "ISSUE-001",
                 result: "still_open",
                 finding: { ...proposed, ...expandedRisk },
               },
@@ -1545,8 +1545,8 @@ test("a calibrated follow-up proposal settles instead of blocking", () => {
     severity: "P2",
     reachability: "compound_path",
     likelihood: "low",
-    likely_consequence: "The caller repeats a recoverable callback request.",
-    worst_credible_consequence: "The callback is delayed until a rerun.",
+    likely_consequence: "The customer repeats a recoverable status update request.",
+    worst_credible_consequence: "The status update is delayed until a rerun.",
     recoverability: "routine",
     proof_strength: "inferred",
     attribution: "introduced",
@@ -1637,7 +1637,7 @@ test("a projection comment written under the old settlement still parses", () =>
   assert.deepEqual(current.eligible_issue_ids, []);
   assert.equal(legacy.conclusion, "block");
   assert.equal(legacy.watcher_action, "autonomous_batch");
-  assert.deepEqual(legacy.eligible_issue_ids, ["AG2-001"]);
+  assert.deepEqual(legacy.eligible_issue_ids, ["ISSUE-001"]);
 
   const body = formatLegacyProjectionComment(legacy);
   assert.deepEqual(parseProjectionComment({ body }), legacy);
@@ -1746,7 +1746,7 @@ test("eligible fixes remain autonomous on each newly reviewed head", () => {
   const candidate = validateCandidate({
     rawOutput: output({
       prior_issue_evaluations: [
-        { stable_id: "AG2-001", result: "still_open", finding: afterFix },
+        { stable_id: "ISSUE-001", result: "still_open", finding: afterFix },
       ],
     }),
     target: nextTarget,
@@ -1759,7 +1759,7 @@ test("eligible fixes remain autonomous on each newly reviewed head", () => {
     prior,
   });
   assert.equal(projection.watcher_action, "autonomous_batch");
-  assert.deepEqual(projection.eligible_issue_ids, ["AG2-001"]);
+  assert.deepEqual(projection.eligible_issue_ids, ["ISSUE-001"]);
 });
 
 test("an entropy-heavy near-cap projection keeps the smaller transport", () => {
@@ -1769,7 +1769,7 @@ test("an entropy-heavy near-cap projection keeps the smaller transport", () => {
       result: "resolved_on_target",
       evidence:
         index === 4
-          ? entropyText("closure-4", PR_1357_FIXTURE_CLOSURE_EVIDENCE_BYTES)
+          ? entropyText("closure-4", PROJECTION_FIXTURE_CLOSURE_EVIDENCE_BYTES)
           : `closed ${index}`,
     },
   }));
@@ -1852,7 +1852,7 @@ test("dictionary transport publishes a complete repeated history that exceeds th
 
 test("new-finding and transport byte limits preserve compressed history", () => {
   const many = Array.from({ length: 51 }, (_, index) =>
-    finding({ stable_id: `AG2-${index}` }),
+    finding({ stable_id: `ISSUE-${index}` }),
   );
   const oversizedFindings = Array.from({ length: 15 }, (_, index) =>
     finding({

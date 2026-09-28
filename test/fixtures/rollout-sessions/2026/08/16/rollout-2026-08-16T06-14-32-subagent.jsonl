@@ -1,4 +1,4 @@
-{"timestamp":"2026-08-16T06:14:32.000Z","type":"session_meta","payload":{"session_id":"orchestrator-thread","id":"subagent-thread","parent_thread_id":"orchestrator-thread","thread_source":"subagent","agent_nickname":"Plato"}}
+{"timestamp":"2026-08-16T06:14:32.000Z","type":"session_meta","payload":{"session_id":"orchestrator-thread","id":"subagent-thread","parent_thread_id":"orchestrator-thread","thread_source":"subagent","agent_nickname":"ExampleAgent"}}
 {"timestamp":"2026-08-16T06:14:40.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":700,"cached_input_tokens":400,"output_tokens":60,"reasoning_output_tokens":35,"total_tokens":760}}}}
 {"timestamp":"2026-08-16T06:14:41.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":-1,"cached_input_tokens":"x","output_tokens":null}}}}
 {"timestamp":"2026-08-16T06:14:42.000Z","type":"event_msg","payload":{"type":"token_c

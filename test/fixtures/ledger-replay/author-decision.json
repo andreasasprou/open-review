@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-review-replay-v1",
+  "fixture_id": "author-decision",
+  "phase": "deterministic_validator",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [
+      43
+    ],
+    "source_commits": [
+      "bd0316642c7e2b436cbed9ff80c84c3a71cb9cd9"
+    ]
+  },
+  "inclusions": [
+    "An account recovery promise",
+    "A proposed persistent alternate contact-token state"
+  ],
+  "exclusions": [
+    "The complete change",
+    "Support transcripts",
+    "An approved contact-token lifecycle design"
+  ],
+  "input": {
+    "target": {
+      "repository": "example-org/sample-app",
+      "pr_number": 43,
+      "base_ref": "main",
+      "base_sha": "fafa79a9a2250989dcb4c519587a2faa1c7c3cfb",
+      "merge_base_sha": "fafa79a9a2250989dcb4c519587a2faa1c7c3cfb",
+      "head_sha": "bd0316642c7e2b436cbed9ff80c84c3a71cb9cd9"
+    },
+    "head_ref": "example/account-recovery",
+    "pr_title": "Recover from unknown account tokens",
+    "pr_body": "Allow an account owner to continue verification after an unknown token.",
+    "changed_files": [
+      "src/app/accounts/resolve-account.ts",
+      "src/app/accounts/contact-token.ts"
+    ],
+    "commits": [
+      {
+        "sha": "bd0316642c7e2b436cbed9ff80c84c3a71cb9cd9",
+        "message": "Enforce account-token follow-up contracts"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/app/accounts/resolve-account.ts",
+        "src/app/accounts/contact-token.ts"
+      ],
+      "lifecycle_planes": [
+        "tools_live_state"
+      ],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\n_None._\n",
+    "diff": "diff --git a/src/app/accounts/contact-token.ts b/src/app/accounts/contact-token.ts\n--- a/src/app/accounts/contact-token.ts\n+++ b/src/app/accounts/contact-token.ts\n@@ -1,3 +1,8 @@\n+export type AlternateContactTrust =\n+  | { status: \"pending\"; contactToken: string }\n+  | { status: \"confirmed\"; contactToken: string }\n+  | { status: \"withdrawn\" };\n"
+  }
+}

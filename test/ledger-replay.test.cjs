@@ -9,14 +9,14 @@ const { foldReview, hashCanonical, settlement } = require("../engine/ledger/proj
 const root = path.join(__dirname, "fixtures", "ledger-replay");
 const corpus = JSON.parse(fs.readFileSync(path.join(root, "corpus.json"), "utf8"));
 const outcomes = new Map([
-	["whitehill-lifecycle-initial", ["block", "human_owned"]],
-	["whitehill-lifecycle-follow-up", ["block", "human_owned"]],
-	["pr-1137-autonomous-batch", ["block", "autonomous_batch"]],
-	["pr-1193-author-decision", ["block", "pause_for_human"]],
-	["pr-1140-settlement-correction", ["block", "autonomous_batch"]],
-	["pr-1330-failed-transfer-edge", ["pass", "settled"]],
-	["normal-provider-failure-blocker", ["block", "autonomous_batch"]],
-	["irreversible-money-write-blocker", ["block", "autonomous_batch"]],
+	["lifecycle-initial", ["block", "human_owned", "FIX_IN_PR", "NO"]],
+	["lifecycle-follow-up", ["block", "human_owned", "FIX_IN_PR", "NO"]],
+	["autonomous-batch", ["block", "autonomous_batch", "FIX_IN_PR", "YES"]],
+	["author-decision", ["block", "pause_for_human", "AUTHOR_DECISION", "NO"]],
+	["settlement-correction", ["block", "autonomous_batch", "FIX_IN_PR", "YES"]],
+	["failed-handoff-edge", ["pass", "settled", "FOLLOW_UP", "NO"]],
+	["normal-provider-failure-blocker", ["block", "autonomous_batch", "FIX_IN_PR", "YES"]],
+	["irreversible-money-write-blocker", ["block", "autonomous_batch", "FIX_IN_PR", "YES"]],
 ]);
 
 function modelFinding(source, fixture, prior) {
@@ -28,7 +28,7 @@ function modelFinding(source, fixture, prior) {
 	};
 }
 
-test("ported bounded Intavia replay cases retain their v4 settlement", () => {
+test("synthetic replay cases retain their v4 settlement", () => {
 	assert.equal(corpus.fixtures.length, outcomes.size);
 	for (const entry of corpus.fixtures) {
 		const fixture = JSON.parse(fs.readFileSync(path.join(root, path.basename(entry.file)), "utf8"));
@@ -52,8 +52,12 @@ test("ported bounded Intavia replay cases retain their v4 settlement", () => {
 		const folded = foldReview({ output, target, priorProjection,
 			humanDecisions: fixture.input.human_decisions || [] });
 		const result = settlement(folded.open_findings);
-		assert.deepEqual([result.conclusion, result.watcher_action], outcomes.get(entry.id), entry.id);
+		assert.deepEqual([result.conclusion, result.watcher_action,
+			folded.open_findings[0].disposition, folded.open_findings[0].autonomous_eligibility],
+			outcomes.get(entry.id), entry.id);
 		assert.equal(folded.open_findings.length, 1, entry.id);
+		assert.equal(folded.closed_findings.length, 0, entry.id);
+		assert.deepEqual(folded.warnings, [], entry.id);
 		if (priorProjection) {
 			assert.equal(folded.open_findings[0].stable_id, priorProjection.open_findings[0].stable_id, entry.id);
 			assert.equal(folded.open_findings[0].failure_scenario, priorProjection.open_findings[0].failure_scenario, entry.id);

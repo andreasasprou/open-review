@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-review-replay-v1",
+  "fixture_id": "lifecycle-initial",
+  "phase": "initial",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [
+      44,
+      45
+    ],
+    "source_commits": [
+      "38b121384a7a85f5acfa852ab2961fc827a67def",
+      "bfe63ff48db0179f310a2cbd4a1d5e64d576d8f4"
+    ]
+  },
+  "inclusions": [
+    "A minimal terminal-cancellation workflow branch",
+    "A minimal completed-request fulfillment consumer",
+    "The changed lifecycle paths needed to compare live direction with later work"
+  ],
+  "exclusions": [
+    "The complete diff or discussion from example change 44 or example change 45",
+    "Historical review findings and expected classifications",
+    "Customer data, transcripts, credentials, and generated prompt captures",
+    "Any proposed fleet-wide follow-up mode or evidence-envelope implementation"
+  ],
+  "input": {
+    "target": {
+      "repository": "example-org/sample-app",
+      "pr_number": 44,
+      "base_ref": "main",
+      "base_sha": "646ee5fc412d6f891700380658dd0778921afb7b",
+      "merge_base_sha": "646ee5fc412d6f891700380658dd0778921afb7b",
+      "head_sha": "38b121384a7a85f5acfa852ab2961fc827a67def"
+    },
+    "head_ref": "example/cancellation-policy",
+    "pr_title": "Stop fulfillment after a cancelled order",
+    "pr_body": "Show the cancellation outcome and suppress later fulfillment for that order.",
+    "changed_files": [
+      "src/app/requests/cancellation-flow.ts",
+      "src/app/requests/completed-request.ts"
+    ],
+    "commits": [
+      {
+        "sha": "38b121384a7a85f5acfa852ab2961fc827a67def",
+        "message": "Add terminal cancellation handling"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/app/requests/cancellation-flow.ts",
+        "src/app/requests/completed-request.ts"
+      ],
+      "lifecycle_planes": [
+        "prompt_workflow",
+        "post_call_fulfillment"
+      ],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\n## Authoritative records\n\n_None._\n\n## Non-authoritative discussion context\n\n_None._\n",
+    "diff": "diff --git a/src/app/requests/cancellation-flow.ts b/src/app/requests/cancellation-flow.ts\n--- a/src/app/requests/cancellation-flow.ts\n+++ b/src/app/requests/cancellation-flow.ts\n@@ -41,3 +41,7 @@\n+terminalCancellation: {\n+  message: \"This order is cancelled.\",\n+  stopProcessing: true,\n+},\ndiff --git a/src/app/requests/completed-request.ts b/src/app/requests/completed-request.ts\n--- a/src/app/requests/completed-request.ts\n+++ b/src/app/requests/completed-request.ts\n@@ -18,3 +18,8 @@\n+if (result.needsFulfillment && result.priority !== \"routine\") {\n+  return [{ kind: \"fulfillment_task\", summary: result.summary }];\n+}\n"
+  }
+}

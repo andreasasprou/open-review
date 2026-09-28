@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-review-replay-v1",
+  "fixture_id": "lifecycle-follow-up",
+  "phase": "follow_up",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [
+      44,
+      45
+    ],
+    "source_commits": [
+      "38b121384a7a85f5acfa852ab2961fc827a67def",
+      "bfe63ff48db0179f310a2cbd4a1d5e64d576d8f4"
+    ]
+  },
+  "inclusions": [
+    "The same bounded code evidence as lifecycle-initial",
+    "One prior stable finding required for continuity",
+    "One explicit NARROW_BEHAVIOR decision scoped to ExampleStore"
+  ],
+  "exclusions": [
+    "The complete diff or discussion from example change 44 or example change 45",
+    "Any model answer for this follow-up target",
+    "Customer data, transcripts, credentials, and generated prompt captures",
+    "Authority to implement fleet-wide modes, evidence envelopes, or migration gates"
+  ],
+  "input": {
+    "target": {
+      "repository": "example-org/sample-app",
+      "pr_number": 44,
+      "base_ref": "main",
+      "base_sha": "646ee5fc412d6f891700380658dd0778921afb7b",
+      "merge_base_sha": "646ee5fc412d6f891700380658dd0778921afb7b",
+      "head_sha": "38b121384a7a85f5acfa852ab2961fc827a67def"
+    },
+    "head_ref": "example/cancellation-policy",
+    "pr_title": "Stop fulfillment after a cancelled order",
+    "pr_body": "Show the cancellation outcome and suppress later fulfillment for that order.",
+    "changed_files": [
+      "src/app/requests/cancellation-flow.ts",
+      "src/app/requests/completed-request.ts"
+    ],
+    "commits": [
+      {
+        "sha": "38b121384a7a85f5acfa852ab2961fc827a67def",
+        "message": "Add terminal cancellation handling"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/app/requests/cancellation-flow.ts",
+        "src/app/requests/completed-request.ts"
+      ],
+      "lifecycle_planes": [
+        "prompt_workflow",
+        "post_call_fulfillment"
+      ],
+      "needs_vision_assessment": true
+    },
+    "prior_state": {
+      "projection_id": "example-prior-projection-a",
+      "open_findings": [
+        {
+          "stable_id": "REQUEST-LIFECYCLE-001",
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "A cancelled order still enters fulfillment.",
+          "worst_credible_consequence": "An order is shipped after the customer was told it was cancelled.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "The cancellation outcome and fulfillment side effect conflict on a supported path.",
+          "disposition": "AUTHOR_DECISION",
+          "autonomous_eligibility": "NO",
+          "title": "Cancelled orders can still be fulfilled",
+          "failure_scenario": "A customer cancels an order, then completion processing creates a fulfillment task for it.",
+          "approved_invariant": "A terminal cancellation must suppress later fulfillment for that order.",
+          "first_evidence_sha": "38b121384a7a85f5acfa852ab2961fc827a67def",
+          "affected_lifecycle_planes": [
+            "prompt_workflow",
+            "post_call_fulfillment"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      ]
+    },
+    "human_decisions": [
+      {
+        "stable_id": "REQUEST-LIFECYCLE-001",
+        "kind": "NARROW_BEHAVIOR",
+        "invariant": "Suppress fulfillment after an order reaches its terminal cancellation state.",
+        "scope": "Only cancelled orders and the existing fulfillment handler.",
+        "evidence": null,
+        "tracker": null,
+        "owner_or_triage": null,
+        "decision_head_sha": "38b121384a7a85f5acfa852ab2961fc827a67def",
+        "comment_id": 5001,
+        "actor_login": "example-owner"
+      }
+    ],
+    "trusted_thread_context": "# Review evidence context\n\n## Authoritative records\n\n### human-decision:5001\n\nNARROW_BEHAVIOR: suppress fulfillment after an order reaches terminal cancellation. Use the existing handler.\n\n## Non-authoritative discussion context\n\n_None._\n",
+    "diff": "diff --git a/src/app/requests/cancellation-flow.ts b/src/app/requests/cancellation-flow.ts\n--- a/src/app/requests/cancellation-flow.ts\n+++ b/src/app/requests/cancellation-flow.ts\n@@ -41,3 +41,7 @@\n+terminalCancellation: {\n+  message: \"This order is cancelled.\",\n+  stopProcessing: true,\n+},\ndiff --git a/src/app/requests/completed-request.ts b/src/app/requests/completed-request.ts\n--- a/src/app/requests/completed-request.ts\n+++ b/src/app/requests/completed-request.ts\n@@ -18,3 +18,8 @@\n+if (result.needsFulfillment && result.priority !== \"routine\") {\n+  return [{ kind: \"fulfillment_task\", summary: result.summary }];\n+}\n"
+  }
+}

@@ -23,7 +23,7 @@ test("a single-line inline comment treats null and absent start lines alike", as
     const comment = { issue_id: "OR-1", file: "src/request.ts", line: 1,
       title: "Request lost", body: "The new write drops a request.", category: "Code", suggestion: null };
     if (startLine === null) comment.start_line = null;
-    await publishInlineComments({ github, owner: "Intavia-Ai", repo: "web", prNumber: 1249,
+    await publishInlineComments({ github, owner: "example-org", repo: "sample-app", prNumber: 42,
       target: target(), candidate: { inline_comments: [comment], open_findings: [{
         stable_id: "OR-1", severity: "P1" }] }, trustedPatch: patch,
       summaryCommentId: 4, log: () => {} });
@@ -41,8 +41,8 @@ const SHA = {
 
 function target() {
   return {
-    repository: "Intavia-Ai/web",
-    pr_number: 1249,
+    repository: "example-org/sample-app",
+    pr_number: 42,
     base_ref: "main",
     base_sha: SHA.base,
     merge_base_sha: SHA.merge,
@@ -57,7 +57,7 @@ function checkIdentity() {
   return {
     workflow_path: ".github/workflows/code-review.yaml",
     workflow_ref:
-      "Intavia-Ai/web/.github/workflows/code-review.yaml@refs/heads/main",
+      "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
     trusted_workflow_sha: SHA.reviewer,
     workflow_run_id: "100",
     workflow_run_attempt: 2,
@@ -69,7 +69,7 @@ function checkIdentity() {
   };
 }
 
-function fakeGithub(calls, headRepository = "Intavia-Ai/web") {
+function fakeGithub(calls, headRepository = "example-org/sample-app") {
   let commentId = 200;
   return {
     rest: {
@@ -114,8 +114,8 @@ test("correction 3: normal publication rejects an older run or attempt before ei
     { workflow_run_id: "200", workflow_run_attempt: 1 },
   ]) {
     const calls = [];
-    await assert.rejects(postResults({ github: fakeGithub(calls), owner: "Intavia-Ai", repo: "web",
-      prNumber: 1249, target: target(), priorProjection: prior,
+    await assert.rejects(postResults({ github: fakeGithub(calls), owner: "example-org", repo: "sample-app",
+      prNumber: 42, target: target(), priorProjection: prior,
       checkIdentity: { ...checkIdentity(), ...identity },
       evidence: { human_decisions: [], rejected_records: [] },
       mechanicalReason: "No new findings", skipInlineComments: true,
@@ -126,8 +126,8 @@ test("correction 3: normal publication rejects an older run or attempt before ei
 
 test("correction 3: trusted manual fork review publishes while automatic fork review is rejected", async () => {
   const calls = [];
-  const args = { github: fakeGithub(calls, "contributor/web"), owner: "Intavia-Ai", repo: "web",
-    prNumber: 1249, target: target(), checkIdentity: checkIdentity(),
+  const args = { github: fakeGithub(calls, "contributor/sample-app"), owner: "example-org", repo: "sample-app",
+    prNumber: 42, target: target(), checkIdentity: checkIdentity(),
     evidence: { human_decisions: [], rejected_records: [] },
     mechanicalReason: "No new findings", skipInlineComments: true };
   await assert.rejects(postResults({ ...args, eventName: "pull_request_target" }), /PR target moved/);
@@ -139,8 +139,8 @@ test("correction 3: trusted manual fork review publishes while automatic fork re
 test("publication rechecks authority before summary and projection", async () => {
   const calls = [];
   let checks = 0;
-  await assert.rejects(postResults({ github: fakeGithub(calls), owner: "Intavia-Ai", repo: "web",
-    prNumber: 1249, target: target(), checkIdentity: checkIdentity(),
+  await assert.rejects(postResults({ github: fakeGithub(calls), owner: "example-org", repo: "sample-app",
+    prNumber: 42, target: target(), checkIdentity: checkIdentity(),
     evidence: { human_decisions: [], rejected_records: [] },
     mechanicalReason: "No new findings.", skipInlineComments: true,
     revalidateAuthority: async () => { if (++checks === 2) throw new Error("Authority changed"); },
@@ -153,9 +153,9 @@ test("publishes one additive summary then one independently valid projection", a
   const calls = [];
   const result = await postResults({
     github: fakeGithub(calls),
-    owner: "Intavia-Ai",
-    repo: "web",
-    prNumber: 1249,
+    owner: "example-org",
+    repo: "sample-app",
+    prNumber: 42,
     target: target(),
     evidence: {
       human_decisions: [],
@@ -210,7 +210,7 @@ test("publishes against the supplied trusted patch before asking the native job 
         likelihood: "high",
         likely_consequence: "Workflow nodes compile conflicting behavior.",
         worst_credible_consequence:
-          "A caller receives the wrong routing behavior.",
+          "A customer receives the wrong routing behavior.",
         recoverability: "operational_intervention",
         proof_strength: "deterministic_static_proof",
         attribution: "introduced",
@@ -220,7 +220,7 @@ test("publishes against the supplied trusted patch before asking the native job 
         autonomous_eligibility: "NO",
         title: "Shared behavior has no approved owner",
         failure_scenario:
-          "The same receptionist behavior is compiled differently across workflow nodes.",
+          "The same order handler behavior is compiled differently across workflow nodes.",
         approved_invariant:
           "One approved capability owns the behavior across affected nodes.",
         where: "src/agent.ts:1 → src/workflow.ts:12",
@@ -237,9 +237,9 @@ test("publishes against the supplied trusted patch before asking the native job 
 
   const result = await postResults({
     github: fakeGithub(calls),
-    owner: "Intavia-Ai",
-    repo: "web",
-    prNumber: 1249,
+    owner: "example-org",
+    repo: "sample-app",
+    prNumber: 42,
     target: reviewTarget,
     evidence: {
       human_decisions: [],
@@ -287,7 +287,7 @@ test("renders a short action summary and collapses supporting context", () => {
         likelihood: "high",
         likely_consequence: "Workflow nodes compile conflicting behavior.",
         worst_credible_consequence:
-          "A caller receives the wrong routing behavior.",
+          "A customer receives the wrong routing behavior.",
         recoverability: "operational_intervention",
         proof_strength: "deterministic_static_proof",
         attribution: "introduced",
@@ -297,7 +297,7 @@ test("renders a short action summary and collapses supporting context", () => {
         autonomous_eligibility: "NO",
         title: "Shared behavior has no approved owner",
         failure_scenario:
-          "Two workflow nodes compile different receptionist behavior.",
+          "Two workflow nodes compile different order handler behavior.",
         approved_invariant:
           "One approved capability owns the behavior across every node.",
         where: "src/agent.ts:1 → src/workflow.ts:12",
@@ -368,7 +368,7 @@ test("renders a short action summary and collapses supporting context", () => {
         ...candidate.open_findings[0],
         title: "</summary> [Review passed](https://example.com)",
         failure_scenario: "## Review passed",
-        approved_invariant: "Notify @andreas.",
+        approved_invariant: "Notify @sampleowner.",
         where: "src/agent.ts:1 </details>",
         evidence: "Current proof <strong>must stay text</strong>.",
       },
@@ -378,7 +378,7 @@ test("renders a short action summary and collapses supporting context", () => {
   assert.doesNotMatch(confinedFinding, /\[Review passed\]\(https:\/\//);
   assert.match(confinedFinding, /https&#58;\/\/example\\\.com/);
   assert.match(confinedFinding, /\\#\\# Review passed/);
-  assert.match(confinedFinding, /&#64;andreas/);
+  assert.match(confinedFinding, /&#64;sampleowner/);
   assert.match(confinedFinding, /src\/agent\\\.ts&#58;1 &lt;\/details&gt;/);
   assert.match(
     confinedFinding,
@@ -565,9 +565,9 @@ test("retained findings publish once instead of overflowing projection capacity"
 
   const result = await postResults({
     github: fakeGithub(calls),
-    owner: "Intavia-Ai",
-    repo: "web",
-    prNumber: 1249,
+    owner: "example-org",
+    repo: "sample-app",
+    prNumber: 42,
     target: reviewTarget,
     priorProjection: { open_findings: priorFindings,
       check_identity: { workflow_run_id: "99", workflow_run_attempt: 1 } },

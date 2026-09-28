@@ -11,7 +11,7 @@ const action = readFileSync(resolve(__dirname, '../action.yml'), 'utf8');
 test('first v4 prompt hides old state issues while a v4 continuation retains them', () => {
   const { preparePromptState } = require('../engine/index.cjs');
   const state = { schema_version: 1, review_count: 3,
-    open_issues: [{ id: 'TS-HONESTY-001' }], pr_summary: 'Old review' };
+    open_issues: [{ id: 'RETRY-CONTROL-001' }], pr_summary: 'Old review' };
   assert.deepEqual(preparePromptState(state, null), { ...state, open_issues: [] });
   assert.deepEqual(preparePromptState(state, { schema_version: 4 }), state);
   assert.match(action, /preparePromptState\(.*priorProjection/);

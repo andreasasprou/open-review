@@ -10,11 +10,11 @@ const { publishCarriedProjection } = require("../engine/ledger/carry.cjs");
 
 const A = "a".repeat(40);
 const B = "b".repeat(40);
-const target = { repository: "Intavia-Ai/web", pr_number: 123, base_ref: "main", base_sha: B,
+const target = { repository: "example-org/sample-app", pr_number: 123, base_ref: "main", base_sha: B,
 	merge_base_sha: B, head_sha: A, trusted_reviewer_ref: B, evidence_bundle_sha256: "c".repeat(64),
 	evidence_schema_version: 2 };
 const identity = { workflow_path: ".github/workflows/review.yml",
-	workflow_ref: "Intavia-Ai/web/.github/workflows/review.yml@refs/heads/main",
+	workflow_ref: "example-org/sample-app/.github/workflows/review.yml@refs/heads/main",
 	trusted_workflow_sha: B, workflow_run_id: "1234", workflow_run_attempt: 1, workflow_job_id: 88,
 	check_run_id: 99, check_suite_id: 77, app_slug: "github-actions", head_sha: A };
 const finding = { stable_id: "OR-1", severity: "P1", reachability: "normal_path", likelihood: "medium",
@@ -33,7 +33,7 @@ test("same-head carry publishes a new blocked projection bound to attempt 2", as
 		issues: { createComment: async (args) => { body = args.body; return { data: { id: 51 } }; } } } };
 	const nextIdentity = { ...identity, workflow_run_attempt: 2, check_run_id: 100, workflow_job_id: 89 };
 	const lines = [];
-	const carried = await publishCarriedProjection({ github, owner: "Intavia-Ai", repo: "web",
+	const carried = await publishCarriedProjection({ github, owner: "example-org", repo: "sample-app",
 		prNumber: 123, priorProjection, target, checkIdentity: nextIdentity, log: (line) => lines.push(line) });
 	assert.equal(readProjectionComment(body).check_identity.workflow_run_attempt, 2);
 	assert.equal(carried.conclusion, "block");
@@ -47,7 +47,7 @@ test("same-head carry refuses a changed base or merge base", async () => {
 	const priorProjection = buildProjection({ candidate: first, target, checkIdentity: identity, summaryCommentId: 50 });
 	const github = { rest: { pulls: { get: async () => { throw new Error("Must reject before publication"); } } } };
 	for (const changed of [{ base_sha: B.replace(/^b/, "c") }, { merge_base_sha: B.replace(/^b/, "c") }]) {
-		await assert.rejects(publishCarriedProjection({ github, owner: "Intavia-Ai", repo: "web", prNumber: 123,
+		await assert.rejects(publishCarriedProjection({ github, owner: "example-org", repo: "sample-app", prNumber: 123,
 			priorProjection, target: { ...target, ...changed },
 			checkIdentity: { ...identity, workflow_run_attempt: 2 } }), /target changed/);
 	}
@@ -59,9 +59,9 @@ test("same-head carry requires a newer attempt and fresh authority", async () =>
 	const github = { rest: { pulls: { get: async () => ({ data: {
 		head: { sha: A }, base: { sha: B, ref: "main" } } }) },
 		issues: { createComment: async () => { throw new Error("Must not publish"); } } } };
-	await assert.rejects(publishCarriedProjection({ github, owner: "Intavia-Ai", repo: "web", prNumber: 123,
+	await assert.rejects(publishCarriedProjection({ github, owner: "example-org", repo: "sample-app", prNumber: 123,
 		priorProjection, target, checkIdentity: identity }), /newer workflow run or attempt/);
-	await assert.rejects(publishCarriedProjection({ github, owner: "Intavia-Ai", repo: "web", prNumber: 123,
+	await assert.rejects(publishCarriedProjection({ github, owner: "example-org", repo: "sample-app", prNumber: 123,
 		priorProjection, target, checkIdentity: { ...identity, workflow_run_attempt: 2 },
 		revalidateAuthority: async () => { throw new Error("Authority changed"); } }), /Authority changed/);
 });

@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-review-replay-v1",
+  "fixture_id": "settlement-correction",
+  "phase": "deterministic_validator",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [
+      42
+    ],
+    "source_commits": [
+      "ae2585a2139fce89293d43b0567eaf2929ac933c"
+    ]
+  },
+  "inclusions": [
+    "The same priority routing scenario after an attempted repair",
+    "A local change branch activated by that repair"
+  ],
+  "exclusions": [
+    "The full PR",
+    "A new stable issue",
+    "Any new capability or product choice"
+  ],
+  "input": {
+    "target": {
+      "repository": "example-org/sample-app",
+      "pr_number": 42,
+      "base_ref": "main",
+      "base_sha": "2e5dcd6914db44ff1b6005a9c6a86a21368e22d0",
+      "merge_base_sha": "2e5dcd6914db44ff1b6005a9c6a86a21368e22d0",
+      "head_sha": "ae2585a2139fce89293d43b0567eaf2929ac933c"
+    },
+    "head_ref": "example/order-routing",
+    "pr_title": "Route priority service changes to the assigned team",
+    "pr_body": "Keep priority service changes on the assigned team route.",
+    "changed_files": [
+      "src/app/orders/routing.ts"
+    ],
+    "commits": [
+      {
+        "sha": "ae2585a2139fce89293d43b0567eaf2929ac933c",
+        "message": "Route priority service changes to team"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/app/orders/routing.ts"
+      ],
+      "lifecycle_planes": [
+        "prompt_workflow"
+      ],
+      "needs_vision_assessment": true
+    },
+    "prior_state": {
+      "projection_id": "example-prior-projection-b",
+      "open_findings": [
+        {
+          "stable_id": "ORDER-ROUTE-001",
+          "severity": "P1",
+          "reachability": "normal_path",
+          "likelihood": "medium",
+          "likely_consequence": "A priority order change reaches the default queue.",
+          "worst_credible_consequence": "The customer reaches a team that cannot process it.",
+          "recoverability": "operational_intervention",
+          "proof_strength": "deterministic_static_proof",
+          "attribution": "introduced",
+          "risk_rationale": "The approved route is bypassed on a supported path.",
+          "disposition": "FIX_IN_PR",
+          "autonomous_eligibility": "YES",
+          "title": "Priority changes can leave the assigned team route",
+          "failure_scenario": "A priority order change enters the revised branch but goes to the default queue.",
+          "approved_invariant": "Priority order changes use the assigned team route.",
+          "first_evidence_sha": "2e5dcd6914db44ff1b6005a9c6a86a21368e22d0",
+          "affected_lifecycle_planes": [
+            "prompt_workflow"
+          ],
+          "decision_ref": null,
+          "follow_up": null
+        }
+      ]
+    },
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\n_None._\n",
+    "diff": "diff --git a/src/app/orders/routing.ts b/src/app/orders/routing.ts\n--- a/src/app/orders/routing.ts\n+++ b/src/app/orders/routing.ts\n@@ -70,3 +70,6 @@\n+if (order.priority === \"high\") {\n+  return order.changeRequested ? queues.default : queues.assigned;\n+}\n"
+  }
+}

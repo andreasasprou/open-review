@@ -1,42 +1,58 @@
 {
   "schema_version": 1,
-  "dataset_id": "intavia-code-review-bounded-v1",
+  "dataset_id": "synthetic-review-replay-v1",
   "fixture_id": "irreversible-money-write-blocker",
   "phase": "deterministic_validator",
-  "frozen_at": "2026-08-01T18:20:00.000Z",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
   "provenance": {
-    "source_prs": [1400],
-    "source_commits": ["cccccccccccccccccccccccccccccccccccccccc"]
+    "source_prs": [
+      48
+    ],
+    "source_commits": [
+      "bd746cb05a4bd50b7853265f4a21389413d6a3b7"
+    ]
   },
-  "inclusions": ["Silent payment capture", "Irreversible provider write"],
-  "exclusions": ["Provider implementation details", "Unrelated checkout UI"],
+  "inclusions": [
+    "Silent payment capture",
+    "Irreversible provider write"
+  ],
+  "exclusions": [
+    "Provider implementation details",
+    "Unrelated checkout UI"
+  ],
   "input": {
     "target": {
-      "repository": "Intavia-Ai/web",
-      "pr_number": 1400,
+      "repository": "example-org/sample-app",
+      "pr_number": 48,
       "base_ref": "main",
-      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "merge_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "head_sha": "cccccccccccccccccccccccccccccccccccccccc"
+      "base_sha": "48d9a02c15c467c877fb51d214b5256dc8b32b69",
+      "merge_base_sha": "48d9a02c15c467c877fb51d214b5256dc8b32b69",
+      "head_sha": "bd746cb05a4bd50b7853265f4a21389413d6a3b7"
     },
-    "head_ref": "sanitized/payment-write",
-    "pr_title": "Capture booking deposits",
-    "pr_body": "Capture the approved deposit after booking confirmation.",
-    "changed_files": ["src/modules/payments/capture.ts"],
+    "head_ref": "example/payment-retry",
+    "pr_title": "Capture reservation deposits",
+    "pr_body": "Capture the approved deposit after reservation confirmation.",
+    "changed_files": [
+      "src/app/payments/charge.ts"
+    ],
     "commits": [
       {
-        "sha": "cccccccccccccccccccccccccccccccccccccccc",
-        "message": "Capture booking deposits"
+        "sha": "bd746cb05a4bd50b7853265f4a21389413d6a3b7",
+        "message": "Capture reservation deposits"
       }
     ],
     "surface_classification": {
-      "changed_paths": ["src/modules/payments/capture.ts"],
-      "lifecycle_planes": ["provider_action"],
+      "changed_paths": [
+        "src/app/payments/charge.ts"
+      ],
+      "lifecycle_planes": [
+        "provider_action"
+      ],
       "needs_vision_assessment": false
     },
     "prior_state": null,
     "human_decisions": [],
-    "trusted_thread_context": "# Review evidence context\n\nThe changed retry path can submit the same irreversible charge twice without caller visibility.\n",
-    "diff": "diff --git a/src/modules/payments/capture.ts b/src/modules/payments/capture.ts\n--- a/src/modules/payments/capture.ts\n+++ b/src/modules/payments/capture.ts\n@@ -20,3 +20,4 @@\n+return retry(() => provider.capture(payment));\n"
+    "trusted_thread_context": "# Review evidence context\n\nThe changed retry path can submit the same irreversible charge twice without customer visibility.\n",
+    "diff": "diff --git a/src/app/payments/charge.ts b/src/app/payments/charge.ts\n--- a/src/app/payments/charge.ts\n+++ b/src/app/payments/charge.ts\n@@ -20,3 +20,4 @@\n+return repeat(() => gateway.charge(order));\n"
   }
 }

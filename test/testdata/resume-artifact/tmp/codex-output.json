@@ -1,4 +1,4 @@
-{"type":"thread.started","thread_id":"01a0092f-0d9e-7e73-bfce-f5d25f1683fd","model":"gpt-5.6-sol"}
+{"type":"thread.started","thread_id":"01911111-1111-7111-8111-111111111111","model":"gpt-5.6-sol"}
 {"type":"item.completed","item":{"type":"agent_message","text":"hello"}}
-{"type":"thread.started","thread_id":"01a00930-1111-7e73-bfce-f5d25f1683fd","model":"gpt-5.6-luna"}
-{"type":"turn.completed","usage":{"input_tokens":12409056,"cached_input_tokens":11800000,"output_tokens":28877}}
+{"type":"thread.started","thread_id":"01911111-2222-7222-8222-222222222222","model":"gpt-5.6-luna"}
+{"type":"turn.completed","usage":{"input_tokens":40000,"cached_input_tokens":30000,"output_tokens":2000}}

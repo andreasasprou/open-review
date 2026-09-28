@@ -1,0 +1,3 @@
+{"timestamp":"2026-08-16T10:47:02.000Z","type":"session_meta","payload":{"session_id":"01911111-1111-7111-8111-111111111111","id":"01911111-2222-7222-8222-222222222222","parent_thread_id":"01911111-1111-7111-8111-111111111111","thread_source":"subagent","originator":"codex_exec","agent_nickname":"ExampleAgent"}}
+{"timestamp":"2026-08-16T10:47:03.000Z","type":"turn_context","payload":{"turn_id":"01911111-4444-7444-8444-444444444444","model":"gpt-5.6-luna"}}
+{"timestamp":"2026-08-16T10:55:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25000,"cached_input_tokens":20000,"output_tokens":20000,"reasoning_output_tokens":9000},"last_token_usage":{"input_tokens":900},"model_context_window":353400}}}

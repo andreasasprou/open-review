@@ -76,8 +76,8 @@ test("footer names the thread count when every thread is counted", () => {
 
 test("footer flags the orchestrator-only fallback", () => {
 	const footer = buildMetadataFooter({
-		inputTokens: "12409056",
-		outputTokens: "28877",
+		inputTokens: "40000",
+		outputTokens: "2000",
 		usageScope: "orchestrator-only",
 	});
 	assert.match(footer, /\| Token scope \| orchestrator thread only \|/);
@@ -88,23 +88,23 @@ test("the degraded fallback reads every token field from turn.completed", () => 
 	const event = JSON.stringify({
 		type: "turn.completed",
 		usage: {
-			input_tokens: 12409056,
-			cached_input_tokens: 11800000,
-			output_tokens: 28877,
+			input_tokens: 40000,
+			cached_input_tokens: 30000,
+			output_tokens: 2000,
 			reasoning_output_tokens: 17402,
 		},
 	});
 	assert.equal(
 		runJq(turnCompletedFallbackFilter("INPUT_TOKENS"), event),
-		"12409056",
+		"40000",
 	);
 	assert.equal(
 		runJq(turnCompletedFallbackFilter("CACHED_TOKENS"), event),
-		"11800000",
+		"30000",
 	);
 	assert.equal(
 		runJq(turnCompletedFallbackFilter("OUTPUT_TOKENS"), event),
-		"28877",
+		"2000",
 	);
 	// The regression this guards: reasoning was hard-coded to 0 in this branch.
 	assert.equal(

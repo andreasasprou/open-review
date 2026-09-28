@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-review-replay-v1",
+  "fixture_id": "autonomous-batch",
+  "phase": "deterministic_validator",
+  "frozen_at": "2025-01-01T12:00:00.000Z",
+  "provenance": {
+    "source_prs": [
+      41
+    ],
+    "source_commits": [
+      "2e5dcd6914db44ff1b6005a9c6a86a21368e22d0"
+    ]
+  },
+  "inclusions": [
+    "One bounded reservation-error recovery defect",
+    "The two local owning surfaces"
+  ],
+  "exclusions": [
+    "The full PR",
+    "Historical review prose",
+    "Any product or framework choice"
+  ],
+  "input": {
+    "target": {
+      "repository": "example-org/sample-app",
+      "pr_number": 41,
+      "base_ref": "main",
+      "base_sha": "c63bc3cb09505c0b48a109bb1288bbed2d6b287b",
+      "merge_base_sha": "c63bc3cb09505c0b48a109bb1288bbed2d6b287b",
+      "head_sha": "2e5dcd6914db44ff1b6005a9c6a86a21368e22d0"
+    },
+    "head_ref": "example/vendor-rejection",
+    "pr_title": "Handle ExampleVendor reservation validation failures",
+    "pr_body": "Return a truthful recovery result when ExampleVendor rejects a reservation request.",
+    "changed_files": [
+      "src/app/orders/reserve.ts",
+      "src/app/vendors/example-vendor.ts"
+    ],
+    "commits": [
+      {
+        "sha": "2e5dcd6914db44ff1b6005a9c6a86a21368e22d0",
+        "message": "Handle ExampleVendor reservation validation failures"
+      }
+    ],
+    "surface_classification": {
+      "changed_paths": [
+        "src/app/orders/reserve.ts",
+        "src/app/vendors/example-vendor.ts"
+      ],
+      "lifecycle_planes": [
+        "tools_live_state",
+        "provider_action"
+      ],
+      "needs_vision_assessment": true
+    },
+    "prior_state": null,
+    "human_decisions": [],
+    "trusted_thread_context": "# Review evidence context\n\n_None._\n",
+    "diff": "diff --git a/src/app/orders/reserve.ts b/src/app/orders/reserve.ts\n--- a/src/app/orders/reserve.ts\n+++ b/src/app/orders/reserve.ts\n@@ -20,3 +20,4 @@\n+return vendor.reserve(order);\ndiff --git a/src/app/vendors/example-vendor.ts b/src/app/vendors/example-vendor.ts\n--- a/src/app/vendors/example-vendor.ts\n+++ b/src/app/vendors/example-vendor.ts\n@@ -40,3 +40,4 @@\n+if (!reply.accepted) return rejected(reply.reason);\n"
+  }
+}

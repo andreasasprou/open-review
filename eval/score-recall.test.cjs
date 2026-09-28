@@ -76,19 +76,19 @@ test("prose locations score every producer and consumer span", () => {
 test("en and em dash ranges score the lines inside them", () => {
   for (const dash of ["–", "—"]) {
     const output = { new_findings: [{ severity: "P1", title: "route",
-      where: `talent-search.router.ts:860${dash}882` }] };
-    assert.deepEqual(scoreRun([{ id: "route", file: "talent-search.router.ts", line: 870 }], output).hits,
+      where: `order-router.ts:860${dash}882` }] };
+    assert.deepEqual(scoreRun([{ id: "route", file: "order-router.ts", line: 870 }], output).hits,
       [{ id: "route", hit: true }]);
   }
 });
 
 test("same-file prose and comma lists score each referenced span", () => {
   const output = { new_findings: [{ severity: "P1", title: "capture",
-    where: "Producer: dentally-treatment-capture.ts:31-32,68-87; Consumer: the same file:140-150" }] };
+    where: "Producer: order-capture.ts:31-32,68-87; Consumer: the same file:140-150" }] };
   assert.deepEqual(scoreRun([
-    { id: "first", file: "dentally-treatment-capture.ts", line: 31 },
-    { id: "second", file: "dentally-treatment-capture.ts", line: 75 },
-    { id: "same", file: "dentally-treatment-capture.ts", line: 145 },
+    { id: "first", file: "order-capture.ts", line: 31 },
+    { id: "second", file: "order-capture.ts", line: 75 },
+    { id: "same", file: "order-capture.ts", line: 145 },
   ], output).hits, [
     { id: "first", hit: true }, { id: "second", hit: true }, { id: "same", hit: true },
   ]);
