@@ -979,6 +979,19 @@ async function verifyProjectionProvenance({
     );
   }
   const publishedProjectionLine = `[codex-review] Published additive projection comment ${commentId} with projection SHA-256 ${projection.projection_sha256}.`;
+  const expectedConclusion = projection.conclusion === "pass" ? "success" : "failure";
+  // A push can cancel the job during cleanup after it published. The run's own review check then carries the
+  // gate: the action completes it in the job's check suite only after publication, and a branch workflow
+  // cannot write to that suite. Direct events put that check on the PR head, outside the job's suite, so a
+  // cancelled direct-event job still fails closed.
+  const gateTitle = new RegExp(`^(?:Codex Review Pass \\d+|No New Commits — carried gate): ${projection.conclusion === "pass" ? "PASS" : "BLOCK"}$`);
+  const gateCompletedAfterPublication = checks.items.some((candidate) =>
+    Number(candidate.id) !== identity.check_run_id &&
+    Number(candidate.check_suite?.id) === identity.check_suite_id &&
+    candidate.app?.slug === "github-actions" && candidate.head_sha === identity.head_sha &&
+    candidate.status === "completed" && candidate.conclusion === expectedConclusion &&
+    gateTitle.test(candidate.output?.title || "") &&
+    Boolean(candidate.completed_at) && candidate.completed_at >= commentCreatedAt);
   const trustedWorkflowShaLine = `TRUSTED_WORKFLOW_SHA: ${identity.trusted_workflow_sha}`;
   if (
     !check ||
@@ -1007,9 +1020,10 @@ async function verifyProjectionProvenance({
     ![run, job, check].every((entry) => entry.status === "completed") ||
     job.name !== check.name ||
     !check.completed_at || check.completed_at < commentCreatedAt ||
-    check.conclusion !== (projection.conclusion === "pass" ? "success" : "failure") ||
+    (check.conclusion !== expectedConclusion && !(check.conclusion === "cancelled" && gateCompletedAfterPublication)) ||
+    // The receipt must be the whole log line: a suffix match would accept PR-controlled text such as the logged title.
     !logLines.some((line) =>
-      line.trimEnd().endsWith(publishedProjectionLine),
+      line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z /, "").trimEnd() === publishedProjectionLine,
     ) ||
     !logLines.some((line) => line.trimEnd().endsWith(trustedWorkflowShaLine))
   ) {
