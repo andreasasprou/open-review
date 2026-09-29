@@ -83,11 +83,9 @@ jobs:
           command: open-review
           check-name: Open Review
           pr-number: ${{ github.event.inputs.pr_number }}
-          # ChatGPT auth.json, base64-encoded (see the README).
-          codex-auth-json-b64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
-          # Or a Responses-API provider instead of auth.json:
-          # provider-base-url: https://models.example.com/v1
-          # provider-env-key: REVIEW_PROVIDER_API_KEY
+          # The Responses-API model provider (required).
+          provider-base-url: https://models.example.com/v1
+          provider-env-key: REVIEW_PROVIDER_API_KEY
           # decision-owners: your-login another-login
-        # env:
-        #   REVIEW_PROVIDER_API_KEY: ${{ secrets.REVIEW_PROVIDER_API_KEY }}
+        env:
+          REVIEW_PROVIDER_API_KEY: ${{ secrets.REVIEW_PROVIDER_API_KEY }}

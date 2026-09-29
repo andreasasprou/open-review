@@ -353,7 +353,7 @@ test('focused worker action step is guarded, fail-open and uses the staged engin
   mkdirSync(join(root, 'bin'));
   writeFileSync(join(root, 'bin/node'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$NODE_RECORD"\n', { mode: 0o755 });
   const start = action.indexOf('    - name: Run focused workers');
-  const end = action.indexOf('    - name: Remove Codex auth before transcript upload', start);
+  const end = action.indexOf('    - name: Upload review transcripts', start);
   const step = action.slice(start, end);
   assert.match(step, /review_generated == 'true'/);
   assert.match(step, /review_mode != 'skip'/);
@@ -369,7 +369,7 @@ test('focused worker action step is guarded, fail-open and uses the staged engin
   assert.equal(existsSync(join(root, '.codex-ci/focused-workers.json')), false);
   assert.equal(readFileSync(join(root, '.codex-ci/rules.md'), 'utf8'), 'review rules\n');
   assert.match(readFileSync(join(root, 'node-call'), 'utf8'), /focused-workers\.cjs run 4 a{40}/);
-  assert.match(readFileSync(join(root, 'node-call'), 'utf8'), /parent-home\/auth\.json/);
+  assert.match(readFileSync(join(root, 'node-call'), 'utf8'), /\/tmp\/open-review-fw\.[A-Za-z0-9]+ - \.codex-ci /);
   const privateHomeRoot = readFileSync(join(root, 'node-call'), 'utf8').match(/\/tmp\/open-review-fw\.[A-Za-z0-9]+/)?.[0];
   assert.ok(privateHomeRoot, 'worker home root must be outside the runner temp directory');
   assert.equal(existsSync(privateHomeRoot), false, 'worker stage removes its private home root');
@@ -383,15 +383,21 @@ test('focused worker action step is guarded, fail-open and uses the staged engin
   assert.equal(existsSync(join(root, 'node-call')), false);
 });
 
-test('both auth removal steps erase the parent home after worker homes are cleaned by the worker stage', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'open-review-action-auth-'));
+test('the hosted action writes no credential file and removes the Codex home', (t) => {
+  assert.doesNotMatch(action, /codex-auth-json-b64|auth\.json"|> "\$CODEX_HOME/);
+  const root = mkdtempSync(join(tmpdir(), 'open-review-action-home-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, 'parent')); writeFileSync(join(root, 'parent/auth.json'), '{}');
-  const env = { RUNNER_TEMP: root, CODEX_HOME: join(root, 'parent') };
-  let result = runShell(block('Remove Codex auth before transcript upload', 'run'), root, env);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(existsSync(join(root, 'parent/auth.json')), false);
-  result = runShell(block('Remove Codex auth', 'run'), root, env);
+  mkdirSync(join(root, 'parent/sessions'), { recursive: true });
+  const result = runShell(block('Remove Codex home', 'run'), root, { RUNNER_TEMP: root, CODEX_HOME: join(root, 'parent') });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(join(root, 'parent')), false);
+});
+
+test('the provider check fails without a provider URL', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'open-review-action-provider-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const result = runShell(block('Verify model provider reachability', 'run'), root,
+    { PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', CODEX_CLI_VERSION: '0.157.1' });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /provider-base-url is required/);
 });

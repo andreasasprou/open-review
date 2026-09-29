@@ -266,6 +266,30 @@ fi
   assert.equal(fs.readFileSync(path.join(root, 'gtimeout-called'), 'utf8'), 'invoked\n');
 });
 
+test('slice selection reads no file outside the checkout through a PR symlink', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-fw-symlink-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-fw-outside-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'SYNTHETIC_OUTSIDE');
+  fs.writeFileSync(path.join(outside, 'inner.ts'), 'SYNTHETIC_OUTSIDE');
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.ts'));
+  fs.symlinkSync(outside, path.join(root, 'dir'));
+  fs.writeFileSync(path.join(root, 'inside.ts'), 'SYNTHETIC_INSIDE');
+  fs.mkdirSync(path.join(root, '.codex-ci'));
+  fs.writeFileSync(path.join(root, '.codex-ci/pr-diff.patch'),
+    fileDiff('link.ts', 1) + fileDiff('dir/inner.ts', 1) + fileDiff('inside.ts', 1));
+  const seen = [];
+  const readSync = fs.readSync;
+  t.mock.method(fs, 'readSync', function (fd, buffer, ...rest) {
+    const size = readSync.call(this, fd, buffer, ...rest);
+    seen.push(buffer.subarray(0, size).toString());
+    return size;
+  });
+  await run({ max: 0, baseSha: 'a'.repeat(40), homeRoot: privateHomeRoot(t), outputDir: path.join(root, '.codex-ci'), root });
+  assert.ok(seen.some((text) => text.includes('SYNTHETIC_INSIDE')));
+  assert.ok(!seen.some((text) => text.includes('SYNTHETIC_OUTSIDE')));
+});
+
 test('worker keeps a valid answer after more than 200 KB of JSONL events', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-worker-stdout-'));
   const homeRoot = privateHomeRoot(t);
