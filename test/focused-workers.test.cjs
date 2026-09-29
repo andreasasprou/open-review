@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { selectSlices, excluded, validOutput, run } = require('../engine/focused-workers.cjs');
+const { selectSlices, excluded, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
 const { renderFocusedWorkerSection, readFocusedWorkers, loadPreviousState, postResults, MARKERS } = require('../engine/index.cjs');
 const { parseProjectionComment } = require('../engine/ledger/projection.cjs');
 const { createRecordingCaughtErrorDiagnosticRecorder } = require('./helpers/recording-recorder.cjs');
@@ -188,13 +188,17 @@ test('worker text cannot inject Markdown or review markers into the next round',
 test('oversized aggregate worker file is omitted with a warning', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-worker-size-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(root, 'focused-workers.json'), ' '.repeat(256 * 1024 + 1));
+  fs.writeFileSync(path.join(root, 'focused-workers.json'), ' '.repeat(384 * 1024 + 1));
   const warnings = [];
   const oldWarn = console.warn;
   console.warn = (...args) => warnings.push(args.join(' '));
   try { assert.deepEqual(readFocusedWorkers(root), []); }
   finally { console.warn = oldWarn; }
-  assert.match(warnings.join(' '), /256.*KB|oversiz/i);
+  assert.match(warnings.join(' '), /384.*KB|oversiz/i);
+  fs.writeFileSync(path.join(root, 'focused-workers.json'), JSON.stringify([{ file: 'a.ts', pad: 'x'.repeat(320 * 1024) }]));
+  assert.equal(readFocusedWorkers(root).length, 1, 'five full answers fit the aggregate bound');
+  assert.match(fs.readFileSync(path.join(__dirname, '../engine/run-local.sh'), 'utf8'),
+    /readFocusedWorkers\(path\.dirname\(process\.argv\[4\]\)\)/, 'the local runner uses the same bounded reader');
 });
 
 test('error, timeout and invalid JSON statuses leave the section out', () => {
@@ -311,6 +315,82 @@ printf '%0250000d\\n' 0
   assert.equal(results[0].candidates.length, 1);
   assert.equal(results[0].usage.input_tokens, 42);
   assert.equal(fs.statSync(path.join(root, '.codex-ci/focused-worker-0.jsonl')).size > 200 * 1024, true);
+});
+
+const ruleFinding = (overrides = {}) => ({ title: 'Stub the logger', file: 'src/a.test.ts', line: 9, severity: 'P3',
+  rule_source: 'docs/logging.md:4', change: 'the test imports the real logger', violation: 'tests must stub the logger', ...overrides });
+
+test('eval files are test files for slice selection', () => {
+  assert.equal(excluded('apps/x/eval/helpers/harness.ts'), 'test');
+  assert.equal(excluded('apps/x/deal-breaker.eval.ts'), 'test');
+  assert.equal(excluded('apps/x/evaluator.ts'), null);
+});
+
+test('strict rules output rejects extra, missing and mistyped fields', () => {
+  const output = { findings: [ruleFinding()], files_read: ['AGENTS.md'] };
+  assert.equal(validRulesOutput(output), true);
+  assert.equal(validRulesOutput({ ...output, extra: 1 }), false);
+  assert.equal(validRulesOutput({ ...output, findings: [{ ...ruleFinding(), severity: 'P1' }] }), false);
+  assert.equal(validRulesOutput({ ...output, findings: [{ ...ruleFinding(), extra: 1 }] }), false);
+  assert.equal(validRulesOutput({ ...output, findings: Array(9).fill(ruleFinding()) }), false);
+});
+
+test('the rules worker runs beside four slice workers only when enabled', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-rules-worker-'));
+  const homeRoot = privateHomeRoot(t);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, '.codex-ci'));
+  fs.writeFileSync(path.join(root, '.codex-ci/pr-diff.patch'), ['a.ts', 'b.ts', 'c.ts', 'd.ts'].map((file) => fileDiff(file, 1)).join(''));
+  const marker = path.join(root, 'rules-started');
+  const fake = path.join(root, 'fake-timeout');
+  // Slices wait for the rules worker to start; a queued rules worker makes every slice fail.
+  fs.writeFileSync(fake, `#!/usr/bin/env bash
+printf '%s %s\\n' "$2" "$*" >> "${path.join(root, 'calls')}"
+slice="$(sed -n 's/^Slice: //p')"
+schema=""
+while [ "$1" != "-o" ]; do if [ "$1" = "--output-schema" ]; then schema="$2"; fi; shift; done
+shift
+if [[ "$schema" == *rules-worker-schema.json ]]; then
+  touch "${marker}"
+  printf '%s' '${JSON.stringify({ findings: [ruleFinding()], files_read: ['AGENTS.md'] })}' > "$1"
+  exit 0
+fi
+for _ in $(seq 50); do [ -f "${marker}" ] && break; sleep 0.1; done
+[ -f "${marker}" ] || exit 9
+printf '%s' '{"slice":"'"$slice"'","status":"no_counterexample_within_budget","candidates":[],"inputs_tried":[],"open_suspicions":[]}' > "$1"
+`, { mode: 0o755 });
+  const options = { max: 4, baseSha: 'a'.repeat(40), homeRoot, outputDir: path.join(root, '.codex-ci'), root, timeoutCommand: fake };
+  const results = await run({ ...options, rules: true });
+  assert.deepEqual(results.map(({ file, kind }) => [file, kind]),
+    [['a.ts', undefined], ['b.ts', undefined], ['c.ts', undefined], ['d.ts', undefined], ['(repository rules)', 'rules']]);
+  assert.deepEqual(results.map(({ status }) => status), ['ok', 'ok', 'ok', 'ok', 'ok'], 'every slice saw the rules worker start');
+  assert.deepEqual(results[4].candidates, [{ title: 'Stub the logger', file: 'src/a.test.ts', line: 9, severity: 'P3',
+    input: 'the test imports the real logger', violation: 'tests must stub the logger', property_source: 'docs/logging.md:4' }]);
+  const calls = fs.readFileSync(path.join(root, 'calls'), 'utf8');
+  assert.match(calls, /^12m .*rules-worker-schema\.json/m);
+  assert.match(calls, /^8m .*focused-worker-schema\.json/m);
+  fs.rmSync(path.join(root, 'calls'));
+  assert.deepEqual((await run({ ...options, rules: false })).map(({ file }) => file), ['a.ts', 'b.ts', 'c.ts', 'd.ts']);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, 'calls'), 'utf8'), /rules-worker-schema/);
+});
+
+test('rule findings get their own capped section, deduplicated and trimmed first', () => {
+  const rules = (candidates) => ({ file: '(repository rules)', kind: 'rules', status: 'ok', candidates, usage: {} });
+  const mapped = (overrides) => ({ title: 'rule', file: 'src/r.ts', line: 1, severity: 'P3', input: 'a change',
+    violation: 'breaks the rule', property_source: 'AGENTS.md:3', ...overrides });
+  const workers = [worker([candidate({ title: 'defect', line: 30 })]), rules([
+    mapped({ title: 'same place as the defect', file: 'src/a.ts', line: 40 }),
+    mapped({ title: 'near the ledger', line: 100 }),
+    ...Array.from({ length: 6 }, (_, i) => mapped({ title: `rule ${i}`, line: 200 + i * 20 })),
+  ])];
+  const section = renderFocusedWorkerSection(workers, [{ where: 'src/r.ts:95' }]);
+  assert.ok(section.indexOf('### Focused worker findings') < section.indexOf('### Repository rule findings (advisory; they do not block merge)'));
+  assert.doesNotMatch(section, /same place as the defect|near the ledger|rule 5/);
+  assert.equal((section.split('### Repository rule findings')[1].match(/^- \*\*/gm) || []).length, 5);
+  assert.match(section, /a change -> breaks the rule; rule: AGENTS\.md:3/);
+  const tight = renderFocusedWorkerSection(workers, [], 'a'.repeat(64800));
+  assert.match(tight, /defect/);
+  assert.doesNotMatch(tight, /### Repository rule findings/);
 });
 
 test('worker stdout above 16 MB stops with a stream cap error', async (t) => {
@@ -632,7 +712,7 @@ test('postResults projection, check conclusion and gate are unchanged by advisor
     assert.deepEqual(failed.checks.map(({ conclusion, output }) => ({ conclusion, output })), before.checks.map(({ conclusion, output }) => ({ conclusion, output })));
     assert.deepEqual(failed.gate, before.gate);
   }
-  fs.writeFileSync(path.join(root, 'focused-workers.json'), ' '.repeat(256 * 1024 + 1));
+  fs.writeFileSync(path.join(root, 'focused-workers.json'), ' '.repeat(384 * 1024 + 1));
   const oversized = await call();
   assert.doesNotMatch(oversized.comments[0], /Focused worker findings/);
   assert.equal(oversized.comments[1], before.comments[1]);

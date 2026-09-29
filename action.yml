@@ -56,6 +56,9 @@ inputs:
   focused-workers:
     description: Maximum advisory focused file slices per review (0 disables them).
     default: "4"
+  rules-worker:
+    description: Check every changed file against the repository's written rules (AGENTS.md and the guidance it points to) as an advisory summary section ("true" or "false").
+    default: "true"
   codex-cli-version:
     description: Exact @openai/codex version to install and verify.
     default: 0.157.1
@@ -1250,12 +1253,17 @@ runs:
       shell: bash
       env:
         FOCUSED_WORKERS: ${{ inputs.focused-workers }}
+        RULES_WORKER: ${{ inputs.rules-worker }}
         DIFF_BASE_SHA: ${{ steps.scope.outputs.diff_base_sha }}
         PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
         PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
       run: |
         if ! [[ "$FOCUSED_WORKERS" =~ ^[0-4]$ ]]; then
           echo "::warning::focused-workers must be an integer from 0 to 4" >&2
+          exit 1
+        fi
+        if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
+          echo "::warning::rules-worker must be true or false" >&2
           exit 1
         fi
         WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)"

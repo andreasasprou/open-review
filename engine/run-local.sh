@@ -23,6 +23,8 @@ Options:
   --model <model>        Codex model. Default: CODEX_MODEL or gpt-6-astra.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
   --focused-workers <n> Maximum advisory focused file slices. Default: 4; 0 disables.
+  --rules-worker <true|false>
+                         Advisory check against the repository's written rules. Default: true.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
   --use-user-codex-home  Use the current CODEX_HOME/~/.codex instead of a clean temp home.
   --provider-base-url <url>
@@ -73,6 +75,7 @@ export CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-gpt-6-luna}"
 export CODEX_SUBAGENT_REASONING="${CODEX_SUBAGENT_REASONING:-max}"
 CODEX_WEB_SEARCH_MODE="${CODEX_WEB_SEARCH_MODE:-disabled}"
 FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-4}"
+RULES_WORKER="${OPEN_REVIEW_RULES_WORKER:-true}"
 PROVIDER_BASE_URL="${OPEN_REVIEW_PROVIDER_BASE_URL:-}"
 PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
 RULES_PATH="${OPEN_REVIEW_RULES_PATH:-}"
@@ -119,6 +122,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --focused-workers)
       FOCUSED_WORKERS="${2:-}"
+      shift 2
+      ;;
+    --rules-worker)
+      RULES_WORKER="${2:-}"
       shift 2
       ;;
     --stream-raw)
@@ -182,6 +189,10 @@ if ! [[ "$FOCUSED_WORKERS" =~ ^[0-4]$ ]]; then
   echo "error: --focused-workers must be an integer from 0 to 4" >&2
   exit 1
 fi
+if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
+  echo "error: --rules-worker must be true or false" >&2
+  exit 1
+fi
 
 if [ -z "$PR_NUMBER" ]; then
   echo "error: --pr is required" >&2
@@ -240,6 +251,8 @@ TRUSTED_RUNNER_FILES=(
   "focused-worker-schema.json"
   "focused-worker-prompt.txt"
   "focused-workers.cjs"
+  "rules-worker-schema.json"
+  "rules-worker-prompt.txt"
   "index.cjs"
   "location-spans.cjs"
   "diagnostics-runtime.cjs"
@@ -970,7 +983,7 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
   if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
      (rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
       cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md" &&
-      cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
+      cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" \
       node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
         "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}"); then
     if [ -f "$WORKTREE/.codex-ci/focused-workers.json" ] &&
@@ -1024,10 +1037,10 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
   if [ -f "$RUN_DIR/focused-workers.json" ]; then
     if ! node - "$ENGINE_DIR/index.cjs" "$SETTLEMENT_JSON" "$RUN_DIR/focused-workers.json" "$RUN_DIR/focused-worker-section.md" "$SETTLEMENT_BODY" <<'NODE'
 const fs = require('node:fs');
-const { renderFocusedWorkerSection } = require(process.argv[2]);
+const path = require('node:path');
+const { renderFocusedWorkerSection, readFocusedWorkers } = require(process.argv[2]);
 const settlement = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-let workers = [];
-try { workers = JSON.parse(fs.readFileSync(process.argv[4], 'utf8')); } catch { /* advisory */ }
+const workers = readFocusedWorkers(path.dirname(process.argv[4]));
 const baseBytes = fs.statSync(process.argv[6]).size;
 const section = renderFocusedWorkerSection(workers, settlement.ledger.open_findings,
   'x'.repeat(baseBytes), '\n\n');

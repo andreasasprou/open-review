@@ -6,23 +6,26 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { unquoteGitPath } = require("./inventory-diff.cjs");
 
-const TEST_SEGS = new Set(["__tests__", "test", "tests"]);
+const TEST_SEGS = new Set(["__tests__", "test", "tests", "eval", "evals"]);
 const FIXTURE_SEGS = new Set(["fixtures", "fixture", "__fixtures__"]);
 const GEN_SEGS = new Set(["generated", "__generated__"]);
 const LOCKFILES = new Set(["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb", "bun.lock", "npm-shrinkwrap.json", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "composer.lock", "go.sum"]);
 const HEADER_RE = /@generated|DO NOT EDIT|auto-?generated/i;
 const CANDIDATE_KEYS = ["title", "file", "line", "property", "property_source", "initial_state", "input", "trace", "violation", "pr_causality", "guard_checked", "severity"];
+const RULES_KEYS = ["title", "file", "line", "severity", "rule_source", "change", "violation"];
+const RULES_FILE = "(repository rules)";
 const MAX_WORKERS = 4;
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 const MAX_STDERR_BYTES = 1024 * 1024;
 const MAX_ANSWER_BYTES = 64 * 1024;
-const STAGE_TIMEOUT_MS = 10 * 60 * 1000;
+// The rules worker reads repository guidance and needs up to 12 minutes on large PRs.
+const STAGE_TIMEOUT_MS = 13 * 60 * 1000;
 const REAP_TIMEOUT_MS = 30 * 1000;
 
 function excluded(pathname, header = "") {
   const segments = pathname.split("/");
   const name = segments.pop();
-  if (name.includes(".test.") || name.includes(".spec.") || name.includes(".vitest") || segments.some((s) => TEST_SEGS.has(s))) return "test";
+  if (name.includes(".test.") || name.includes(".spec.") || name.includes(".eval.") || name.includes(".vitest") || segments.some((s) => TEST_SEGS.has(s))) return "test";
   if (name.endsWith(".md") || segments.includes("docs")) return "doc";
   if (name.toLowerCase().includes("fixture") || segments.some((s) => FIXTURE_SEGS.has(s))) return "fixture";
   if (name.endsWith(".snap") || segments.includes("__snapshots__")) return "snapshot";
@@ -74,6 +77,18 @@ function validOutput(output, slice) {
     Number.isInteger(candidate.line) && candidate.line > 0 && ["P1", "P2", "P3"].includes(candidate.severity));
 }
 
+function validRulesOutput(output) {
+  const bounded = (value, max = 2000) => typeof value === "string" && value.length <= max;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return false;
+  if (Object.keys(output).sort().join() !== "files_read,findings") return false;
+  if (!Array.isArray(output.findings) || output.findings.length > 8 || !Array.isArray(output.files_read) ||
+    output.files_read.length > 50 || output.files_read.some((v) => !bounded(v))) return false;
+  return output.findings.every((finding) => finding && typeof finding === "object" && !Array.isArray(finding) &&
+    Object.keys(finding).sort().join() === RULES_KEYS.slice().sort().join() &&
+    ["title", "file", "rule_source", "change", "violation"].every((key) => bounded(finding[key], key === "title" ? 200 : 2000)) &&
+    Number.isInteger(finding.line) && finding.line > 0 && ["P2", "P3"].includes(finding.severity));
+}
+
 function usageFromLog(logPath) {
   let usage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
   try {
@@ -121,19 +136,21 @@ async function runWorker(slice, options) {
     return await new Promise((resolve, reject) => {
       const output = path.join(options.outputDir, `focused-worker-${slice.index}.json`);
       const log = path.join(options.outputDir, `focused-worker-${slice.index}.jsonl`);
-      const prompt = fs.readFileSync(path.join(__dirname, "focused-worker-prompt.txt"), "utf8")
-        .replaceAll("{{SLICE_FILE}}", slice.file).replaceAll("{{HUNKS}}", slice.hunks.join(", "))
-        .replaceAll("{{BASE_SHA}}", options.baseSha);
+      const rules = slice.kind === "rules";
+      const prompt = rules ? fs.readFileSync(path.join(__dirname, "rules-worker-prompt.txt"), "utf8")
+        : fs.readFileSync(path.join(__dirname, "focused-worker-prompt.txt"), "utf8")
+          .replaceAll("{{SLICE_FILE}}", slice.file).replaceAll("{{HUNKS}}", slice.hunks.join(", "))
+          .replaceAll("{{BASE_SHA}}", options.baseSha);
       if (options.authSource && fs.existsSync(options.authSource)) {
         fs.copyFileSync(options.authSource, path.join(home, "auth.json"));
         fs.chmodSync(path.join(home, "auth.json"), 0o600);
       }
-      const args = ['--kill-after=30s', '8m', 'codex', 'exec', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config',
+      const args = ['--kill-after=30s', rules ? '12m' : '8m', 'codex', 'exec', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config',
         '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort="high"', '-c', 'sandbox_mode="read-only"',
         '-c', 'allow_login_shell=false', '-c', 'web_search="disabled"',
         '-c', `shell_environment_policy.exclude=${JSON.stringify(["CODEX_HOME", "HOME", "RUNNER_TEMP", ...(options.providerEnvKey ? [options.providerEnvKey] : [])])}`,
         ...configArgs(options.providerBaseUrl, options.providerEnvKey), '--disable', 'plugins', '--json',
-        '--output-schema', path.join(__dirname, 'focused-worker-schema.json'), '-o', output, '-'];
+        '--output-schema', path.join(__dirname, rules ? 'rules-worker-schema.json' : 'focused-worker-schema.json'), '-o', output, '-'];
       const env = { PATH: process.env.PATH, TERM: process.env.TERM || 'dumb', LANG: process.env.LANG || 'C.UTF-8', CODEX_HOME: home };
       if (options.providerEnvKey) env[options.providerEnvKey] = process.env[options.providerEnvKey];
       let stdoutFd;
@@ -192,12 +209,14 @@ async function runWorker(slice, options) {
                 reason = 'answer_too_large';
               } else {
                 const parsed = JSON.parse(fs.readFileSync(output, 'utf8'));
-                if (!validOutput(parsed, slice)) { status = 'invalid_json'; reason = 'answer_invalid'; }
-                else candidates = parsed.candidates;
+                if (!(rules ? validRulesOutput(parsed) : validOutput(parsed, slice))) { status = 'invalid_json'; reason = 'answer_invalid'; }
+                // Rule findings use the advisory renderer's fields: the change is the input, the rule is the source.
+                else candidates = rules ? parsed.findings.map(({ title, file, line, severity, rule_source, change, violation }) =>
+                  ({ title, file, line, severity, input: change, violation, property_source: rule_source })) : parsed.candidates;
               }
             } catch { status = 'invalid_json'; reason = 'answer_invalid'; }
           }
-          resolve({ file: slice.file, status, reason: reason.slice(0, 200), candidates, usage });
+          resolve({ file: slice.file, ...(rules ? { kind: 'rules' } : {}), status, reason: reason.slice(0, 200), candidates, usage });
         } catch {
           resolve({ file: slice.file, status: 'error', reason: 'unreaped', candidates: [], usage: {} });
         } finally {
@@ -287,6 +306,8 @@ async function run(options) {
       return buffer.subarray(0, fs.readSync(fd, buffer, 0, 2000, 0)).toString('utf8');
     } catch { return ''; } finally { if (fd !== undefined) fs.closeSync(fd); }
   });
+  const jobs = options.rules ? [...slices, { index: slices.length, file: RULES_FILE, kind: 'rules', hunks: [] }] : slices;
+  const failed = (job, reason) => ({ file: job.file, ...(job.kind ? { kind: job.kind } : {}), status: 'error', reason, candidates: [], usage: {} });
   let result;
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), options.stageTimeoutMs ?? STAGE_TIMEOUT_MS);
@@ -294,20 +315,21 @@ async function run(options) {
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
   try {
-    result = Array(slices.length);
+    result = Array(jobs.length);
     let next = 0;
-    await Promise.all(Array.from({ length: Math.min(MAX_WORKERS, slices.length) }, async () => {
-      while (next < slices.length) {
+    // The rules worker runs beside the slice workers, not queued behind them.
+    await Promise.all(Array.from({ length: Math.min(MAX_WORKERS + 1, jobs.length) }, async () => {
+      while (next < jobs.length) {
         const index = next++;
-        try { result[index] = await runWorker(slices[index], { ...options, signal: controller.signal }); }
+        try { result[index] = await runWorker(jobs[index], { ...options, signal: controller.signal }); }
         catch (error) {
           process.stderr.write(`focused worker ${index} failed open: ${error.message}\n`);
-          result[index] = { file: slices[index].file, status: 'error', reason: 'setup_error', candidates: [], usage: {} };
+          result[index] = failed(jobs[index], 'setup_error');
         }
       }
     }));
   } catch (error) {
-    result = slices.map((slice) => ({ file: slice.file, status: 'error', reason: 'stage_error', candidates: [], usage: {} }));
+    result = jobs.map((job) => failed(job, 'stage_error'));
     process.stderr.write(`focused workers failed open: ${error.message}\n`);
   } finally {
     clearTimeout(deadline);
@@ -324,8 +346,9 @@ function main(argv) {
   if (!/^[0-9a-f]{40}$/.test(baseSha)) throw new Error('base SHA must be a full SHA');
   if (!['timeout', 'gtimeout'].includes(timeoutCommand)) throw new Error('unsupported timeout command');
   return run({ max, baseSha, homeRoot, authSource: authSource === '-' ? '' : authSource, outputDir, root, timeoutCommand,
-    providerBaseUrl: process.env.PROVIDER_BASE_URL || '', providerEnvKey: process.env.PROVIDER_ENV_KEY || '' });
+    providerBaseUrl: process.env.PROVIDER_BASE_URL || '', providerEnvKey: process.env.PROVIDER_ENV_KEY || '',
+    rules: process.env.RULES_WORKER === 'true' });
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { excluded, parseDiff, selectSlices, validOutput, run, usageFromLog };
+module.exports = { excluded, parseDiff, selectSlices, validOutput, validRulesOutput, run, usageFromLog };

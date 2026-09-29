@@ -38,6 +38,8 @@ structured output, not the model's verdict word.
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
 | `provider-session-resume` | `false` | Allows session resume through a custom provider |
+| `focused-workers` | `4` | Advisory Sol workers, one per changed non-test file; findings go to a summary section and never block merge |
+| `rules-worker` | `true` | Advisory check of every changed file, tests included, against `AGENTS.md` and the guidance it points to |
 | `review-budget-minutes` | `20` | Total hosted Codex budget across attempts (1–120 minutes) |
 | `pr-number` | empty | PR number for `workflow_dispatch` |
 
