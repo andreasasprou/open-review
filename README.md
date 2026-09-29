@@ -100,6 +100,11 @@ Set `OPEN_REVIEW_ENGINE_REF` to a full commit SHA when a consumer pins the
 engine to its hosted action. In that mode the runner requires the checkout's
 `HEAD` and runtime files to match that commit, even for unpublished development
 runs, and does not fetch `origin/main`.
+The runner needs Node.js with npm, not a particular Codex install: when the
+machine's `codex` is another version, it installs the pinned version once into
+`${XDG_CACHE_HOME:-~/.cache}/open-review/codex/<version>` and uses it for that
+run only. It needs model credentials: `--provider-base-url <url>`, or a
+ChatGPT login (`codex login`).
 
 `eval/run-recall.sh --manifest <cases.json> --rules <path> --arm a=<ref> ...`
 reviews known pre-fix PR heads and scores how many known defects each rule-pack

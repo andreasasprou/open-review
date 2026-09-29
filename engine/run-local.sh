@@ -371,14 +371,42 @@ elif [ "${#MODIFIED_RUNNER_FILES[@]}" -gt 0 ]; then
   exit 1
 fi
 
-if [ "$PREPARE_ONLY" != "true" ]; then
-  require_command codex
-  INSTALLED_CODEX_VERSION="$(codex --version 2>/dev/null || true)"
-  if [ "$INSTALLED_CODEX_VERSION" != "codex-cli $REQUIRED_CODEX_CLI_VERSION" ]; then
-    echo "error: Codex CLI $REQUIRED_CODEX_CLI_VERSION is required; found '${INSTALLED_CODEX_VERSION:-none}'" >&2
-    echo "install @openai/codex@$REQUIRED_CODEX_CLI_VERSION, or use --prepare-only" >&2
+# Use the pinned Codex CLI. When the machine's codex is another version (or missing), install the
+# pinned version once into a per-user cache and put it first on PATH for this run only; the global
+# install is never changed. npm selects the Linux or macOS binary, as the hosted action's install does.
+ensure_pinned_codex() {
+  local want="codex-cli $REQUIRED_CODEX_CLI_VERSION" found cache staging
+  found="$(codex --version 2>/dev/null || true)"
+  [ "$found" = "$want" ] && return 0
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/open-review/codex/$REQUIRED_CODEX_CLI_VERSION"
+  if [ "$("$cache/node_modules/.bin/codex" --version 2>/dev/null || true)" != "$want" ]; then
+    require_command npm
+    echo "Codex CLI $REQUIRED_CODEX_CLI_VERSION not found (have '${found:-none}'); installing it into $cache" >&2
+    mkdir -p "$(dirname "$cache")"
+    staging="$(mktemp -d "$cache.XXXXXX")"
+    if ! npm install --prefix "$staging" --no-save --no-audit --no-fund --loglevel=error \
+      "@openai/codex@$REQUIRED_CODEX_CLI_VERSION" >&2; then
+      rm -rf "$staging"
+      echo "error: could not install @openai/codex@$REQUIRED_CODEX_CLI_VERSION into $cache (the first run needs network access to npm)" >&2
+      exit 1
+    fi
+    # Publish by rename, which never replaces a non-empty directory: a parallel run's cache stays in place.
+    "$PYTHON_BIN" -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$staging" "$cache" 2>/dev/null ||
+      rm -rf "$staging"
+  fi
+  PATH="$cache/node_modules/.bin:$PATH"
+  export PATH
+  found="$(codex --version 2>/dev/null || true)"
+  if [ "$found" != "$want" ]; then
+    echo "error: Codex CLI $REQUIRED_CODEX_CLI_VERSION is required; the cached install at $cache reports '${found:-none}'." >&2
+    echo "Remove $cache and run again." >&2
     exit 1
   fi
+}
+
+PYTHON_BIN="$(python3 -c 'import sys; print(sys.executable)')"
+if [ "$PREPARE_ONLY" != "true" ]; then
+  ensure_pinned_codex
   if command -v timeout >/dev/null 2>&1; then
     TIMEOUT_CMD=(timeout --kill-after="$KILL_AFTER" "$CODEX_TIMEOUT")
   elif command -v gtimeout >/dev/null 2>&1; then
@@ -389,7 +417,6 @@ if [ "$PREPARE_ONLY" != "true" ]; then
   fi
 fi
 
-PYTHON_BIN="$(python3 -c 'import sys; print(sys.executable)')"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$ROOT/.agent-data/codex-review-local/pr-$PR_NUMBER-$TIMESTAMP-$$"
 WORKTREE="$RUN_DIR/worktree"
@@ -563,6 +590,8 @@ if [ "$USE_CLEAN_CODEX_HOME" = "true" ]; then
     exit 1
   fi
   RUNTIME_ROOT="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  # macOS has no /run/user; its per-user TMPDIR is private. The clean home is created mode 700 either way.
+  [ -d "$RUNTIME_ROOT" ] || RUNTIME_ROOT="${TMPDIR:-/tmp}"
   if [ ! -d "$RUNTIME_ROOT" ]; then
     echo "error: no private runtime directory at $RUNTIME_ROOT" >&2
     exit 1
