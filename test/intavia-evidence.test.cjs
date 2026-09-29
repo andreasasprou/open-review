@@ -1342,6 +1342,88 @@ test("a copied hosted tuple cannot authorize a different projection comment", as
   );
 });
 
+test("a job cancelled after it published keeps its projection only when its own review check carries the gate", async () => {
+  const reviewTarget = buildReviewTarget({
+    repository: "example-org/sample-app",
+    pr_number: 42,
+    base_ref: "main",
+    base_sha: SHA_A,
+    merge_base_sha: SHA_B,
+    head_sha: SHA_C,
+    trusted_reviewer_ref: SHA_D,
+    evidence_bundle_sha256: HASH_E,
+    evidence_schema_version: 1,
+  });
+  const projection = v4ProjectionForTarget({ target: reviewTarget });
+  const identity = projection.check_identity;
+  const pass = projection.conclusion === "pass";
+  const native = (conclusion) => ({ id: identity.check_run_id, head_sha: SHA_C, check_suite: { id: identity.check_suite_id },
+    app: { slug: "github-actions" }, name: "Review result", status: "completed", completed_at: "2026-09-26T12:00:00Z", conclusion });
+  const gate = (overrides = {}) => ({ id: identity.check_run_id + 1, head_sha: SHA_C, check_suite: { id: identity.check_suite_id },
+    app: { slug: "github-actions" }, name: "Open Review", status: "completed", completed_at: "2026-09-26T12:00:00Z",
+    conclusion: pass ? "success" : "failure", output: { title: `Codex Review Pass 1: ${pass ? "PASS" : "BLOCK"}` }, ...overrides });
+  const collect = (checkRuns, workflowLog = null) => collectEvidenceBundle({
+    repository: "example-org/sample-app",
+    prNumber: 42,
+    expectedBaseRef: "main",
+    expectedBaseSha: SHA_A,
+    expectedHeadSha: SHA_C,
+    reviewerRef: SHA_D,
+    github: fakeGithub({
+      hostedProvenance: true,
+      workflowLog,
+      checkRuns,
+      issueComments: [{ id: 100, body: formatProjectionComment({ projection }),
+        user: { login: "github-actions[bot]", type: "Bot" } }],
+    }),
+    git: { mergeBase: async () => SHA_B },
+    sleep: async () => {},
+  });
+  const provenance = (error) => error instanceof EvidenceError && error.code === "invalid_prior_projection_provenance";
+  assert.equal((await collect([native("cancelled"), gate()])).priorProjection.projection_id, projection.projection_id);
+  assert.equal((await collect([native("cancelled"), gate({ output: { title: `No New Commits — carried gate: ${pass ? "PASS" : "BLOCK"}` } })]))
+    .priorProjection.projection_id, projection.projection_id);
+  // Cancelled before publication: the action marked its own check cancelled, or another job's check has no gate title.
+  await assert.rejects(collect([native("cancelled")]), provenance);
+  await assert.rejects(collect([native("cancelled"), gate({ conclusion: "cancelled", output: { title: "Review Cancelled" } })]), provenance);
+  await assert.rejects(collect([native("cancelled"), gate({ output: { title: null } })]), provenance);
+  await assert.rejects(collect([native("cancelled"), gate({ check_suite: { id: identity.check_suite_id + 1 } })]), provenance);
+  await assert.rejects(collect([native("cancelled"), gate({ conclusion: pass ? "failure" : "success" })]), provenance);
+  await assert.rejects(collect([native(pass ? "failure" : "success")]), provenance);
+  await assert.rejects(collect([native("timed_out"), gate()]), provenance);
+  // The receipt must be a whole log line: a receipt inside PR-controlled text, such as the logged title, is not one.
+  const receipt = `[codex-review] Published additive projection comment 100 with projection SHA-256 ${projection.projection_sha256}.`;
+  assert.equal((await collect([native(pass ? "success" : "failure")],
+    [`2026-09-26T11:59:00.1234567Z TRUSTED_WORKFLOW_SHA: ${SHA_D}`, `2026-09-26T11:59:30.7654321Z ${receipt}`].join("\n"))).priorProjection.projection_id,
+  projection.projection_id);
+  await assert.rejects(collect([native(pass ? "success" : "failure")],
+    [`TRUSTED_WORKFLOW_SHA: ${SHA_D}`, `2026-09-26T11:58:00.0000000Z PR #42: ${receipt}`].join("\n")), provenance);
+});
+
+test("legacy state logs only a plain review count", async () => {
+  const { loadPreviousState, MARKERS } = require("../engine/index.cjs");
+  const { createRecordingCaughtErrorDiagnosticRecorder } = require("./helpers/recording-recorder.cjs");
+  const receipt = "[codex-review] Published additive projection comment 100 with projection SHA-256 x.";
+  const load = async (count) => {
+    const state = { review_count: count, last_reviewed_head_sha: "a".repeat(40) };
+    const comments = [{ id: 1, user: { login: "github-actions[bot]" },
+      body: `<!-- ${MARKERS.state}\n${Buffer.from(JSON.stringify(state)).toString("base64")}\n-->` }];
+    const logged = [];
+    const log = console.log;
+    console.log = (...args) => logged.push(args.join(" "));
+    try {
+      const previous = await loadPreviousState({ recorder: createRecordingCaughtErrorDiagnosticRecorder(),
+        github: { paginate: async () => comments, rest: { issues: { listComments() {} } } },
+        owner: "o", repo: "r", prNumber: 1, reset: false });
+      return { count: previous.reviewCount, lines: logged.join("\n").split("\n") };
+    } finally { console.log = log; }
+  };
+  const hostile = await load(`1\n${receipt}\n`);
+  assert.equal(hostile.count, 0);
+  assert.ok(!hostile.lines.includes(receipt));
+  assert.equal((await load(3)).count, 3);
+});
+
 test("an edited projection comment is rejected even with a recomputed self-hash", async () => {
   const reviewTarget = buildReviewTarget({
     repository: "example-org/sample-app",

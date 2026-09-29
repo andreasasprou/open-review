@@ -546,7 +546,9 @@ async function loadPreviousState({ recorder, github, owner, repo, prNumber, rese
 					).toString("utf8");
 					result.state = JSON.parse(json);
 					result.lastReviewedSha = result.state.last_reviewed_head_sha || null;
-					result.reviewCount = result.state.review_count || 0;
+					// Legacy state is PR-visible; only a plain count may reach the job log.
+					result.reviewCount = Number.isSafeInteger(result.state.review_count) && result.state.review_count >= 0
+						? result.state.review_count : 0;
 					result.lastInlineReviewId = result.state.lastInlineReviewId || null;
 					console.log(
 						`Loaded state: review_count=${result.reviewCount}, last_sha=${result.lastReviewedSha?.slice(0, 8) || "none"}`,
