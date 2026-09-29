@@ -1765,11 +1765,14 @@ function formatRulesChangedNote(metadata) {
  *   4. Mark previous review as stale (cosmetic)
  *   5. Update check run (least critical)
  */
+// Five workers (four slices and the rules worker) with 64 KB answers each, plus record fields.
+const FOCUSED_WORKERS_MAX_BYTES = 384 * 1024;
+
 function readFocusedWorkers(outputDir) {
 	try {
 		const file = path.join(outputDir, "focused-workers.json");
-		if (fs.statSync(file).size > 256 * 1024) {
-			console.warn("[codex-review] Focused worker output exceeds 256 KB; advisory section omitted");
+		if (fs.statSync(file).size > FOCUSED_WORKERS_MAX_BYTES) {
+			console.warn("[codex-review] Focused worker output exceeds 384 KB; advisory section omitted");
 			return [];
 		}
 		const value = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -1794,24 +1797,34 @@ function escapeFocusedWorkerText(value) {
 
 function renderFocusedWorkerSection(workers, ledgerFindings, before = "", after = "", marker = "") {
 	if (!Array.isArray(workers)) return "";
-	const findings = workers.flatMap((worker, sliceOrder) => worker?.status === "ok" && Array.isArray(worker.candidates)
+	const severities = ["P1", "P2", "P3"];
+	const pick = (rules, near) => workers.flatMap((worker, sliceOrder) => worker?.status === "ok" &&
+		(worker.kind === "rules") === rules && Array.isArray(worker.candidates)
 		? worker.candidates.map((candidate, candidateOrder) => ({ candidate, sliceOrder, candidateOrder })) : [])
-		.filter(({ candidate }) => candidate && ["P1", "P2", "P3"].includes(candidate.severity) &&
+		.filter(({ candidate }) => candidate && severities.includes(candidate.severity) &&
 			["title", "file", "input", "violation", "property_source"].every((key) =>
 				typeof candidate[key] === "string" && candidate[key].length <= (key === "title" ? 200 : 2000)) &&
 			Number.isInteger(candidate.line) && candidate.line > 0 &&
-			!ledgerFindingNear(candidate.file, candidate.line, ledgerFindings))
-		.sort((a, b) => ["P1", "P2", "P3"].indexOf(a.candidate.severity) - ["P1", "P2", "P3"].indexOf(b.candidate.severity) ||
+			!ledgerFindingNear(candidate.file, candidate.line, ledgerFindings) && !near(candidate))
+		.sort((a, b) => severities.indexOf(a.candidate.severity) - severities.indexOf(b.candidate.severity) ||
 			a.sliceOrder - b.sliceOrder || a.candidateOrder - b.candidateOrder)
 		// Two workers can report one defect; keep the first within 15 lines, as for ledger findings.
 		.reduce((kept, item) => kept.length < 5 && !kept.some(({ candidate }) => candidate.file === item.candidate.file &&
 			Math.abs(candidate.line - item.candidate.line) <= 15) ? [...kept, item] : kept, []);
-	const heading = "\n\n### Focused worker findings (advisory; they do not block merge)\n";
-	for (let count = findings.length; count > 0; count--) {
-		const section = heading + findings.slice(0, count).map(({ candidate }) =>
-			`- **${candidate.severity} ${escapeFocusedWorkerText(candidate.title)}** — ${escapeFocusedWorkerText(candidate.file)}:${candidate.line}; ${escapeFocusedWorkerText(candidate.input)} -> ${escapeFocusedWorkerText(candidate.violation)}; property_source: ${escapeFocusedWorkerText(candidate.property_source)}`)
-			.join("\n");
-		if (Buffer.byteLength(`${marker}${before}${section}${after}`, "utf8") < 65_000) return section;
+	const focused = pick(false, () => false);
+	const rules = pick(true, (candidate) => focused.some((item) => item.candidate.file === candidate.file &&
+		Math.abs(item.candidate.line - candidate.line) <= 15));
+	const item = (label) => ({ candidate }) =>
+		`- **${candidate.severity} ${escapeFocusedWorkerText(candidate.title)}** — ${escapeFocusedWorkerText(candidate.file)}:${candidate.line}; ${escapeFocusedWorkerText(candidate.input)} -> ${escapeFocusedWorkerText(candidate.violation)}; ${label}: ${escapeFocusedWorkerText(candidate.property_source)}`;
+	const section = (focusedCount, rulesCount) =>
+		(focusedCount ? "\n\n### Focused worker findings (advisory; they do not block merge)\n" +
+			focused.slice(0, focusedCount).map(item("property_source")).join("\n") : "") +
+		(rulesCount ? "\n\n### Repository rule findings (advisory; they do not block merge)\n" +
+			rules.slice(0, rulesCount).map(item("rule")).join("\n") : "");
+	// Trim rule findings first, then focused findings, until the comment fits.
+	for (let f = focused.length, r = rules.length; f + r > 0; r > 0 ? r-- : f--) {
+		const text = section(f, r);
+		if (Buffer.byteLength(`${marker}${before}${text}${after}`, "utf8") < 65_000) return text;
 	}
 	return "";
 }

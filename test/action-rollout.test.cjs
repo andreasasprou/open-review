@@ -362,7 +362,7 @@ test('focused worker action step is guarded, fail-open and uses the staged engin
   assert.ok(start > action.indexOf('    - name: Verify checkout not modified'));
   const result = runShell(block('Run focused workers', 'run'), root, {
     PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root,
-    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '4',
+    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '4', RULES_WORKER: 'true',
     DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: join(root, 'node-call'),
   });
   assert.equal(result.status, 0, result.stderr);
@@ -376,11 +376,19 @@ test('focused worker action step is guarded, fail-open and uses the staged engin
   rmSync(join(root, 'node-call'));
   const invalid = runShell(block('Run focused workers', 'run'), root, {
     PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root,
-    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '5',
+    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '5', RULES_WORKER: 'true',
     DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: join(root, 'node-call'),
   });
   assert.notEqual(invalid.status, 0);
   assert.equal(existsSync(join(root, 'node-call')), false);
+  const invalidRules = runShell(block('Run focused workers', 'run'), root, {
+    PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root,
+    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '4', RULES_WORKER: 'yes',
+    DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: join(root, 'node-call'),
+  });
+  assert.notEqual(invalidRules.status, 0);
+  assert.equal(existsSync(join(root, 'node-call')), false);
+  assert.match(step, /RULES_WORKER: \$\{\{ inputs\.rules-worker \}\}/);
 });
 
 test('the hosted action writes no credential file and removes the Codex home', (t) => {
