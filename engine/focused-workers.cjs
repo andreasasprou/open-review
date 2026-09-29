@@ -278,7 +278,11 @@ async function run(options) {
   const slices = selectSlices(patch, max, (file) => {
     let fd;
     try {
-      fd = fs.openSync(path.join(options.root, file), 'r');
+      // Read regular files inside the checkout only; a PR symlink must not reach runner files.
+      const root = fs.realpathSync(options.root);
+      const real = fs.realpathSync(path.resolve(root, file));
+      if (!real.startsWith(root + path.sep) || !fs.statSync(real).isFile()) return '';
+      fd = fs.openSync(real, 'r');
       const buffer = Buffer.alloc(2000);
       return buffer.subarray(0, fs.readSync(fd, buffer, 0, 2000, 0)).toString('utf8');
     } catch { return ''; } finally { if (fd !== undefined) fs.closeSync(fd); }

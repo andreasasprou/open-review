@@ -18,14 +18,17 @@
 #     current head. A PR that edits the pack sets `rules_changed=true`.
 #   - Checkout uses the PR head SHA directly, with persist-credentials: false.
 #   - GITHUB_TOKEN is NOT passed to Codex.
-#   - Codex runs in a read-only sandbox (legacy Landlock on Linux) with web
-#     search disabled; the sandbox is probed before the review runs.
+#   - Codex runs in a read-only sandbox (bubblewrap on Linux) with web search
+#     disabled; the sandbox is probed before the review runs. Its shell can
+#     read the runner's files but cannot write or reach the network, so the
+#     action writes no credential file to the runner.
 #   - Dirty-tree check fails the job if Codex modifies tracked files.
 #   - Automatic events review same-repository heads only; issue_comment
 #     triggers must match a configured command from an OWNER, MEMBER or
 #     COLLABORATOR; workflow_dispatch must run from the default branch.
-#   - Model traffic uses `provider-base-url` (+ optional `provider-env-key`)
-#     when set; otherwise the ChatGPT auth.json passed in `codex-auth-json-b64`.
+#   - Model traffic uses `provider-base-url` (+ optional `provider-env-key`).
+#     The provider key stays in the Codex process and is hidden from the
+#     shell. ChatGPT auth.json is not supported: the shell could read it.
 #
 # The calling workflow owns triggers, concurrency, draft policy, job
 # permissions, the runner, and any network setup the provider needs.
@@ -58,18 +61,15 @@ inputs:
     default: 0.157.1
   provider-base-url:
     description: >-
-      Optional Responses-API base URL for a custom model provider (Codex appends
-      /responses and /models). When set, auth.json is not used and session
-      resume is disabled unless provider-session-resume is true.
+      Required. Responses-API base URL of the model provider (Codex appends
+      /responses and /models). Session resume is disabled unless
+      provider-session-resume is true.
     default: ""
   provider-env-key:
     description: >-
       Optional name of an environment variable (set on the calling step) holding
       the provider API key. It is sent as a Bearer token and hidden from the
       reviewer's shell commands.
-    default: ""
-  codex-auth-json-b64:
-    description: Base64 of a ChatGPT ~/.codex/auth.json. Required when provider-base-url is empty.
     default: ""
   check-name:
     description: Name of the check run published on the PR head.
@@ -680,26 +680,10 @@ runs:
         mkdir -p "$RUNNER_TEMP/codex-home"
         printf 'CODEX_HOME=%s/codex-home\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
-    # Default path: ChatGPT credentials, used only when no custom model
-    # provider is configured.
-    - name: Restore Codex auth
-      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip' && inputs.provider-base-url == ''
-      shell: bash
-      env:
-        CODEX_AUTH_JSON_B64: ${{ inputs.codex-auth-json-b64 }}
-      run: |
-        if [ -z "${CODEX_AUTH_JSON_B64:-}" ]; then
-          echo "::error::codex-auth-json-b64 is empty. Run: codex login && gh secret set CODEX_AUTH_JSON_B64 --body \"\$(cat ~/.codex/auth.json | base64 | tr -d '\\n')\", then pass it as the codex-auth-json-b64 input."
-          exit 1
-        fi
-        mkdir -p "$CODEX_HOME"
-        echo "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
-        chmod 600 "$CODEX_HOME/auth.json"
-
     # Fail fast with a clear cause when the configured provider is not
     # reachable, instead of surfacing it as an opaque Codex error much later.
     - name: Verify model provider reachability
-      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip' && inputs.provider-base-url != ''
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
       shell: bash
       env:
         PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
@@ -707,6 +691,10 @@ runs:
         CODEX_CLI_VERSION: ${{ inputs.codex-cli-version }}
       run: |
         set -euo pipefail
+        if [ -z "$PROVIDER_BASE_URL" ]; then
+          echo "::error::provider-base-url is required. ChatGPT auth.json is not supported because the review sandbox can read runner files."
+          exit 1
+        fi
         PROBE_URL="${PROVIDER_BASE_URL%/}/models?client_version=${CODEX_CLI_VERSION}"
         if [ -z "$PROVIDER_ENV_KEY" ]; then
           curl --fail --silent --show-error "$PROBE_URL" >/dev/null
@@ -753,10 +741,10 @@ runs:
     # before incremental review existed. `session-resume: false` is the kill
     # switch.
     #
-    # Custom providers resume only when the caller explicitly opts in.
+    # Resume through the provider only when the caller explicitly opts in.
     - name: Restore prior review session
       id: resume
-      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental' && inputs.session-resume == 'true' && (inputs.provider-base-url == '' || inputs.provider-session-resume == 'true')
+      if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental' && inputs.session-resume == 'true' && inputs.provider-session-resume == 'true'
       uses: actions/github-script@v7
       env:
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
@@ -922,26 +910,23 @@ runs:
         echo "Model: $CODEX_MODEL | Sandbox: bwrap-read-only | Reasoning: $CODEX_REASONING"
         echo "Prompt size: $(wc -c < .codex-ci/review-prompt.md) bytes"
 
-        # Route model traffic through a custom provider when configured. The
-        # provider authenticates the runner itself (network placement) or with
-        # the Bearer key named by provider-env-key; no ChatGPT credential is sent.
-        PROVIDER_ARGS=()
+        # Route model traffic through the provider. It authenticates the runner
+        # itself (network placement) or with the Bearer key named by
+        # provider-env-key; no ChatGPT credential is sent.
+        PROVIDER_HOST="${PROVIDER_BASE_URL#*://}"; PROVIDER_HOST="${PROVIDER_HOST#*@}"; PROVIDER_HOST="${PROVIDER_HOST%%/*}"
+        echo "Model provider: custom (${PROVIDER_HOST})"
+        PROVIDER_ARGS=(
+          -c 'model_provider="open-review"'
+          -c 'model_providers.open-review.name="openai"'
+          -c "model_providers.open-review.base_url=\"${PROVIDER_BASE_URL%/}\""
+          -c 'model_providers.open-review.wire_api="responses"'
+          -c 'model_providers.open-review.supports_websockets=false'
+          -c 'model_providers.open-review.requires_openai_auth=false'
+        )
         SHELL_ENV_EXCLUDE='["CODEX_HOME","RUNNER_TEMP"]'
-        if [ -n "${PROVIDER_BASE_URL:-}" ]; then
-          PROVIDER_HOST="${PROVIDER_BASE_URL#*://}"; PROVIDER_HOST="${PROVIDER_HOST#*@}"; PROVIDER_HOST="${PROVIDER_HOST%%/*}"
-          echo "Model provider: custom (${PROVIDER_HOST})"
-          PROVIDER_ARGS=(
-            -c 'model_provider="open-review"'
-            -c 'model_providers.open-review.name="openai"'
-            -c "model_providers.open-review.base_url=\"${PROVIDER_BASE_URL%/}\""
-            -c 'model_providers.open-review.wire_api="responses"'
-            -c 'model_providers.open-review.supports_websockets=false'
-            -c 'model_providers.open-review.requires_openai_auth=false'
-          )
-          if [ -n "${PROVIDER_ENV_KEY:-}" ]; then
-            PROVIDER_ARGS+=(-c "model_providers.open-review.env_key=\"$PROVIDER_ENV_KEY\"")
-            SHELL_ENV_EXCLUDE="[\"CODEX_HOME\",\"RUNNER_TEMP\",\"$PROVIDER_ENV_KEY\"]"
-          fi
+        if [ -n "${PROVIDER_ENV_KEY:-}" ]; then
+          PROVIDER_ARGS+=(-c "model_providers.open-review.env_key=\"$PROVIDER_ENV_KEY\"")
+          SHELL_ENV_EXCLUDE="[\"CODEX_HOME\",\"RUNNER_TEMP\",\"$PROVIDER_ENV_KEY\"]"
         fi
 
         drain_progress_pipe() {
@@ -1279,25 +1264,14 @@ runs:
         cp "$RUNNER_TEMP/open-review/rules.md" .codex-ci/rules.md
         node "$RUNNER_TEMP/open-review/engine/focused-workers.cjs" run \
           "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" "$WORKER_HOME_ROOT" \
-          "${CODEX_HOME:-$RUNNER_TEMP/codex-home}/auth.json" ".codex-ci" "$PWD"
-
-    # Credentials must be gone before any upload action runs, even though
-    # the artifact paths never include auth.json.
-    - name: Remove Codex auth before transcript upload
-      if: always()
-      shell: bash
-      run: |
-        if [ -n "${CODEX_HOME:-}" ]; then
-          rm -f "$CODEX_HOME/auth.json"
-        fi
+          - ".codex-ci" "$PWD"
 
     # Full transcripts for post-hoc debugging and session resume: the raw
     # orchestrator event stream of every attempt plus the session rollouts,
     # including the rollouts a retried attempt left behind. Deliberately
     # unredacted — download requires repository read access, the same
-    # audience as PR contents and job logs. Scoped to the two rollout
-    # directories so auth.json is never uploadable. Short retention keeps
-    # storage cost negligible.
+    # audience as PR contents and job logs. Short retention keeps storage
+    # cost negligible.
     - name: Upload review transcripts
       if: always() && steps.codex.outcome != 'skipped'
       # Diagnostics only: an artifact-service failure must not discard a
@@ -1314,7 +1288,7 @@ runs:
         retention-days: 3
         if-no-files-found: ignore
 
-    - name: Remove Codex auth
+    - name: Remove Codex home
       if: always()
       shell: bash
       run: |

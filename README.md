@@ -14,10 +14,11 @@ structured output, not the model's verdict word.
 1. Copy [`examples/rules.md`](examples/rules.md), fill in its placeholders,
    and commit it to the default branch, for example `.github/review-rules.md`.
 2. Copy [`examples/consumer-workflow.yml`](examples/consumer-workflow.yml) to
-   `.github/workflows/`, pin `uses:` to a full commit SHA, and set the
-   `CODEX_AUTH_JSON_B64` secret. Produce its value with
-   `base64 < ~/.codex/auth.json | tr -d '\n'` after `codex login`. If you use
-   `provider-base-url`, you do not need this secret.
+   `.github/workflows/`, pin `uses:` to a full commit SHA, and set
+   `provider-base-url` to a Responses-API model provider. Put its key, if it
+   needs one, in a secret and name the variable in `provider-env-key`.
+   ChatGPT `auth.json` is not supported: the reviewer's read-only shell can
+   read runner files, so a credential file on the runner would be exposed.
 3. Reviews run on PR updates, on `/open-review [full|reset|--since <sha>]`
    comments from members and collaborators, or by manual dispatch from the
    default branch.
@@ -28,8 +29,7 @@ structured output, not the model's verdict word.
 | `parent-model` / `parent-reasoning-effort` | `gpt-6-astra` / `high` | Parent reviewer |
 | `child-model` / `child-reasoning-effort` | `gpt-6-luna` / `max` | Default for child agents |
 | `codex-cli-version` | `0.157.1` | Exact `@openai/codex` version |
-| `provider-base-url` / `provider-env-key` | empty | A custom Responses-API provider, with an optional variable that holds a Bearer key |
-| `codex-auth-json-b64` | empty | ChatGPT `auth.json`. It is used when no provider is set. |
+| `provider-base-url` / `provider-env-key` | (required) / empty | The Responses-API model provider, with an optional variable that holds a Bearer key |
 | `check-name` | `Open Review` | Check run name |
 | `command` | `open-review` | Slash command name(s) |
 | `decision-owners` | empty | Logins whose replies count as trusted dispositions |

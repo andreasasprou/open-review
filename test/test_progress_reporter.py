@@ -2183,10 +2183,9 @@ exit "$producer_status"
         python_expression = re.sub(r"(?:inputs|steps)\.[\w.-]+", lambda match: f"values[{match.group()!r}]",
                                    expression.replace("&&", "and").replace("||", "or"))
         base = {"steps.skip.outputs.skip": "false", "steps.scope.outputs.review_mode": "incremental",
-                "inputs.session-resume": "true", "inputs.provider-base-url": "",
+                "inputs.session-resume": "true", "inputs.provider-base-url": "https://provider",
                 "inputs.provider-session-resume": "false"}
-        for overrides, expected in [({}, True), ({"inputs.provider-base-url": "https://provider"}, False),
-                                    ({"inputs.provider-base-url": "https://provider", "inputs.provider-session-resume": "true"}, True),
+        for overrides, expected in [({}, False), ({"inputs.provider-session-resume": "true"}, True),
                                     ({"inputs.session-resume": "false", "inputs.provider-session-resume": "true"}, False),
                                     ({"steps.scope.outputs.review_mode": "full"}, False)]:
             values = {**base, **overrides}
