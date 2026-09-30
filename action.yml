@@ -1325,6 +1325,13 @@ runs:
       run: |
         WORKER_STATE="$RUNNER_TEMP/open-review/focused-workers"
         [ -f "$WORKER_STATE.exit" ] && exit 0
+        # A job cancelled right after the start step can get here before the
+        # background shell writes the driver PID.
+        for _ in $(seq 1 10); do
+          [ -s "$WORKER_STATE.pid" ] || [ -f "$WORKER_STATE.exit" ] && break
+          sleep 1
+        done
+        [ -f "$WORKER_STATE.exit" ] && exit 0
         kill -TERM "$(cat "$WORKER_STATE.pid" 2>/dev/null)" 2>/dev/null || true
         for _ in $(seq 1 60); do
           [ -f "$WORKER_STATE.exit" ] && exit 0
