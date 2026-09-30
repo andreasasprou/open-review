@@ -1977,7 +1977,9 @@ async function postResults({ recorder,
 	const footer = buildMetadataFooter(metadata);
 	const ledgerSummary = ledgerCandidate ? `\n\n### Ledger findings (${ledgerCandidate.open_findings.length})\n${ledgerCandidate.open_findings.map((finding) => `- **${finding.severity} ${finding.stable_id}: ${finding.title}** — ${finding.failure_scenario} (${finding.where})`).join("\n") || "- None."}` : "";
 	const ledgerWarnings = ledgerCandidate?.warnings.length ? `\n\n### Ledger warnings\n${ledgerCandidate.warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
-	const reviewBodyWithCallouts = carryCallouts(reviewBody, readPreviousReview(outputDir), reviewNumber);
+	// A full review judges the whole pull request, so its callouts replace the earlier ones.
+	const reviewBodyWithCallouts = metadata.reviewMode === "incremental"
+		? carryCallouts(reviewBody, readPreviousReview(outputDir), reviewNumber) : reviewBody;
 	const bodyBeforeWorkers = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBodyWithCallouts}${ledgerSummary}`;
 	const bodyAfterWorkers = `${ledgerWarnings}${footer}`;
 	const focusedWorkers = readFocusedWorkers(outputDir);

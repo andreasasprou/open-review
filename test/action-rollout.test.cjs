@@ -234,6 +234,36 @@ test('explicit --since retains incremental scope', async (t) => {
   assert.match(readFileSync(f.output, 'utf8'), /review_scope_reason=since_requested_sha/);
 });
 
+test('a merge from the base branch after the last pass makes a full review', (t) => {
+  const f = fixture(t, false, false);
+  git(f.root, 'checkout', '-qb', 'pr', f.base);
+  writeFileSync(join(f.root, 'pr.txt'), 'one\n');
+  git(f.root, 'add', '.');
+  git(f.root, 'commit', '-qm', 'pr one');
+  const reviewed = git(f.root, 'rev-parse', 'HEAD');
+  writeFileSync(join(f.root, 'pr.txt'), 'two\n');
+  git(f.root, 'commit', '-qam', 'pr two');
+  const pushed = git(f.root, 'rev-parse', 'HEAD');
+  git(f.root, 'merge', '-q', '--no-edit', f.trusted);
+  const merged = git(f.root, 'rev-parse', 'HEAD');
+  mkdirSync(join(f.root, '.codex-ci'));
+  writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
+    priorProjection: {}, modelReviewRequired: false, humanDecisions: [], evidenceChallenges: [],
+  }));
+  const scope = (head) => {
+    writeFileSync(f.output, '');
+    const result = runShell(block('Determine review scope', 'run'), f.root, {
+      BASE_SHA: f.trusted, HEAD_SHA: head, LAST_REVIEWED_SHA: reviewed,
+      FORCE_FULL_REVIEW: 'false', RESET_STATE: 'false', SINCE_SHA: '',
+      EVENT_NAME: 'pull_request_target', GITHUB_OUTPUT: f.output,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return readFileSync(f.output, 'utf8');
+  };
+  assert.match(scope(pushed), /review_mode=incremental\n[^]*review_scope_reason=since_last_review/);
+  assert.match(scope(merged), /review_mode=full\n[^]*review_scope_reason=merge_base_moved/);
+});
+
 test('hosted prompt handles a multibyte character across the 4000-byte limit', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'open-review-body-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

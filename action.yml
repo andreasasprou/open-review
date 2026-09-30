@@ -505,6 +505,10 @@ runs:
                   MODE="skip"
                   REASON="no_new_commits"
                 fi
+              elif ! git merge-base --is-ancestor "$MERGE_BASE_SHA" "$SINCE"; then
+                # Base-branch commits reached the PR after the last pass (a merge
+                # from main). `SINCE..HEAD` would show their changes as PR changes.
+                REASON="merge_base_moved"
               else
                 MODE="incremental"
                 DIFF_BASE="$SINCE"
@@ -1569,6 +1573,7 @@ runs:
                     : (process.env.RESUME_DECISION || ''),
                 rulesChanged: process.env.RULES_CHANGED === 'true',
                 rulesPath: process.env.RULES_PATH || '',
+                reviewMode: process.env.REVIEW_MODE || '',
               },
               sessionContext: {
                 runId: context.runId,
