@@ -439,7 +439,7 @@ test('focused workers start before the parent, run beside it and are joined befo
   // An unjoined review stops the workers through the driver's SIGTERM handling.
   for (const name of ['exit', 'started', 'pid', 'log']) rmSync(join(root, `open-review/focused-workers.${name}`), { force: true });
   writeFileSync(join(root, 'bin/node'),
-    '#!/usr/bin/env bash\ntrap \'echo stopped > "$NODE_RECORD.term"; exit 143\' TERM\ntouch "$NODE_RECORD.ready"\nsleep 30 & wait $!\n', { mode: 0o755 });
+    '#!/usr/bin/env bash\ntrap \'kill "$child"; wait "$child"; echo stopped > "$NODE_RECORD.term"; exit 143\' TERM\nsleep 30 & child=$!\ntouch "$NODE_RECORD.ready"\nwait "$child"\n', { mode: 0o755 });
   assert.equal(runShell(block('Start focused workers', 'run'), root, env).status, 0);
   const stopAt = Date.now();
   while (!existsSync(join(root, 'node-call.ready')) && Date.now() - stopAt < 3000) {}

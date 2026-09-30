@@ -932,6 +932,8 @@ runs:
             - ".codex-ci" "$PWD" &
           echo "$!" > "$WORKER_STATE.pid"
           wait "$!" || status=$?
+          # Clean up before publishing the status, so a finished join sees no worker home.
+          rm -rf -- "$WORKER_HOME_ROOT"
           echo "$status" > "$WORKER_STATE.exit"
         ) < /dev/null > "$WORKER_STATE.log" 2>&1 &
         touch "$WORKER_STATE.started"
