@@ -1504,13 +1504,16 @@ runs:
             // A PR merged while the model ran is no longer on its workflow run, so
             // the identity check cannot bind it. A merged PR cannot reopen:
             // cancel the check and publish nothing. A closed, unmerged PR can
-            // reopen, so it stays on the fail-closed path.
+            // reopen, so it stays on the fail-closed path. A new head has the same
+            // identity failure; its own review run covers this range as well.
             const { data: currentPr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-            if (currentPr.merged) {
+            const cancelReason = currentPr.merged ? 'the pull request was merged during the review'
+              : currentPr.head?.sha !== process.env.HEAD_SHA ? 'a new commit was pushed during the review' : '';
+            if (cancelReason) {
               if (checkId) await github.rest.checks.update({ owner, repo, check_run_id: checkId,
                 status: 'completed', conclusion: 'cancelled',
-                output: { title: 'Review Cancelled', summary: 'The pull request was merged during the review; nothing was published.' } });
-              console.log('Cancelled: the pull request was merged during the review.');
+                output: { title: 'Review Cancelled', summary: `Cancelled: ${cancelReason}; nothing was published.` } });
+              console.log(`Cancelled: ${cancelReason}.`);
               return;
             }
 
