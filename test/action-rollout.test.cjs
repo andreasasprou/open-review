@@ -33,7 +33,7 @@ async function postResultsWithPr(getPr) {
     checks: { update: async ({ check_run_id, conclusion }) => { updates.push([check_run_id, conclusion]); } },
   } };
   const core = { setFailed: (reason) => { updates.push(['failed', reason]); } };
-  const vars = { RUNNER_TEMP: root, PR_NUMBER: '7', CHECK_ID: '11', SHOULD_SKIP: 'false', REVIEW_MODE: 'full',
+  const vars = { RUNNER_TEMP: root, PR_NUMBER: '7', CHECK_ID: '11', HEAD_SHA: 'a'.repeat(40), SHOULD_SKIP: 'false', REVIEW_MODE: 'full',
     REVIEW_GENERATED: 'true', JOB_STATUS: 'success' };
   const old = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]));
   Object.assign(process.env, vars);
@@ -49,6 +49,11 @@ async function postResultsWithPr(getPr) {
 
 test('a PR merged during the review cancels the check and publishes nothing', async () => {
   assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'closed', merged: true } })), [[11, 'cancelled']]);
+});
+
+test('a new head pushed during the review cancels the check and publishes nothing', async () => {
+  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'open', merged: false, head: { sha: 'f'.repeat(40) } } })),
+    [[11, 'cancelled']]);
 });
 
 test('a failed PR lookup completes the check as failed', async () => {
