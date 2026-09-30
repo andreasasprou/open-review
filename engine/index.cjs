@@ -1789,6 +1789,75 @@ function ledgerFindingNear(file, line, ledgerFindings) {
 	});
 }
 
+// The fixed callout labels of the prompt's "Human Reviewer Callouts" section (engine/prompt/core.md).
+const CALLOUT_LABELS = new Set([
+	"This change adds a database migration",
+	"This change introduces a new dependency",
+	"This change changes a dependency (or the lockfile)",
+	"This change modifies auth/permission behavior",
+	"This change introduces backwards-incompatible public schema/API/contract changes",
+	"This change includes irreversible or destructive operations",
+	"This change adds or removes feature flags",
+	"This change changes configuration defaults",
+	"This change alters durable-state shape",
+]);
+const CALLOUTS_HEADING = "## Human Reviewer Callouts (Non-Blocking)";
+
+function parseCallouts(markdown) {
+	const lines = String(markdown || "").split("\n");
+	const start = lines.findIndex((line) => line.trim() === CALLOUTS_HEADING);
+	if (start < 0) return null;
+	const items = [];
+	for (let index = start + 1; index < lines.length && !/^#{1,6} /.test(lines[index]); index++) {
+		const match = lines[index].match(/^- \*\*(.+?):\*\* (.*?)(?: _\(Pass (\d+)\)_)?\s*$/);
+		if (match && CALLOUT_LABELS.has(match[1])) items.push({ index, label: match[1], text: match[2], pass: match[3] ? Number(match[3]) : null });
+	}
+	return { start, items, lines };
+}
+
+/**
+ * An incremental pass judges only the new commits, so it can omit callouts an
+ * earlier pass raised for the same pull request. Keep every earlier callout
+ * whose label this pass did not repeat, tagged with the pass that raised it.
+ */
+function carryCallouts(reviewBody, previousBody, reviewNumber) {
+	const previous = parseCallouts(previousBody);
+	if (!previous?.items.length) return reviewBody;
+	const current = parseCallouts(reviewBody);
+	const seen = new Set((current?.items || []).map((item) => item.label));
+	const carried = [];
+	for (const item of previous.items) {
+		if (seen.has(item.label)) continue;
+		seen.add(item.label);
+		carried.push(`- **${item.label}:** ${neutralizeCarriedText(item.text)} _(Pass ${item.pass ?? reviewNumber - 1})_`);
+	}
+	if (!carried.length) return reviewBody;
+	if (!current) return `${reviewBody.trimEnd()}\n\n${CALLOUTS_HEADING}\n${carried.join("\n")}\n`;
+	const lines = current.lines.filter((line, index) => !(index > current.start && line.trim() === "- (none)" &&
+		!current.lines.slice(current.start + 1, index).some((prior) => /^#{1,6} /.test(prior))));
+	const end = lines.findIndex((line, index) => index > current.start && /^#{1,6} /.test(line));
+	const insertAt = end < 0 ? lines.length : end;
+	let at = insertAt;
+	while (at > current.start + 1 && lines[at - 1].trim() === "") at--;
+	lines.splice(at, 0, ...carried);
+	return lines.join("\n");
+}
+
+// The previous summary is PR-visible text. A carried line must not form HTML or a
+// reserved comment marker that later runs search for (review, stale, state,
+// projection, dispositions).
+function neutralizeCarriedText(text) {
+	// Escaping only < and > is idempotent: the next pass reloads this text as raw Markdown.
+	// The cap comes last, so a reloaded line is already within it and stays unchanged.
+	return text.replace(/\s+/g, " ").trim()
+		.replace(/</g, "&lt;").replace(/>/g, "&gt;")
+		.replace(/codex-review/gi, "codex review").replace(/dispositions:v/gi, "dispositions v").slice(0, 600).trimEnd();
+}
+
+function readPreviousReview(outputDir) {
+	try { return fs.readFileSync(path.join(outputDir, "review-prev.md"), "utf8"); } catch { return ""; }
+}
+
 function escapeFocusedWorkerText(value) {
 	return String(value).replace(/\s+/gu, " ").trim()
 		.replace(/\\/g, "\\\\")
@@ -1908,7 +1977,8 @@ async function postResults({ recorder,
 	const footer = buildMetadataFooter(metadata);
 	const ledgerSummary = ledgerCandidate ? `\n\n### Ledger findings (${ledgerCandidate.open_findings.length})\n${ledgerCandidate.open_findings.map((finding) => `- **${finding.severity} ${finding.stable_id}: ${finding.title}** — ${finding.failure_scenario} (${finding.where})`).join("\n") || "- None."}` : "";
 	const ledgerWarnings = ledgerCandidate?.warnings.length ? `\n\n### Ledger warnings\n${ledgerCandidate.warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
-	const bodyBeforeWorkers = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBody}${ledgerSummary}`;
+	const reviewBodyWithCallouts = carryCallouts(reviewBody, readPreviousReview(outputDir), reviewNumber);
+	const bodyBeforeWorkers = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBodyWithCallouts}${ledgerSummary}`;
 	const bodyAfterWorkers = `${ledgerWarnings}${footer}`;
 	const focusedWorkers = readFocusedWorkers(outputDir);
 	const focusedSection = renderFocusedWorkerSection(focusedWorkers, ledgerCandidate?.open_findings || [],
@@ -2180,6 +2250,7 @@ module.exports = {
 	postResults,
 	readFocusedWorkers,
 	renderFocusedWorkerSection,
+	carryCallouts,
 	summarizePreviousState,
 	normalizeActiveInlineReviewIds,
 	buildInlineReviewTrackingState,
