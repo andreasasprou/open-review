@@ -65,7 +65,7 @@ test('a callout carried through several passes keeps the same text', () => {
   carryFour(`<admin> ${'x'.repeat(580)} DROP users`);
 });
 
-test('the published summary carries the previous pass callouts', async (t) => {
+for (const [reviewMode, carried] of [['incremental', true], ['full', false]]) test(`the summary of a ${reviewMode} review ${carried ? 'carries' : 'replaces'} the previous pass callouts`, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-callouts-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const output = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/first-v4-old-state-output.json')));
@@ -85,6 +85,6 @@ test('the published summary carries the previous pass callouts', async (t) => {
     pulls: { get: async () => ({ data: { head: { sha: headSha, repo: { full_name: 'o/r' } }, base: { sha: headSha, ref: 'main' } } }) },
     checks: { update: async () => {} } } };
   await postResults({ recorder: createRecordingCaughtErrorDiagnosticRecorder(), github, owner: 'o', repo: 'r', prNumber: 1,
-    headSha, checkId: 2, previousState: { reviewCount: 1 }, outputDir: root, ledgerTarget, checkIdentity, metadata: {} });
-  assert.match(comments[0], /This change modifies auth\/permission behavior:\*\* Usage queries use membership\. _\(Pass 1\)_/);
+    headSha, checkId: 2, previousState: { reviewCount: 1 }, outputDir: root, ledgerTarget, checkIdentity, metadata: { reviewMode } });
+  assert.equal(/This change modifies auth\/permission behavior:\*\* Usage queries use membership\. _\(Pass 1\)_/.test(comments[0]), carried);
 });
