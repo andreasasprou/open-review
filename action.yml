@@ -899,6 +899,7 @@ runs:
     # output, so they run beside the parent; "Wait for focused workers" joins
     # them before the results are posted.
     - name: Start focused workers
+      id: start-workers
       if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
       continue-on-error: true
       shell: bash
@@ -922,12 +923,16 @@ runs:
         rm -f .codex-ci/focused-workers.json
         cp "$RUNNER_TEMP/open-review/rules.md" .codex-ci/rules.md
         # Every descriptor is redirected so this step ends while the workers run.
+        # The step shell runs with -e, so the status is captured, not left to it.
         (
           trap 'rm -rf -- "$WORKER_HOME_ROOT"' EXIT
+          status=0
           node "$RUNNER_TEMP/open-review/engine/focused-workers.cjs" run \
             "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" "$WORKER_HOME_ROOT" \
-            - ".codex-ci" "$PWD"
-          echo "$?" > "$WORKER_STATE.exit"
+            - ".codex-ci" "$PWD" &
+          echo "$!" > "$WORKER_STATE.pid"
+          wait "$!" || status=$?
+          echo "$status" > "$WORKER_STATE.exit"
         ) < /dev/null > "$WORKER_STATE.log" 2>&1 &
         touch "$WORKER_STATE.started"
 
@@ -1288,7 +1293,7 @@ runs:
         fi
 
     - name: Wait for focused workers
-      if: steps.codex.outputs.review_generated == 'true' && steps.scope.outputs.review_mode != 'skip' && steps.skip.outputs.skip != 'true'
+      if: steps.start-workers.outcome == 'success' && steps.codex.outputs.review_generated == 'true'
       continue-on-error: true
       shell: bash
       run: |
@@ -1309,6 +1314,23 @@ runs:
           exit 1
         fi
         exit "$(cat "$WORKER_STATE.exit")"
+
+    # When the review was not joined (the parent failed or a later check
+    # stopped the job), stop the workers; the driver aborts its worker groups
+    # on SIGTERM and then writes its exit status.
+    - name: Stop focused workers
+      if: always() && steps.start-workers.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      run: |
+        WORKER_STATE="$RUNNER_TEMP/open-review/focused-workers"
+        [ -f "$WORKER_STATE.exit" ] && exit 0
+        kill -TERM "$(cat "$WORKER_STATE.pid" 2>/dev/null)" 2>/dev/null || true
+        for _ in $(seq 1 60); do
+          [ -f "$WORKER_STATE.exit" ] && exit 0
+          sleep 1
+        done
+        echo "::warning::focused workers did not stop" >&2
 
     # Full transcripts for post-hoc debugging and session resume: the raw
     # orchestrator event stream of every attempt plus the session rollouts,

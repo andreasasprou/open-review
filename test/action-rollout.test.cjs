@@ -400,7 +400,9 @@ test('focused workers start before the parent, run beside it and are joined befo
   assert.match(startStep, /continue-on-error: true/);
   assert.match(startStep, /RULES_WORKER: \$\{\{ inputs\.rules-worker \}\}/);
   assert.ok(action.indexOf('    - name: Start focused workers') < action.indexOf('    - name: Run Codex'));
+  assert.match(waitStep, /steps\.start-workers\.outcome == 'success'/);
   assert.match(waitStep, /review_generated == 'true'/);
+  assert.match(stepText('Stop focused workers'), /if: always\(\) && steps\.start-workers\.outcome == 'success'/);
   assert.match(waitStep, /continue-on-error: true/);
   assert.ok(action.indexOf('    - name: Wait for focused workers') > action.indexOf('    - name: Verify checkout not modified'));
   assert.ok(action.indexOf('    - name: Wait for focused workers') < action.indexOf('    - name: Post results'));
@@ -427,6 +429,25 @@ test('focused workers start before the parent, run beside it and are joined befo
   assert.ok(privateHomeRoot, 'worker home root must be outside the runner temp directory');
   assert.equal(existsSync(privateHomeRoot), false, 'the worker stage removes its private home root');
   rmSync(join(root, 'node-call'));
+  // A failed driver still reports its status, so the join does not wait for the bound.
+  for (const name of ['exit', 'started', 'pid', 'log']) rmSync(join(root, `open-review/focused-workers.${name}`), { force: true });
+  writeFileSync(join(root, 'bin/node'), '#!/usr/bin/env bash\nexit 3\n', { mode: 0o755 });
+  assert.equal(runShell(block('Start focused workers', 'run'), root, env).status, 0);
+  const failedAt = Date.now();
+  assert.equal(runShell(block('Wait for focused workers', 'run'), root, env).status, 3);
+  assert.ok(Date.now() - failedAt < 5000, 'a failed driver is joined promptly');
+  // An unjoined review stops the workers through the driver's SIGTERM handling.
+  for (const name of ['exit', 'started', 'pid', 'log']) rmSync(join(root, `open-review/focused-workers.${name}`), { force: true });
+  writeFileSync(join(root, 'bin/node'),
+    '#!/usr/bin/env bash\ntrap \'echo stopped > "$NODE_RECORD.term"; exit 143\' TERM\nsleep 30 & wait $!\n', { mode: 0o755 });
+  assert.equal(runShell(block('Start focused workers', 'run'), root, env).status, 0);
+  const stopAt = Date.now();
+  while (!existsSync(join(root, 'open-review/focused-workers.pid')) && Date.now() - stopAt < 3000) {}
+  assert.equal(runShell(block('Stop focused workers', 'run'), root, env).status, 0);
+  assert.ok(Date.now() - stopAt < 10000, 'stopping does not wait for the worker stage');
+  assert.equal(readFileSync(join(root, 'node-call.term'), 'utf8'), 'stopped\n');
+  assert.equal(readFileSync(join(root, 'open-review/focused-workers.exit'), 'utf8'), '143\n');
+  writeFileSync(join(root, 'bin/node'), '#!/usr/bin/env bash\nsleep 2\nprintf "%s\\n" "$*" > "$NODE_RECORD"\n', { mode: 0o755 });
   for (const invalidEnv of [{ FOCUSED_WORKERS: '5' }, { RULES_WORKER: 'yes' }]) {
     const invalid = runShell(block('Start focused workers', 'run'), root, { ...env, ...invalidEnv });
     assert.notEqual(invalid.status, 0);
