@@ -312,8 +312,10 @@ async function run(options) {
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), options.stageTimeoutMs ?? STAGE_TIMEOUT_MS);
   const onSignal = () => controller.abort();
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
+  // A cancelled run can signal the driver more than once (its process group, then the
+  // runner's exit trap); every signal must abort, not kill the driver before it reaps.
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
   try {
     result = Array(jobs.length);
     let next = 0;
