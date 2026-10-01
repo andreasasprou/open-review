@@ -983,7 +983,10 @@ async function verifyProjectionProvenance({
   // A push can cancel the job during cleanup after it published. The run's own review check then carries the
   // gate: the action completes it in the job's check suite only after publication, and a branch workflow
   // cannot write to that suite. Direct events put that check on the PR head, outside the job's suite, so a
-  // cancelled direct-event job still fails closed.
+  // cancelled direct-event job still fails closed. Before the merge gate followed the ledger rule, a job that
+  // blocked only on an owner decision ended green. A BLOCK projection from a green job is the stricter result
+  // and its authenticity rests on the receipt and identity checks below, so it is kept; a PASS projection from
+  // a job that did not succeed still fails closed.
   const gateTitle = new RegExp(`^(?:Codex Review Pass \\d+|No New Commits — carried gate): ${projection.conclusion === "pass" ? "PASS" : "BLOCK"}$`);
   const gateCompletedAfterPublication = checks.items.some((candidate) =>
     Number(candidate.id) !== identity.check_run_id &&
@@ -1020,7 +1023,8 @@ async function verifyProjectionProvenance({
     ![run, job, check].every((entry) => entry.status === "completed") ||
     job.name !== check.name ||
     !check.completed_at || check.completed_at < commentCreatedAt ||
-    (check.conclusion !== expectedConclusion && !(check.conclusion === "cancelled" && gateCompletedAfterPublication)) ||
+    (check.conclusion !== expectedConclusion && !(check.conclusion === "cancelled" && gateCompletedAfterPublication) &&
+      !(check.conclusion === "success" && projection.conclusion === "block")) ||
     // The receipt must be the whole log line: a suffix match would accept PR-controlled text such as the logged title.
     !logLines.some((line) =>
       line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z /, "").trimEnd() === publishedProjectionLine,

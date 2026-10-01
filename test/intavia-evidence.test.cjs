@@ -1342,6 +1342,60 @@ test("a copied hosted tuple cannot authorize a different projection comment", as
   );
 });
 
+test("a green job keeps its BLOCK projection; the stricter result needs no gate check", async () => {
+  const reviewTarget = buildReviewTarget({
+    repository: "example-org/sample-app",
+    pr_number: 42,
+    base_ref: "main",
+    base_sha: SHA_A,
+    merge_base_sha: SHA_B,
+    head_sha: SHA_C,
+    trusted_reviewer_ref: SHA_D,
+    evidence_bundle_sha256: HASH_E,
+    evidence_schema_version: 1,
+  });
+  const identity = v4ProjectionForTarget({ target: reviewTarget }).check_identity;
+  const ownerDecision = { ...currentFindingForTarget({ target: reviewTarget, stableId: "OWNER-1" }),
+    severity: "P2", disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO" };
+  const projection = buildProjection({ candidate: { open_findings: [ownerDecision], closed_findings: [], prior_issue_evaluations: [] },
+    target: reviewTarget, checkIdentity: identity, summaryCommentId: 99 });
+  assert.equal(projection.conclusion, "block");
+  const native = (conclusion) => ({ id: identity.check_run_id, head_sha: SHA_C, check_suite: { id: identity.check_suite_id },
+    app: { slug: "github-actions" }, name: "Review result", status: "completed", completed_at: "2026-09-26T12:00:00Z", conclusion });
+  const collect = (checkRuns) => collectEvidenceBundle({
+    repository: "example-org/sample-app",
+    prNumber: 42,
+    expectedBaseRef: "main",
+    expectedBaseSha: SHA_A,
+    expectedHeadSha: SHA_C,
+    reviewerRef: SHA_D,
+    github: fakeGithub({
+      hostedProvenance: true,
+      checkRuns,
+      issueComments: [{ id: 100, body: formatProjectionComment({ projection }),
+        user: { login: "github-actions[bot]", type: "Bot" } }],
+    }),
+    git: { mergeBase: async () => SHA_B },
+    sleep: async () => {},
+  });
+  const provenance = (error) => error instanceof EvidenceError && error.code === "invalid_prior_projection_provenance";
+  assert.equal((await collect([native("success")])).priorProjection.projection_id, projection.projection_id);
+  assert.equal((await collect([native("failure")])).priorProjection.projection_id, projection.projection_id);
+  for (const conclusion of ["neutral", "skipped", "timed_out", "action_required"])
+    await assert.rejects(collect([native(conclusion)]), provenance);
+  // The unsafe direction still fails closed: a PASS projection from a job that did not succeed.
+  const passing = v4ProjectionForTarget({ target: reviewTarget });
+  assert.equal(passing.conclusion, "pass");
+  const collectPassing = (checkRuns) => collectEvidenceBundle({
+    repository: "example-org/sample-app", prNumber: 42, expectedBaseRef: "main", expectedBaseSha: SHA_A,
+    expectedHeadSha: SHA_C, reviewerRef: SHA_D,
+    github: fakeGithub({ hostedProvenance: true, checkRuns, issueComments: [{ id: 100,
+      body: formatProjectionComment({ projection: passing }), user: { login: "github-actions[bot]", type: "Bot" } }] }),
+    git: { mergeBase: async () => SHA_B }, sleep: async () => {},
+  });
+  await assert.rejects(collectPassing([native("failure")]), provenance);
+});
+
 test("a job cancelled after it published keeps its projection only when its own review check carries the gate", async () => {
   const reviewTarget = buildReviewTarget({
     repository: "example-org/sample-app",
