@@ -1581,6 +1581,15 @@ function validateInlineComments({ inlineComments, hunkAllowlist, log }) {
 
 // ─── Check Run ────────────────────────────────────────────────────────────────
 
+// Completing a check is idempotent, so a transient GitHub failure is retried: a check
+// left failing after its projection published would make every later review reject it.
+const CHECK_UPDATE_RETRY_DELAYS_MS = [1000, 3000];
+
+function isTransientGithubError(error) {
+	const status = Number(error?.status);
+	return !Number.isFinite(status) || status === 429 || status >= 500;
+}
+
 async function updateCheckRun({
 	github,
 	owner,
@@ -1589,16 +1598,25 @@ async function updateCheckRun({
 	conclusion,
 	title,
 	summary,
+	sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
-	await github.rest.checks.update({
-		owner,
-		repo,
-		check_run_id: checkId,
-		status: "completed",
-		conclusion,
-		completed_at: new Date().toISOString(),
-		output: { title, summary: summary.slice(0, 65535) },
-	});
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await github.rest.checks.update({
+				owner,
+				repo,
+				check_run_id: checkId,
+				status: "completed",
+				conclusion,
+				completed_at: new Date().toISOString(),
+				output: { title, summary: summary.slice(0, 65535) },
+			});
+			return;
+		} catch (error) {
+			if (attempt >= CHECK_UPDATE_RETRY_DELAYS_MS.length || !isTransientGithubError(error)) throw error;
+			await sleep(CHECK_UPDATE_RETRY_DELAYS_MS[attempt]);
+		}
+	}
 }
 
 // ─── Output Parsing ───────────────────────────────────────────────────────────
