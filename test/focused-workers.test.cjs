@@ -632,24 +632,81 @@ test('local exit cleanup removes the private worker home root', (t) => {
   assert.equal(fs.existsSync(homeRoot), false);
 });
 
+function localWorkerStages() {
+  const script = fs.readFileSync(path.join(__dirname, '../engine/run-local.sh'), 'utf8');
+  const slice = (from, to) => script.slice(script.indexOf(from), script.indexOf(to, script.indexOf(from)));
+  return {
+    start: slice('# The workers read only the diff and the checkout', 'touch "$RUN_DIR/session-start.marker"'),
+    join: slice('  WORKER_STATUS=1', '  # Compare against the tip observed at start:'),
+    cleanup: script.slice(script.indexOf('cleanup_auth_copy() {'),
+      script.indexOf('\n}\ntrap cleanup_auth_copy', script.indexOf('cleanup_auth_copy() {')) + 2),
+  };
+}
+
+function localWorkerEnv(root, worktree, extra = {}) {
+  return { ...process.env, WORKTREE: worktree, REVIEW_PROMPTS_DIR: root, RUN_DIR: root,
+    PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', RULES_WORKER: 'true', ENGINE_DIR: root, FOCUSED_WORKERS: '0',
+    DIFF_BASE_SHA: 'a'.repeat(40), ACTIVE_CODEX_HOME: root, TIMEOUT_CMD: 'timeout', ...extra };
+}
+
 test('local worker setup failure leaves settlement reachable', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-local-fail-open-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const worktree = path.join(root, 'worktree');
   fs.mkdirSync(path.join(worktree, '.codex-ci/focused-workers.json'), { recursive: true });
   fs.writeFileSync(path.join(worktree, '.codex-ci/focused-workers.json/keep'), 'keep');
-  const script = fs.readFileSync(path.join(__dirname, '../engine/run-local.sh'), 'utf8');
-  const stage = script.slice(script.indexOf('  if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)"'),
-    script.indexOf('  # Compare against the tip observed at start:', script.indexOf('  if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)"')));
-  const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `${stage}\nprintf 'settlement-reached\\n'`], {
-    env: { ...process.env, WORKTREE: worktree, REVIEW_PROMPTS_DIR: root, RUN_DIR: root,
-      PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', ENGINE_DIR: root, FOCUSED_WORKERS: '0',
-      DIFF_BASE_SHA: 'a'.repeat(40), ACTIVE_CODEX_HOME: root, TIMEOUT_CMD: 'timeout' }, encoding: 'utf8',
+  const { start, join } = localWorkerStages();
+  const result = spawnSync('bash', ['-euo', 'pipefail', '-c',
+    `WORKER_HOME_ROOT=""\nWORKER_PID=""\n${start}\n${join}\nprintf 'settlement-reached\\n'`], {
+    env: localWorkerEnv(root, worktree), encoding: 'utf8',
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /settlement-reached/);
-  assert.match(result.stderr, /focused workers failed; parent review settlement continues/);
+  assert.match(result.stderr, /focused workers could not start/);
+  assert.match(result.stderr, /focused workers failed/);
   assert.equal(fs.existsSync(path.join(root, 'focused-workers.json')), false);
+});
+
+test('local workers start before the parent and are joined before settlement', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-local-parallel-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const worktree = path.join(root, 'worktree');
+  fs.mkdirSync(path.join(worktree, '.codex-ci'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'rules.md'), 'rules\n');
+  fs.mkdirSync(path.join(root, 'bin'));
+  // The fake driver outlives the start block, as the real worker stage outlives it.
+  fs.writeFileSync(path.join(root, 'bin/node'),
+    '#!/usr/bin/env bash\nsleep 1\nprintf \'[{"file":"a.ts","status":"ok","candidates":[]}]\' > .codex-ci/focused-workers.json\n',
+    { mode: 0o755 });
+  const { start, join } = localWorkerStages();
+  const script = `WORKER_HOME_ROOT=""\nWORKER_PID=""\nbegan=$SECONDS\n${start}\n` +
+    `printf 'started-after=%s\\n' "$((SECONDS - began))"\n` +
+    `[ ! -e "$RUN_DIR/focused-workers.json" ] && printf 'parent-runs-here\\n'\n${join}\nprintf 'settlement-reached\\n'`;
+  const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+    env: localWorkerEnv(root, worktree, { PATH: `${path.join(root, 'bin')}:${process.env.PATH}` }), encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /started-after=0\n/);
+  assert.match(result.stdout, /parent-runs-here[\s\S]*settlement-reached/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'focused-workers.json'), 'utf8'))[0].file, 'a.ts');
+  assert.equal(fs.readFileSync(path.join(worktree, '.codex-ci/rules.md'), 'utf8'), 'rules\n');
+});
+
+test('local exit cleanup stops workers that were not joined', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-local-stop-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const homeRoot = privateHomeRoot(t);
+  const marker = path.join(root, 'stopped');
+  const { cleanup } = localWorkerStages();
+  const script = `CLEAN_CODEX_HOME=""\nWORKER_HOME_ROOT="$1"\n` +
+    `(trap 'kill "$c"; printf stopped > "$2"; exit 143' TERM; sleep 30 & c=$!; wait "$c") >/dev/null 2>&1 &\n` +
+    `WORKER_PID=$!\nsleep 0.3\n${cleanup}\ncleanup_auth_copy`;
+  const began = Date.now();
+  const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script, 'bash', homeRoot, marker], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - began < 5000, 'cleanup does not wait for the worker stage');
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'stopped');
+  assert.equal(fs.existsSync(homeRoot), false);
 });
 
 test('local byte budget includes the exact comment frame and section separators', (t) => {

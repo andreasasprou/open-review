@@ -429,8 +429,15 @@ INLINE_REVIEW_PAYLOAD="$RUN_DIR/inline-review.json"
 CLEAN_CODEX_HOME=""
 ACTIVE_CODEX_HOME=""
 WORKER_HOME_ROOT=""
+WORKER_PID=""
 
 cleanup_auth_copy() {
+  # Workers still running here were not joined (the parent failed or the run was
+  # interrupted). The driver aborts its worker process groups on SIGTERM.
+  if [ -n "${WORKER_PID:-}" ]; then
+    kill -TERM "$WORKER_PID" 2>/dev/null || true
+    wait "$WORKER_PID" 2>/dev/null || true
+  fi
   if [ -n "$CLEAN_CODEX_HOME" ]; then
     rm -rf "$CLEAN_CODEX_HOME"
   fi
@@ -846,6 +853,20 @@ drain_progress_pipe() {
   cat >/dev/null
 }
 
+# The workers read only the diff and the checkout, never the parent's output, so
+# they run beside the parent; the settlement step joins them.
+if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
+   rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
+   cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md"; then
+  (cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" \
+    exec node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
+      "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}") \
+    </dev/null >"$RUN_DIR/focused-workers.log" 2>&1 &
+  WORKER_PID=$!
+else
+  echo "warning: focused workers could not start; parent review settlement continues." >&2
+fi
+
 touch "$RUN_DIR/session-start.marker"
 set +e
 set -o pipefail
@@ -1009,18 +1030,19 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
     echo "error: execution-evidence gate failed; refusing settlement (raw log: $CODEX_LOG)" >&2
     exit 1
   fi
-  if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
-     (rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
-      cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md" &&
-      cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" \
-      node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
-        "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}"); then
+  WORKER_STATUS=1
+  if [ -n "$WORKER_PID" ]; then
+    WORKER_STATUS=0
+    wait "$WORKER_PID" || WORKER_STATUS=$?
+    WORKER_PID=""
+  fi
+  if [ "$WORKER_STATUS" -eq 0 ]; then
     if [ -f "$WORKTREE/.codex-ci/focused-workers.json" ] &&
        ! cp "$WORKTREE/.codex-ci/focused-workers.json" "$RUN_DIR/focused-workers.json"; then
       echo "warning: focused worker output could not be retained; parent review settlement continues." >&2
     fi
   else
-    echo "warning: focused workers failed; parent review settlement continues." >&2
+    echo "warning: focused workers failed (log: $RUN_DIR/focused-workers.log); parent review settlement continues." >&2
   fi
   if [ -n "$WORKER_HOME_ROOT" ]; then
     if rm -rf -- "$WORKER_HOME_ROOT"; then WORKER_HOME_ROOT="";
