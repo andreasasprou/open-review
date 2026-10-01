@@ -2022,10 +2022,17 @@ async function postResults({ recorder,
 			checkIdentity, candidate: ledgerCandidate, summaryBody: `<!-- ${MARKERS.review} -->\n${reviewBodyWithFooter}`,
 			skipInlineComments: true, revalidateAuthority: revalidateLedgerAuthority, eventName });
 		newCommentId = published.summaryCommentId;
-		await updateCheckRun({ github, owner, repo, checkId,
-			conclusion: published.projection.conclusion === "block" ? "failure" : "success",
-			title: `${formatReviewLabel(reviewNumber)}: ${published.projection.conclusion === "block" ? "BLOCK" : "PASS"}`,
-			summary: formatMergeGateSummary(mergeGate, verdict) });
+		// The projection is published: the job result must now follow it, so a check that
+		// cannot be completed is recorded, not thrown into the action's failure path.
+		try {
+			await updateCheckRun({ github, owner, repo, checkId,
+				conclusion: published.projection.conclusion === "block" ? "failure" : "success",
+				title: `${formatReviewLabel(reviewNumber)}: ${published.projection.conclusion === "block" ? "BLOCK" : "PASS"}`,
+				summary: formatMergeGateSummary(mergeGate, verdict) });
+		} catch (error) {
+			recordCaughtError({ recorder, error, operation: "review.process", stage: "complete_check", disposition: "recover", context: {} });
+			log(`Could not complete the review check after publication: ${error?.message || String(error)}`);
+		}
 	} else try {
 		newCommentId = await postReviewComment({
 			github,
