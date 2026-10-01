@@ -88,3 +88,30 @@ for (const [reviewMode, carried] of [['incremental', true], ['full', false]]) te
     headSha, checkId: 2, previousState: { reviewCount: 1 }, outputDir: root, ledgerTarget, checkIdentity, metadata: { reviewMode } });
   assert.equal(/This change modifies auth\/permission behavior:\*\* Usage queries use membership\. _\(Pass 1\)_/.test(comments[0]), carried);
 });
+test('a check that cannot be completed after publication does not fail the review', async (t) => {
+  const reviewMode = 'full';
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'open-review-callouts-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const output = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/first-v4-old-state-output.json')));
+  const headSha = output.state.last_reviewed_head_sha;
+  fs.writeFileSync(path.join(root, 'codex-review-output.json'), JSON.stringify(output));
+  fs.writeFileSync(path.join(root, 'ledger-evidence.json'), JSON.stringify({ priorProjection: null, humanDecisions: [], evidenceChallenges: [] }));
+  fs.writeFileSync(path.join(root, 'review-prev.md'), section(`- **${AUTH}:** Usage queries use membership.`));
+  const ledgerTarget = { repository: 'o/r', pr_number: 1, base_ref: 'main', base_sha: headSha,
+    merge_base_sha: headSha, head_sha: headSha, trusted_reviewer_ref: headSha,
+    evidence_bundle_sha256: 'c'.repeat(64), evidence_schema_version: 2 };
+  const checkIdentity = { workflow_path: '.github/workflows/review.yml',
+    workflow_ref: 'o/r/.github/workflows/review.yml@refs/heads/main', trusted_workflow_sha: headSha,
+    workflow_run_id: '1', workflow_run_attempt: 1, workflow_job_id: 1, check_run_id: 2,
+    check_suite_id: 3, app_slug: 'github-actions', head_sha: headSha };
+  const comments = [];
+  let checkUpdates = 0;
+  const github = { rest: { issues: { createComment: async ({ body }) => { comments.push(body); return { data: { id: comments.length } }; } },
+    pulls: { get: async () => ({ data: { head: { sha: headSha, repo: { full_name: 'o/r' } }, base: { sha: headSha, ref: 'main' } } }) },
+    checks: { update: async () => { checkUpdates += 1; throw Object.assign(new Error('fetch failed'), { status: 500 }); } } } };
+  const result = await postResults({ recorder: createRecordingCaughtErrorDiagnosticRecorder(), github, owner: 'o', repo: 'r', prNumber: 1,
+    headSha, checkId: 2, previousState: { reviewCount: 1 }, outputDir: root, ledgerTarget, checkIdentity, metadata: { reviewMode } });
+  assert.equal(checkUpdates, 3);
+  assert.ok(comments.some((body) => body.startsWith('<!-- codex-review:projection:v4 -->')));
+  assert.ok(result.mergeGate);
+});

@@ -6,6 +6,7 @@ const {
 	deriveMergeGate,
 	verdictImpliedGate,
 	formatMergeGateSummary,
+	updateCheckRun,
 } = require("../engine/index.cjs");
 
 function issue(overrides) {
@@ -153,4 +154,29 @@ test("summary states the derived gate and marks the verdict display-only", () =>
 	);
 	assert.match(passed, /Merge gate: \*\*PASS\*\*/);
 	assert.match(passed, /display only.*`BLOCK`/);
+});
+
+test("a transient failure completing the check is retried; a client error is not", async () => {
+	const update = (failures) => {
+		const calls = [];
+		return { calls, github: { rest: { checks: { update: async (request) => {
+			calls.push(request.conclusion);
+			const failure = failures.shift();
+			if (failure) throw failure;
+		} } } } };
+	};
+	const sleeps = [];
+	const args = { owner: "o", repo: "r", checkId: 7, conclusion: "success", title: "PASS", summary: "ok",
+		sleep: async (ms) => { sleeps.push(ms); } };
+	const network = Object.assign(new Error("fetch failed"), { status: 500 });
+	const flaky = update([network, Object.assign(new Error("rate"), { status: 429 })]);
+	await updateCheckRun({ ...args, github: flaky.github });
+	assert.equal(flaky.calls.length, 3);
+	assert.deepEqual(sleeps, [1000, 3000]);
+	const down = update([network, network, network]);
+	await assert.rejects(updateCheckRun({ ...args, github: down.github }), /fetch failed/);
+	assert.equal(down.calls.length, 3);
+	const invalid = update([Object.assign(new Error("invalid"), { status: 422 })]);
+	await assert.rejects(updateCheckRun({ ...args, github: invalid.github }), /invalid/);
+	assert.equal(invalid.calls.length, 1);
 });
