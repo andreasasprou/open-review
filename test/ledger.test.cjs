@@ -80,6 +80,16 @@ test("surrounding whitespace in the review summary is trimmed, not rejected", ()
 	assert.equal(folded.review_markdown, "Summary.");
 });
 
+test("a closing evaluation that rewords the approved invariant keeps the prior one", () => {
+	const first = published(modelFinding({ approved_invariant: "Keep `pageSize` within the limit." }));
+	const second = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
+		{ stable_id: "OR-1", result: "resolved_on_target", evidence: "The new head enforces the limit.",
+			finding: modelFinding({ approved_invariant: "Keep pageSize within the limit." }) },
+	] }, target: target(B), priorProjection: first });
+	assert.deepEqual(second.open_findings, []);
+	assert.equal(second.closed_findings[0].finding.approved_invariant, "Keep `pageSize` within the limit.");
+});
+
 test("first v4 round drops an unknown closing evaluation with a warning", () => {
 	const output = require("./fixtures/first-v4-old-state-output.json");
 	const folded = foldReview({ output, target: target(B), priorProjection: null });

@@ -1008,14 +1008,14 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     const normalizeEvaluatedFinding = () => {
       if (evaluation.finding?.stable_id !== priorFinding.stable_id)
         fail("renamed_prior_issue", "A prior stable issue cannot be renamed");
+      // Without a decision the prior finding keeps its approved invariant and decision
+      // reference for every result; a reworded restatement by the model is not a change.
       const canonicalInvariantFields = decision
         ? canonicalOpenFindingFields({ decision })
-        : evaluation.result === "still_open"
-          ? {
-              approved_invariant: priorFinding.approved_invariant,
-              decision_ref: missingEvaluation ? evaluation.finding.decision_ref : priorFinding.decision_ref,
-            }
-          : null;
+        : {
+            approved_invariant: priorFinding.approved_invariant,
+            decision_ref: missingEvaluation ? evaluation.finding.decision_ref : priorFinding.decision_ref,
+          };
       let finding;
       try {
         finding = normalizeFinding({ ...evaluation.finding, ...canonicalInvariantFields },
