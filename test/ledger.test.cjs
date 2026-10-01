@@ -62,6 +62,18 @@ test("an omitted prior evaluation carries the existing finding forward", () => {
 	assert.equal(settlement(second.open_findings).conclusion, "block");
 });
 
+test("a still-open evaluation with filled evidence keeps the finding open", () => {
+	const first = published();
+	const second = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
+		{ stable_id: "OR-1", result: "still_open", finding: modelFinding(),
+			evidence: "The new head still writes without the requested row.", decision_ref: null },
+	] }, target: target(B), priorProjection: first });
+	assert.deepEqual(second.open_findings.map((finding) => finding.stable_id), ["OR-1"]);
+	assert.deepEqual(second.warnings, []);
+	const projection = buildProjection({ candidate: second, target: target(B), checkIdentity: checkIdentity(B), summaryCommentId: 99 });
+	assert.equal(projection.open_findings[0].stable_id, "OR-1");
+});
+
 test("first v4 round drops an unknown closing evaluation with a warning", () => {
 	const output = require("./fixtures/first-v4-old-state-output.json");
 	const folded = foldReview({ output, target: target(B), priorProjection: null });

@@ -789,11 +789,13 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
   const evaluationsById = new Map();
   for (const rawEvaluation of rawOutput.prior_issue_evaluations) {
     // Strict model output requires nullable keys. The durable v4 projection
-    // keeps only fields applicable to this result.
+    // keeps only fields applicable to this result; a still-open finding has no
+    // closing evidence even when the model fills that key.
     const evaluation = isObject(rawEvaluation) ? { ...rawEvaluation } : rawEvaluation;
     if (isObject(evaluation)) {
       for (const key of ["evidence", "challenge_ref", "decision_ref"])
-        if (evaluation[key] === null) delete evaluation[key];
+        if (evaluation[key] === null || (key === "evidence" && evaluation.result === "still_open"))
+          delete evaluation[key];
     }
     if (!isObject(evaluation)) {
       warnings.push("Unknown prior evaluation was dropped: evaluation is not an object");
