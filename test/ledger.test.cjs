@@ -74,6 +74,12 @@ test("a still-open evaluation with filled evidence keeps the finding open", () =
 	assert.equal(projection.open_findings[0].stable_id, "OR-1");
 });
 
+test("surrounding whitespace in the review summary is trimmed, not rejected", () => {
+	const folded = foldReview({ output: { review_markdown: "\n  Summary.  \n", new_findings: [], prior_issue_evaluations: [] },
+		target: target() });
+	assert.equal(folded.review_markdown, "Summary.");
+});
+
 test("first v4 round drops an unknown closing evaluation with a warning", () => {
 	const output = require("./fixtures/first-v4-old-state-output.json");
 	const folded = foldReview({ output, target: target(B), priorProjection: null });

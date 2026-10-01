@@ -2156,7 +2156,8 @@ function foldReview({ output, target, priorProjection = null, humanDecisions = [
   });
   return validateCandidate({
     rawOutput: {
-      review_markdown: output.review_markdown || "",
+      // Surrounding whitespace in the model's summary is not content; strict validation would reject it.
+      review_markdown: typeof output.review_markdown === "string" ? output.review_markdown.trim() : output.review_markdown || "",
       inline_comments: output.inline_comments || [],
       new_findings: output.new_findings.map((finding) => bindFinding(finding)),
       prior_issue_evaluations: output.prior_issue_evaluations.map((evaluation) =>
