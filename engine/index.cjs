@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require("./diagnostics-runtime.cjs");
 const path = require("node:path");
 const { spansForPath } = require("./location-spans.cjs");
-const { foldReview } = require("./ledger/projection.cjs");
+const { foldReview, isMergeBlocker: isLedgerMergeBlocker } = require("./ledger/projection.cjs");
 const { postResults: publishLedger } = require("./ledger/publisher.cjs");
 
 // ─── Comment Markers ──────────────────────────────────────────────────────────
@@ -86,8 +86,11 @@ function deriveMergeGate(reviewState) {
 	}
 
 	// Count blockers from the issues themselves; ids are display metadata and a
-	// blank id must not exempt an otherwise blocking finding.
-	const blockingIssues = openIssues.filter(isMergeBlocker);
+	// blank id must not exempt an otherwise blocking finding. Ledger findings use
+	// the ledger's settlement rule (an owner decision blocks at any severity), so
+	// the job result, the check and the published projection agree.
+	const blocks = Array.isArray(reviewState?.open_findings) ? isLedgerMergeBlocker : isMergeBlocker;
+	const blockingIssues = openIssues.filter(blocks);
 	const blockingIssueIds = blockingIssues
 		.map((issue) => issue?.stable_id || issue?.id)
 		.filter(Boolean);
@@ -112,7 +115,7 @@ function formatMergeGateSummary(gate, verdict) {
 	const lines = [];
 	if (gate.status === "BLOCK") {
 		lines.push(
-			`Merge gate: **BLOCK** — ${gate.blockingCount} of ${gate.openCount} open findings are P1-or-higher and reachable.`,
+			`Merge gate: **BLOCK** — ${gate.blockingCount} of ${gate.openCount} open findings require a fix or owner decision.`,
 		);
 		if (gate.blockingIssueIds.length > 0) {
 			lines.push(`Blocking: ${gate.blockingIssueIds.join(", ")}`);

@@ -88,6 +88,19 @@ test("a P1 normal-path finding closes the gate", () => {
 	});
 });
 
+test("ledger findings close the gate exactly when the ledger settlement blocks", () => {
+	const { settlement } = require("../engine/ledger/projection.cjs");
+	const ownerDecision = issue({ stable_id: "OWNER", severity: "P2", disposition: "AUTHOR_DECISION" });
+	const advisory = issue({ stable_id: "ADVISORY", severity: "P2", disposition: "FIX_IN_PR" });
+	const blocked = deriveMergeGate({ open_findings: [ownerDecision, advisory] });
+	assert.equal(blocked.status, "BLOCK");
+	assert.deepEqual(blocked.blockingIssueIds, ["OWNER"]);
+	assert.equal(settlement([ownerDecision, advisory]).conclusion, "block");
+	assert.match(formatMergeGateSummary(blocked, "OK"), /1 of 2 open findings require a fix or owner decision/);
+	assert.equal(deriveMergeGate({ open_findings: [advisory] }).status, "PASS");
+	assert.equal(settlement([advisory]).conclusion, "pass");
+});
+
 test("no findings passes", () => {
 	assert.equal(deriveMergeGate({ open_issues: [] }).status, "PASS");
 });
