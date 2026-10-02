@@ -74,6 +74,40 @@ test("a still-open evaluation with filled evidence keeps the finding open", () =
 	assert.equal(projection.open_findings[0].stable_id, "OR-1");
 });
 
+test("still-open evaluation references cannot supply or override authenticated authority", () => {
+	const first = published();
+	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123",
+		owner_or_triage: "the sample owner", decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
+	const evaluation = { stable_id: "OR-1", result: "still_open", finding: modelFinding(),
+		evidence: "The request is still lost.", challenge_ref: null, decision_ref: "github-comment:50" };
+	for (const humanDecisions of [
+		[],
+		[{ ...decision, stable_id: "OTHER" }],
+		[decision, { ...decision, comment_id: 51 }],
+	]) {
+		assert.throws(() => foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation] },
+			target: target(B), priorProjection: first, humanDecisions }),
+			(error) => error.code === "unknown_field" && error.details.includes("decision_ref"));
+	}
+});
+
+test("a redundant decision reference does not bypass challenge or decision transition checks", () => {
+	const first = published();
+	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
+		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123",
+		owner_or_triage: "the sample owner", decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
+	const evaluation = { stable_id: "OR-1", result: "still_open", finding: modelFinding(),
+		evidence: "The request is still lost.", challenge_ref: null, decision_ref: "github-comment:50" };
+	assert.throws(() => foldReview({ output: { new_findings: [], prior_issue_evaluations: [
+		{ ...evaluation, challenge_ref: "github-comment:51" },
+	] }, target: target(B), priorProjection: first, humanDecisions: [decision] }),
+		(error) => error.code === "still_open_challenge_conflicts_with_decision");
+	assert.throws(() => foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation] },
+		target: target(B), priorProjection: first, humanDecisions: [{ ...decision, kind: "REJECT_FINDING" }] }),
+		(error) => error.code === "decision_ref_mismatch");
+});
+
 test("surrounding whitespace in the review summary is trimmed, not rejected", () => {
 	const folded = foldReview({ output: { review_markdown: "\n  Summary.  \n", new_findings: [], prior_issue_evaluations: [] },
 		target: target() });
@@ -624,7 +658,8 @@ test("authenticated DEFER_FOLLOW_UP decision settles a reachable P1", () => {
 		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123",
 		owner_or_triage: "the sample owner", decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const second = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
-		result: "still_open", finding: modelFinding() }] }, target: target(B), priorProjection: first,
+		result: "still_open", finding: modelFinding(), evidence: "The request is still lost.",
+		challenge_ref: null, decision_ref: "github-comment:50" }] }, target: target(B), priorProjection: first,
 		humanDecisions: [decision] });
 	assert.equal(second.open_findings[0].disposition, "FOLLOW_UP");
 	assert.equal(second.open_findings[0].decision_ref, "github-comment:50");
@@ -712,7 +747,7 @@ test("deferred risk expansion restores an owner decision without losing the find
 		scope: "This PR", evidence: "Independent issue", tracker: "ENG-123", owner_or_triage: "the sample owner",
 		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer" };
 	const next = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
-		result: "still_open", finding: modelFinding({ severity: "P1" }) }] },
+		result: "still_open", decision_ref: "github-comment:50", finding: modelFinding({ severity: "P1" }) }] },
 		target: target(B), priorProjection: first, humanDecisions: [decision] });
 	assert.equal(next.open_findings[0].disposition, "AUTHOR_DECISION");
 	assert.equal(next.open_findings[0].decision_ref, "github-comment:50");
