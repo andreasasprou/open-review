@@ -110,6 +110,10 @@ ChatGPT login (`codex login`).
 reviews known pre-fix PR heads and scores how many known defects each rule-pack
 version finds.
 
+`docs/decisions.md` records why the engine uses its current models, workers and
+limits, and which alternatives were tested and rejected.
+`docs/evaluation-protocol.md` says how to test a model or architecture change.
+
 ## Tests
 
 ```sh
