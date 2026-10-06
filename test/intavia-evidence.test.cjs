@@ -1645,7 +1645,7 @@ test("a v4 run revalidates a retained decision for a closed migration finding", 
   );
 });
 
-test("a retained decision stays valid after its decision head enters the current base", async () => {
+test("a retained decision stays valid after its decision head enters the base or leaves the PR history", async () => {
   const priorTarget = buildReviewTarget({
     repository: "example-org/sample-app",
     pr_number: 42,
@@ -1685,6 +1685,7 @@ test("a retained decision stays valid after its decision head enters the current
     mergeBase,
     commitShas,
     baseSha = SHA_A,
+    updatedAt,
   } = {}) =>
     collectEvidenceBundle({
       repository: "example-org/sample-app",
@@ -1707,6 +1708,7 @@ test("a retained decision stays valid after its decision head enters the current
             id: decision.comment_id,
             body,
             user: { login: "sample-maintainer", type: "User" },
+            ...(updatedAt ? { updated_at: updatedAt } : {}),
           },
         ],
       }),
@@ -1755,26 +1757,21 @@ test("a retained decision stays valid after its decision head enters the current
       /501/.test(error.message),
   );
 
-  await assert.rejects(
-    collect({
-      commitShas: [SHA_A, SHA_C],
-      mergeBase: async ({ base_sha: baseSha, head_sha: headSha }) =>
-        baseSha === SHA_A && headSha === SHA_A ? SHA_A : SHA_B,
-    }),
-    (error) =>
-      error instanceof EvidenceError &&
-      error.code === "authoritative_record_changed" &&
-      /501/.test(error.message),
-  );
+  // A force-push can drop the decision head from the PR and the checkout.
+  const rewritten = await collect({
+    baseSha: SHA_B,
+    commitShas: [SHA_C],
+    mergeBase: async ({ base_sha: baseCommit }) => {
+      if (baseCommit === SHA_A) throw new Error("Not a valid commit name");
+      return SHA_B;
+    },
+  });
+  assert.deepEqual(rewritten.humanDecisions, [decision]);
+  assert.deepEqual(rewritten.rejectedRecords, []);
 
+  // An edit loses authority even when the body is unchanged.
   await assert.rejects(
-    collect({
-      baseSha: SHA_B,
-      mergeBase: async ({ base_sha: baseCommit, head_sha: headCommit }) => {
-        if (baseCommit === SHA_A && headCommit === SHA_C) return SHA_A;
-        return SHA_B;
-      },
-    }),
+    collect({ updatedAt: "2026-07-27T10:05:00Z" }),
     (error) =>
       error instanceof EvidenceError &&
       error.code === "authoritative_record_changed" &&
