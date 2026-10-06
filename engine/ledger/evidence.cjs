@@ -486,17 +486,6 @@ function safeAncestryCheck({ is_ancestor, ancestor, descendant }) {
   }
 }
 
-async function isCommitAncestor({ git, ancestor, descendant }) {
-  try {
-    return (
-      (await git.mergeBase({ base_sha: ancestor, head_sha: descendant })) ===
-      ancestor
-    );
-  } catch {
-    return false;
-  }
-}
-
 function parseHumanDecisionComment({
   comment,
   allowed_principals,
@@ -1631,29 +1620,6 @@ async function collectEvidenceBundle({
       retainedDecisionsByComment.set(retained.comment_id, retained);
     }
   }
-  const validatedRetainedDecisionEntries = await Promise.all(
-    [...retainedDecisionsByComment.values()].map(async (retained) => {
-      const isInCurrentHead = await isCommitAncestor({
-        git,
-        ancestor: retained.decision_head_sha,
-        descendant: expectedHeadSha,
-      });
-      if (!isInCurrentHead) return null;
-      const isInAcceptedHistory =
-        prCommitShas.includes(retained.decision_head_sha) ||
-        (await isCommitAncestor({
-          git,
-          ancestor: retained.decision_head_sha,
-          descendant: expectedBaseSha,
-        }));
-      return isInAcceptedHistory
-        ? [retained.comment_id, retained.decision_head_sha]
-        : null;
-    }),
-  );
-  const validatedRetainedDecisionHeadsByComment = new Map(
-    validatedRetainedDecisionEntries.filter(Boolean),
-  );
   const historicallyConsumedChallengeRefs = consumedChallengeRefs({
     priorProjection,
     priorProjections: sortedPriorProjectionRecords,
@@ -1714,9 +1680,9 @@ async function collectEvidenceBundle({
 
   for (const comment of issueComments) {
     if (comment.body.startsWith(HUMAN_DECISION_MARKER)) {
+      // A retained decision was checked against PR history when first accepted.
+      // A later force-push can drop its head commit; the decision keeps authority.
       const retainedDecision = retainedDecisionsByComment.get(comment.id);
-      const validatedRetainedDecisionHead =
-        validatedRetainedDecisionHeadsByComment.get(comment.id);
       const decision = parseHumanDecisionComment({
         comment,
         allowed_principals: allowedDecisionPrincipals,
@@ -1724,14 +1690,12 @@ async function collectEvidenceBundle({
         command: commands[0],
         known_issue_ids: knownIssueIds,
         pr_commit_shas: retainedDecision
-          ? validatedRetainedDecisionHead
-            ? [validatedRetainedDecisionHead]
-            : []
+          ? [retainedDecision.decision_head_sha]
           : prCommitShas,
         target_head_sha: expectedHeadSha,
         is_ancestor: retainedDecision
           ? ({ ancestor, descendant }) =>
-              ancestor === validatedRetainedDecisionHead &&
+              ancestor === retainedDecision.decision_head_sha &&
               descendant === expectedHeadSha
           : ancestry,
       });
