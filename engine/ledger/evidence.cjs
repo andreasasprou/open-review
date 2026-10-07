@@ -23,8 +23,11 @@ const DECISION_KINDS = Object.freeze([
   "DEFER_FOLLOW_UP",
 ]);
 
-const DEFAULT_PAGINATION_ATTEMPTS = 3;
+const DEFAULT_PAGINATION_ATTEMPTS = 6;
 const MAX_RETRY_DELAY_MS = 30_000;
+// Many pages are fetched one after another, so one collection shares one retry budget.
+const EVIDENCE_RETRY_BUDGET_MS = 60_000;
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_MODEL_CONTEXT_LIMITS = Object.freeze({
   max_entries: 100,
   max_body_bytes: 8_000,
@@ -42,10 +45,11 @@ class EvidenceError extends Error {
 function ledgerError(value) {
   if (value instanceof Error) return value;
   const code = value?.code;
-  const message = typeof value?.message === "string" ? value.message : String(value);
+  const message = typeof value?.message === "string" ? value.message
+    : value !== null && typeof value === "object" ? "unknown error" : String(value);
   const error = new Error(code ? `${code}: ${message}` : message);
   if (code !== undefined) error.code = code;
-  for (const key of ["retry_after_ms", "retry_after_seconds", "response"])
+  for (const key of ["status", "retry_after_ms", "retry_after_seconds", "response"])
     if (value?.[key] !== undefined) error[key] = value[key];
   return error;
 }
@@ -235,7 +239,26 @@ function retryDelayMs({ error, failed_attempt }) {
       NaN,
   );
   if (Number.isFinite(explicit) && explicit >= 0) return explicit;
-  return Math.min(2 ** (failed_attempt - 1) * 1_000, 4_000);
+  return Math.min(2 ** (failed_attempt - 1) * 1_000, 8_000);
+}
+
+function describeFailure(error) {
+  const status = error?.status ?? error?.response?.status;
+  const message = (typeof error?.message === "string" ? error.message : "unknown error")
+    .replace(/\b(bearer|basic|token)\s+\S+/gi, "$1 [redacted]")
+    .replace(/\b(gh[pousr]_|github_pat_)\w+/g, "[redacted]")
+    .slice(0, 200);
+  return status === undefined ? message : `HTTP ${status}: ${message}`;
+}
+
+function budgetedSleep(sleep) {
+  let remaining = EVIDENCE_RETRY_BUDGET_MS;
+  return (ms) => {
+    if (ms > remaining)
+      throw new Error(`retry budget of ${EVIDENCE_RETRY_BUDGET_MS}ms is spent`);
+    remaining -= ms;
+    return sleep(ms);
+  };
 }
 
 /**
@@ -245,8 +268,9 @@ function retryDelayMs({ error, failed_attempt }) {
 async function collectPaginated({
   fetchPage,
   ceiling,
+  surface = "evidence",
   max_attempts = DEFAULT_PAGINATION_ATTEMPTS,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep = defaultSleep,
 }) {
   if (typeof fetchPage !== "function")
     throw new TypeError("fetchPage is required");
@@ -271,13 +295,13 @@ async function collectPaginated({
         page = await fetchPage({ cursor, page_number, attempt });
         break;
       } catch (error) {
-        if (attempt === max_attempts) {
-          throw new EvidenceError({
-            code: "evidence_unavailable",
-            message: `Page ${page_number} remained unavailable after ${max_attempts} attempts`,
-            cause: error,
-          });
-        }
+        const unavailable = (reason) => new EvidenceError({
+          code: "evidence_unavailable",
+          message: `${surface} page ${page_number} ${reason} (${describeFailure(error)})`,
+          cause: error,
+        });
+        if (attempt === max_attempts)
+          throw unavailable(`remained unavailable after ${max_attempts} attempts`);
         const delay = retryDelayMs({ error, failed_attempt: attempt });
         if (delay > MAX_RETRY_DELAY_MS) {
           throw new EvidenceError({
@@ -286,8 +310,12 @@ async function collectPaginated({
             cause: error,
           });
         }
-        // oxlint-disable-next-line eslint/no-await-in-loop
-        await sleep(delay);
+        try {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          await sleep(delay);
+        } catch (sleepError) {
+          throw unavailable(`remained unavailable: ${sleepError.message}`);
+        }
       }
     }
 
@@ -812,11 +840,13 @@ async function collectRestPages({
   params,
   ceiling,
   sleep,
+  surface,
   extractItems = (data) => data,
 }) {
   return collectPaginated({
     ceiling,
     sleep,
+    surface,
     fetchPage: async ({ page_number }) => {
       let response;
       try {
@@ -902,6 +932,7 @@ async function verifyProjectionProvenance({
   try {
     checks = await collectRestPages({
       method: github.rest.checks.listForRef.bind(github.rest.checks),
+      surface: "check runs",
       params: { owner, repo, ref: identity.head_sha, filter: "all" },
       ceiling,
       sleep,
@@ -917,6 +948,7 @@ async function verifyProjectionProvenance({
       method: github.rest.actions.listJobsForWorkflowRunAttempt.bind(
         github.rest.actions,
       ),
+      surface: "workflow jobs",
       params: {
         owner,
         repo,
@@ -1035,6 +1067,7 @@ async function collectGraphqlConnection({
   const result = await collectPaginated({
     ceiling,
     sleep,
+    surface,
     fetchPage: async ({ cursor }) => {
       let page;
       try {
@@ -1384,8 +1417,9 @@ async function collectEvidenceBundle({
   additionalArtifacts = {},
   ceilings = {},
   contextLimits = {},
-  sleep,
+  sleep: baseSleep = defaultSleep,
 }) {
+  const sleep = budgetedSleep(baseSleep);
   const { owner, repo } = splitRepository(repository);
   const commands = (Array.isArray(command) ? command : String(command).split(/[\s,]+/))
     .map((name) => name.replace(/^\//, "")).filter(Boolean);
@@ -1412,6 +1446,7 @@ async function collectEvidenceBundle({
   ] = await Promise.all([
     collectRestPages({
       method: github.rest.issues.listComments.bind(github.rest.issues),
+      surface: "issue comments",
       params: {
         owner,
         repo,
@@ -1424,12 +1459,14 @@ async function collectEvidenceBundle({
     }),
     collectRestPages({
       method: github.rest.pulls.listReviews.bind(github.rest.pulls),
+      surface: "reviews",
       params: { owner, repo, pull_number: prNumber },
       ceiling: limits.reviews,
       sleep,
     }),
     collectRestPages({
       method: github.rest.pulls.listReviewComments.bind(github.rest.pulls),
+      surface: "review comments",
       params: {
         owner,
         repo,
@@ -1442,6 +1479,7 @@ async function collectEvidenceBundle({
     }),
     collectRestPages({
       method: github.rest.checks.listForRef.bind(github.rest.checks),
+      surface: "check runs",
       params: { owner, repo, ref: expectedHeadSha, filter: "all" },
       ceiling: limits.checks,
       sleep,
@@ -1451,6 +1489,7 @@ async function collectEvidenceBundle({
       method: github.rest.repos.listCommitStatusesForRef.bind(
         github.rest.repos,
       ),
+      surface: "commit statuses",
       params: { owner, repo, ref: expectedHeadSha },
       ceiling: limits.statuses,
       sleep,

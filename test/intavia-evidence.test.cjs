@@ -133,7 +133,7 @@ test("bounded pagination retries pages, preserves order, and fails closed at cei
   );
 });
 
-test("pagination rejects malformed cursors, overlong retry delays, and third failure", async () => {
+test("pagination rejects malformed cursors, overlong retry delays, and the final failure", async () => {
   await assert.rejects(
     collectPaginated({
       ceiling: 10,
@@ -157,19 +157,64 @@ test("pagination rejects malformed cursors, overlong retry delays, and third fai
   );
 
   let attempts = 0;
+  const sleeps = [];
   await assert.rejects(
     collectPaginated({
       ceiling: 10,
-      sleep: async () => {},
+      surface: "issue comments",
+      sleep: async (ms) => sleeps.push(ms),
       fetchPage: async () => {
         attempts += 1;
-        throw new Error("still unavailable");
+        throw Object.assign(new Error("Server Error"), { status: 502 });
       },
     }),
     (error) =>
-      error instanceof EvidenceError && error.code === "evidence_unavailable",
+      error instanceof EvidenceError && error.code === "evidence_unavailable" &&
+      error.message === "issue comments page 1 remained unavailable after 6 attempts (HTTP 502: Server Error)",
   );
-  assert.equal(attempts, 3);
+  assert.equal(attempts, 6);
+  assert.deepEqual(sleeps, [1_000, 2_000, 4_000, 8_000, 8_000]);
+});
+
+test("pagination failures are logged without credentials and survive non-Error throws", async () => {
+  await assert.rejects(
+    collectPaginated({
+      ceiling: 10,
+      max_attempts: 1,
+      fetchPage: async () => {
+        throw new Error("request failed: Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+      },
+    }),
+    (error) =>
+      error.code === "evidence_unavailable" &&
+      !/ghp_/.test(error.message) && /Bearer \[redacted\]/.test(error.message),
+  );
+  await assert.rejects(
+    collectPaginated({
+      ceiling: 10,
+      max_attempts: 1,
+      fetchPage: async () => { throw Object.create(null); },
+    }),
+    (error) => error.code === "evidence_unavailable" && /\(unknown error\)$/.test(error.message),
+  );
+});
+
+test("one evidence collection shares one retry budget across its pages", async () => {
+  const github = fakeGithub({ hostedProvenance: true });
+  github.rest.issues.listComments = async () => {
+    throw { status: 502, message: "Server Error", retry_after_ms: 25_000 };
+  };
+  const sleeps = [];
+  await assert.rejects(
+    collectEvidenceBundle({ repository: "example-org/sample-app", prNumber: 42,
+      expectedBaseRef: "main", expectedBaseSha: SHA_A, expectedHeadSha: SHA_C,
+      reviewerRef: SHA_D, github, git: { mergeBase: async () => SHA_C },
+      sleep: async (ms) => sleeps.push(ms) }),
+    (error) =>
+      error.code === "evidence_unavailable" &&
+      error.message === "issue comments page 1 remained unavailable: retry budget of 60000ms is spent (HTTP 502: Server Error)",
+  );
+  assert.deepEqual(sleeps, [25_000, 25_000]);
 });
 
 test("model context keeps required evidence and reports bounded exclusions", () => {
