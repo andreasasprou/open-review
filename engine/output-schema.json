@@ -286,7 +286,7 @@
         },
         "decision_ref": {
           "type": ["string", "null"],
-          "description": "Trusted github-comment:<id> of a controlling owner decision."
+          "description": "Trusted github-comment:<id> of a controlling owner decision. Required for superseded_by_human_decision; may also accompany still_open or resolved_on_target when it matches the latest collected decision for this issue."
         }
       },
       "required": [
