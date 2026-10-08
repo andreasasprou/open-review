@@ -69,6 +69,10 @@ forward as `still_open` and warns; omission never closes it.
 Every evaluation must include `evidence`, `challenge_ref`, and `decision_ref`.
 Use `null` for a field that does not apply to its result. A non-null
 `challenge_ref` on `still_open` means the authenticated challenge was considered.
+A `decision_ref` on `still_open` or `resolved_on_target` must match the latest
+collected owner decision for that issue. The publisher retains that decision in
+the finding, not as a supersession of an implemented repair; approval alone
+never proves resolution.
 
 - `still_open`: report the current finding. If this answers an unconsumed
   authenticated evidence challenge, copy its supplied `github-comment:<id>`
