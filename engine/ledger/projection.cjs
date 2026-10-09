@@ -763,6 +763,9 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     fail("too_many_findings", `Review output exceeds ${MAX_NEW_FINDINGS} new findings`);
 
   const decisions = normalizeHumanDecisions(evidence?.human_decisions || []);
+  const decisionsByIssue = new Map();
+  for (const decision of decisions)
+    decisionsByIssue.set(decision.stable_id, decision);
   const reviewPriorProjection = prepareReviewPriorProjection({
     priorProjection,
     priorProjections: evidence?.prior_projections || [],
@@ -796,6 +799,12 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       for (const key of ["evidence", "challenge_ref", "decision_ref"])
         if (evaluation[key] === null || (key === "evidence" && evaluation.result === "still_open"))
           delete evaluation[key];
+      // Still-open findings bind their decision below. Only discard a redundant
+      // reference to the latest authenticated decision for this issue.
+      const decision = decisionsByIssue.get(evaluation.stable_id);
+      if (evaluation.result === "still_open" && decision &&
+          evaluation.decision_ref === decisionRef(decision))
+        delete evaluation.decision_ref;
     }
     if (!isObject(evaluation)) {
       warnings.push("Unknown prior evaluation was dropped: evaluation is not an object");
@@ -936,9 +945,6 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     });
   }
 
-  const decisionsByIssue = new Map();
-  for (const decision of decisions)
-    decisionsByIssue.set(decision.stable_id, decision);
   const challenges = normalizeEvidenceChallenges(
     evidence?.evidence_challenges || [],
   );
