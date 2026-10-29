@@ -24,6 +24,9 @@ finding). The literal scoped path plus a header from the actual prepared patch
 is the discriminating signal. A later command in the same shell expression may
 fail after the diff has already been read, so the compound exit code is not
 proof that the scoped read failed.
+
+A header must end an output line, but may follow output from an earlier command
+that did not emit a final newline.
 """
 
 import json
@@ -52,7 +55,7 @@ def main() -> int:
         return 2
 
     try:
-        patch_headers = load_patch_headers(sys.argv[2])
+        patch_headers = tuple(load_patch_headers(sys.argv[2]))
     except OSError as error:
         print(f"error: could not read scoped diff headers: {error}", file=sys.stderr)
         return 2
@@ -88,14 +91,14 @@ def main() -> int:
             command = item.get("command")
             aggregated_output = item.get("aggregated_output")
             output_lines = (
-                set(aggregated_output.splitlines())
+                aggregated_output.splitlines()
                 if isinstance(aggregated_output, str)
-                else set()
+                else []
             )
             if (
                 isinstance(command, str)
                 and SCOPED_DIFF_PATTERN.search(command)
-                and not patch_headers.isdisjoint(output_lines)
+                and any(line.endswith(patch_headers) for line in output_lines)
             ):
                 scoped_input_reads += 1
 
