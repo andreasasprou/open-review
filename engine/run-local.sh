@@ -50,9 +50,11 @@ Options:
 Logs are written under .agent-data/codex-review-local/.
 
 Environment: CODEX_MODEL, CODEX_REASONING, CODEX_SUBAGENT_MODEL,
-CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, and OPEN_REVIEW_SETTLEMENT_MARKER
+CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_SETTLEMENT_MARKER
 (HTML-comment marker of the settlement comment; default
-open-review-local:settlement).
+open-review-local:settlement), and OPEN_REVIEW_ATTRIBUTION_HEADER (Markdown
+placed after the settlement marker and before the inline review body and each
+inline comment; default empty, which adds nothing).
 EOF
 }
 
@@ -81,6 +83,9 @@ PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
 RULES_PATH="${OPEN_REVIEW_RULES_PATH:-}"
 CHECK_NAME="${OPEN_REVIEW_CHECK_NAME:-Open Review}"
 SETTLEMENT_MARKER="${OPEN_REVIEW_SETTLEMENT_MARKER:-open-review-local:settlement}"
+# Local publications post under the operator's token; a consumer can require an
+# attribution header on every comment posted that way.
+ATTRIBUTION_HEADER="${OPEN_REVIEW_ATTRIBUTION_HEADER:-}"
 ENGINE_REF="${OPEN_REVIEW_ENGINE_REF:-}"
 STREAM_RAW="false"
 PREPARE_ONLY="false"
@@ -1069,6 +1074,9 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
     local include_focused="$1"
     {
       printf '<!-- %s head=%s -->\n\n' "$SETTLEMENT_MARKER" "$HEAD_SHA"
+      if [ -n "${ATTRIBUTION_HEADER:-}" ]; then
+        printf '%s\n\n' "$ATTRIBUTION_HEADER"
+      fi
       printf '%s\n\n' "$MERGE_GATE_SUMMARY"
       if [ "$RULES_CHANGED" = "true" ]; then
         printf '> **Rule pack changed:** this PR modifies the review rule pack (`%s`). This review used %s; the PR'"'"'s version applies after merge.\n\n' "$RULES_PATH" "$RULES_SOURCE"
@@ -1147,13 +1155,20 @@ NODE
 
     INLINE_CANDIDATE_COUNT="$(jq -r '.inline.candidateCount' "$SETTLEMENT_JSON")"
     INLINE_VALIDATED_COUNT="$(jq -r '.inline.validatedCount' "$SETTLEMENT_JSON")"
-    if [ "$INLINE_VALIDATED_COUNT" -gt 0 ]; then
+    write_inline_review_payload() {
       jq \
         --arg commit_id "$HEAD_SHA" \
+        --arg header "${ATTRIBUTION_HEADER:-}" \
         --arg body "See the local Code Review settlement: $SETTLEMENT_COMMENT_URL" \
-        '{ commit_id: $commit_id, event: "COMMENT", body: $body, comments: .inline.comments }' \
+        'def attributed: if $header == "" then . else $header + "\n\n" + . end;
+          { commit_id: $commit_id, event: "COMMENT", body: ($body | attributed),
+            comments: [.inline.comments[] | .body |= attributed] }' \
         "$SETTLEMENT_JSON" \
         > "$INLINE_REVIEW_PAYLOAD"
+    }
+
+    if [ "$INLINE_VALIDATED_COUNT" -gt 0 ]; then
+      write_inline_review_payload
       verify_trusted_runner_files_unchanged
       if INLINE_REVIEW_URL="$(
         gh api \
