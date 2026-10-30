@@ -35,6 +35,12 @@ function published(raw = modelFinding()) {
 	return buildProjection({ candidate: candidate(raw), target: target(), checkIdentity: checkIdentity(), summaryCommentId: 99 });
 }
 
+function approvedDecision(overrides = {}) {
+	return { stable_id: "OR-1", kind: "REDESIGN_IN_PR", invariant: "Preserve each request through the existing write.",
+		scope: "The current request write only.", evidence: null, tracker: null, owner_or_triage: null,
+		decision_head_sha: A, comment_id: 50, actor_login: "sample-maintainer", ...overrides };
+}
+
 test("v4 projection hashes and round-trips through Intavia's wire format", () => {
 	const projection = published();
 	const body = formatProjectionComment(projection);
@@ -544,6 +550,77 @@ test("strict model evaluations use null for fields outside their result", () => 
 	assert.equal(resolved.closed_findings[0].closure.result, "resolved_on_target");
 	assert.deepEqual(Object.keys(resolved.prior_issue_evaluations[0]).sort(),
 		["stable_id", "result", "finding", "evidence"].sort());
+});
+
+test("a resolved model evaluation retains its authenticated approval in the finding only", () => {
+	const prior = published();
+	const decision = approvedDecision();
+	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+		stable_id: "OR-1", result: "resolved_on_target", finding: modelFinding({ approved_invariant: "Model rewrite." }),
+		evidence: "The changed write now preserves each requested row.", challenge_ref: null, decision_ref: "github-comment:50" }] },
+		target: target(B), priorProjection: prior, humanDecisions: [decision] });
+	assert.deepEqual(folded.open_findings, []);
+	assert.equal(folded.closed_findings[0].finding.approved_invariant, decision.invariant);
+	assert.equal(folded.closed_findings[0].finding.failure_scenario, prior.open_findings[0].failure_scenario);
+	assert.equal(folded.closed_findings[0].finding.decision_ref, "github-comment:50");
+	assert.deepEqual(Object.keys(folded.prior_issue_evaluations[0]).sort(),
+		["stable_id", "result", "finding", "evidence"].sort());
+	const projection = buildProjection({ candidate: folded, target: target(B),
+		checkIdentity: checkIdentity(B), summaryCommentId: 100, humanDecisions: [decision] });
+	assert.equal(projection.watcher_action, "settled");
+	assert.deepEqual(readProjectionComment(formatProjectionComment(projection)), projection);
+});
+
+test("a still-open model evaluation with an authenticated approval remains blocked", () => {
+	const decision = approvedDecision();
+	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+		stable_id: "OR-1", result: "still_open", finding: modelFinding(),
+		evidence: null, challenge_ref: null, decision_ref: "github-comment:50" }] },
+		target: target(B), priorProjection: published(), humanDecisions: [decision] });
+	assert.equal(folded.open_findings[0].decision_ref, "github-comment:50");
+	assert.equal(folded.open_findings[0].approved_invariant, decision.invariant);
+	assert.equal(folded.open_findings[0].autonomous_eligibility, "NO");
+	assert.equal(settlement(folded.open_findings).conclusion, "block");
+});
+
+test("model approval references must match the latest authenticated decision for the issue", () => {
+	for (const result of ["resolved_on_target", "still_open"]) {
+		for (const humanDecisions of [[], [approvedDecision({ stable_id: "OTHER-1" })],
+			[approvedDecision({ comment_id: 51 })], [approvedDecision(), approvedDecision({ comment_id: 51 })]]) {
+			assert.throws(() => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+				stable_id: "OR-1", result, finding: modelFinding(), evidence: "The changed write now preserves the row.",
+				challenge_ref: null, decision_ref: "github-comment:50" }] },
+				target: target(B), priorProjection: published(), humanDecisions }),
+				(error) => error.code === "decision_ref_mismatch");
+		}
+	}
+});
+
+test("matching model approval references normalize before equivalent evaluations are reconciled", () => {
+	const evaluation = { stable_id: "OR-1", result: "resolved_on_target", finding: modelFinding(),
+		evidence: "The changed write now preserves the row.", challenge_ref: null, decision_ref: null };
+	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation,
+		{ ...evaluation, decision_ref: "github-comment:50" }] }, target: target(B),
+		priorProjection: published(), humanDecisions: [approvedDecision()] });
+	assert.deepEqual(folded.open_findings, []);
+	assert.equal(folded.prior_issue_evaluations.length, 1);
+	assert.match(folded.warnings.join("\n"), /equivalent duplicate/);
+});
+
+test("an authenticated model approval cannot resolve a finding on the same head", () => {
+	assert.throws(() => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+		stable_id: "OR-1", result: "resolved_on_target", finding: modelFinding(),
+		evidence: "The owner approved the write.", challenge_ref: null, decision_ref: "github-comment:50" }] },
+		target: target(A), priorProjection: published(), humanDecisions: [approvedDecision()] }),
+		(error) => error.code === "same_head_resolution_requires_challenge");
+});
+
+test("normalizing a model approval does not allow unrelated evaluation fields", () => {
+	assert.throws(() => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+		stable_id: "OR-1", result: "resolved_on_target", finding: modelFinding(),
+		evidence: "The changed write now preserves the row.", challenge_ref: null, decision_ref: "github-comment:50",
+		settlement_override: "pass" }] }, target: target(B), priorProjection: published(), humanDecisions: [approvedDecision()] }),
+		(error) => error.code === "unknown_field");
 });
 
 test("correction 3: an omitted repair evaluation does not make a later same-head resolution fail", () => {
