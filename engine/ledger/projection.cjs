@@ -36,6 +36,7 @@ const WATCHER_ACTIONS = Object.freeze([
   "human_owned",
 ]);
 const SEVERITIES = new Set(["P0", "P1", "P2"]);
+const SEVERITY_RANK = Object.freeze({ P2: 1, P1: 2, P0: 3 });
 const REACHABILITY = new Set(["normal_path", "compound_path", "theoretical"]);
 const LIKELIHOODS = new Set(["high", "medium", "low", "unknown"]);
 const RECOVERABILITY = new Set([
@@ -703,6 +704,17 @@ function repairReportedFinding(raw, stableId) {
   return finding;
 }
 
+// A blank lifecycle plane names nothing. Dropping it from a reported new finding
+// keeps its severity and blocker status; any other invalid plane still fails.
+function withoutBlankLifecyclePlanes(finding, warnings) {
+  const planes = finding?.affected_lifecycle_planes;
+  if (!Array.isArray(planes) || !planes.some((plane) => typeof plane === "string" && !plane.trim()))
+    return finding;
+  warnings.push(`${finding.stable_id}: blank lifecycle plane dropped`);
+  return { ...finding,
+    affected_lifecycle_planes: planes.filter((plane) => typeof plane !== "string" || plane.trim()) };
+}
+
 function minimalBlockingFinding(raw, stableId, target, reason) {
   const repaired = repairReportedFinding(raw, stableId);
   return {
@@ -982,6 +994,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
   }
   const openFindings = [];
   const evaluations = [];
+  const reportedStillOpenById = new Map();
   for (const priorFinding of priorFindings) {
     if (conflictIds.has(priorFinding.stable_id)) {
       const storedFinding = (priorProjection?.open_findings || []).find(
@@ -995,7 +1008,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
         finding: structuredClone(carried) });
       continue;
     }
-    const evaluation = evaluationById.get(priorFinding.stable_id);
+    let evaluation = evaluationById.get(priorFinding.stable_id);
     const latestDecision = decisionsByIssue.get(priorFinding.stable_id) || null;
     const missingEvaluation = missingEvaluationIds.has(priorFinding.stable_id);
     // Missing model work cannot turn a new deferral or exception into authority.
@@ -1040,6 +1053,14 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
         );
       return finding;
     };
+    // A design or deferral decision keeps its finding open, so a claimed direct
+    // supersession under that decision is carried as still_open instead.
+    if (evaluation.result === "superseded_by_human_decision" && decision &&
+      (DESIGN_DECISION_KINDS.has(decision.kind) || decision.kind === "DEFER_FOLLOW_UP") &&
+      evaluation.decision_ref === decisionRef(decision)) {
+      warnings.push(`${priorFinding.stable_id}: ${decision.kind} cannot supersede; finding kept open`);
+      evaluation = { stable_id: evaluation.stable_id, result: "still_open", finding: evaluation.finding };
+    }
     if (
       ![
         "still_open",
@@ -1105,6 +1126,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           "A prior invariant or decision reference changed without a decision",
         );
       openFindings.push(carried);
+      if (!missingEvaluation) reportedStillOpenById.set(priorFinding.stable_id, carried);
       if (hasChallengeRef) consumedChallengeRefsForProjection.add(evaluation.challenge_ref);
       if (hasChallengeRef || missingEvaluation)
         evaluations.push(structuredClone({ ...evaluation, finding: carried }));
@@ -1213,11 +1235,14 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     ...priorById.keys(),
   ]);
   const normalizedNewFindings = [];
+  const isNewBlocker = (finding) =>
+    conflictRetainedFindingIds.has(finding.stable_id) || isMergeBlocker(finding);
   for (const rawFinding of candidateById.values()) {
     let normalized;
     try {
       normalized = normalizeFinding(convertedNewFindings.has(rawFinding)
-        ? repairReportedFinding(rawFinding, rawFinding.stable_id) : rawFinding, {
+        ? repairReportedFinding(rawFinding, rawFinding.stable_id)
+        : withoutBlankLifecyclePlanes(rawFinding, warnings), {
         target: reviewTarget,
         newFinding: true,
         conflictRetained: conflictRetainedFindingIds.has(rawFinding.stable_id),
@@ -1230,6 +1255,14 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           conflictRetained: conflictRetainedFindingIds.has(rawFinding.stable_id) });
       warnings.push(`${normalized.stable_id}: invalid reported finding retained as a blocker (${error.code})`);
     }
+    // The same output kept a prior finding open and reported it again. Drop the
+    // copy only when the evaluated finding keeps every blocker and severity it adds.
+    const evaluated = reportedStillOpenById.get(normalized.stable_id);
+    if (evaluated && (!isNewBlocker(normalized) || isMergeBlocker(evaluated)) &&
+      SEVERITY_RANK[normalized.severity] <= SEVERITY_RANK[evaluated.severity]) {
+      warnings.push(`${normalized.stable_id}: new copy of a still_open prior finding dropped`);
+      continue;
+    }
     if (reservedIds.has(normalized.stable_id))
       fail(
         "duplicate_or_reused_stable_id",
@@ -1240,8 +1273,6 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       warnings.push(`${normalized.stable_id}: unknown prior still_open evaluation became a new finding`);
     normalizedNewFindings.push(normalized);
   }
-  const isNewBlocker = (finding) =>
-    conflictRetainedFindingIds.has(finding.stable_id) || isMergeBlocker(finding);
   const blockers = normalizedNewFindings.filter(isNewBlocker);
   const advisorySlots = Math.max(0, MAX_NEW_FINDINGS - blockers.length);
   const advisories = normalizedNewFindings.filter((finding) => !isNewBlocker(finding));

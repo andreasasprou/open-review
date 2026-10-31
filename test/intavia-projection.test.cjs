@@ -1984,3 +1984,70 @@ test("shared planes and more than 50 retained findings remain publishable", () =
   const projection = project({candidate});
   assert.deepEqual(parseProjectionComment({body: formatProjectionComment({projection})}), projection);
 });
+
+test("a blank lifecycle plane on a new finding is dropped; other invalid planes still fail", () => {
+  const candidate = validateCandidate({
+    rawOutput: output({ new_findings: [finding({ affected_lifecycle_planes: ["", "proof", "  "] })] }),
+    target: target(), priorProjection: null, evidence: evidence(),
+  });
+  assert.deepEqual(candidate.open_findings[0].affected_lifecycle_planes, ["proof"]);
+  assert.equal(candidate.open_findings[0].severity, "P1");
+  assert.match(candidate.warnings.join("\n"), /ISSUE-001: blank lifecycle plane dropped/);
+  assert.throws(() => validateCandidate({
+    rawOutput: output({ new_findings: [finding({ affected_lifecycle_planes: ["", 7] })] }),
+    target: target(), priorProjection: null, evidence: evidence(),
+  }), (error) => error instanceof ContractError && error.message === "Invalid lifecycle plane");
+});
+
+test("a new copy of a still_open prior finding is dropped only when no blocker or severity is lost", () => {
+  const run = ({ evaluated, copy }) => validateCandidate({
+    rawOutput: output({
+      prior_issue_evaluations: evaluated
+        ? [{ stable_id: "ISSUE-001", result: "still_open", finding: finding(evaluated) }] : [],
+      new_findings: [finding(copy)],
+    }),
+    target: target(), priorProjection: firstProjection(), evidence: evidence(),
+  });
+  const candidate = run({ evaluated: {}, copy: { severity: "P2", title: "Restated as new" } });
+  assert.deepEqual(candidate.new_findings, []);
+  assert.equal(candidate.open_findings.length, 1);
+  assert.equal(candidate.open_findings[0].severity, "P1");
+  assert.equal(candidate.open_findings[0].title, finding().title);
+  assert.match(candidate.warnings.join("\n"), /ISSUE-001: new copy of a still_open prior finding dropped/);
+  for (const [evaluated, copy] of [
+    [{ severity: "P2" }, {}], // the copy would add a blocker
+    [{}, { severity: "P0" }], // the copy would raise the severity
+    [null, { severity: "P2" }], // no still_open evaluation in this output
+  ])
+    assert.throws(() => run({ evaluated, copy }),
+      (error) => error instanceof ContractError && error.code === "duplicate_or_reused_stable_id");
+});
+
+test("a design or deferral decision cannot supersede; the finding stays open under it", () => {
+  const supersede = (decisionRef) => output({ prior_issue_evaluations: [{ stable_id: "ISSUE-001",
+    result: "superseded_by_human_decision", decision_ref: decisionRef,
+    evidence: "The owner decision covers this scenario." }] });
+  for (const kind of ["REDESIGN_IN_PR", "NARROW_BEHAVIOR", "EVOLVE_FRAMEWORK", "DEFER_FOLLOW_UP"]) {
+    const deferral = kind === "DEFER_FOLLOW_UP";
+    const decision = { stable_id: "ISSUE-001", kind, invariant: "Keep the approved status update seam.",
+      scope: "Status update behavior only.", evidence: deferral ? "The PR does not rely on it." : null,
+      tracker: deferral ? "TEST-1" : null, owner_or_triage: deferral ? "Sample owner" : null,
+      decision_head_sha: SHA.head, comment_id: 500, actor_login: "sampleowner" };
+    const prior = firstProjection();
+    const candidate = validateCandidate({ rawOutput: supersede("github-comment:500"), target: target(),
+      priorProjection: prior, evidence: evidence({ humanDecisions: [decision] }) });
+    assert.deepEqual(candidate.closed_findings, []);
+    assert.equal(candidate.open_findings.length, 1);
+    assert.equal(candidate.open_findings[0].severity, "P1");
+    assert.equal(candidate.open_findings[0].disposition, deferral ? "FOLLOW_UP" : "FIX_IN_PR");
+    assert.equal(candidate.open_findings[0].decision_ref, "github-comment:500");
+    assert.equal(candidate.open_findings[0].approved_invariant, decision.invariant);
+    assert.match(candidate.warnings.join("\n"), new RegExp(`ISSUE-001: ${kind} cannot supersede; finding kept open`));
+    assert.throws(() => validateCandidate({ rawOutput: supersede("github-comment:499"), target: target(),
+      priorProjection: prior, evidence: evidence({ humanDecisions: [decision] }) }),
+    (error) => error instanceof ContractError && error.code === "invalid_direct_supersession");
+  }
+  assert.throws(() => validateCandidate({ rawOutput: supersede("github-comment:500"), target: target(),
+    priorProjection: firstProjection(), evidence: evidence() }),
+  (error) => error instanceof ContractError && error.code === "invalid_direct_supersession");
+});
