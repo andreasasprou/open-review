@@ -2166,17 +2166,19 @@ async function matchCheckIdentity({ github, owner, repo, runId, runAttempt, head
 }
 
 // Post-processing ends a long job, so identity retries share the evidence retry
-// budget. A bad caller job key or workflow source is structural and is not retried;
-// a PR that moved cannot match again and is reported as superseded at once.
+// budget. A bad caller job key or workflow source is structural and is not retried.
+// A PR that moved is reported as superseded at once, also after a match: a direct
+// event binds the trusted workflow revision, not the PR, so it can match a moved PR.
 async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
   const { github, owner, repo, workflowRef, trustedWorkflowSha, callerJob, prNumber, headSha, baseRef } = options;
   const callerJobName = await resolveCallerJobName({ github, owner, repo, workflowRef, trustedWorkflowSha, callerJob });
   const retrySleep = budgetedSleep(sleep);
   for (let attempt = 1; ; attempt += 1) {
+    let identity = null;
     let failure;
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop
-      return await matchCheckIdentity({ ...options, callerJobName });
+      identity = await matchCheckIdentity({ ...options, callerJobName });
     } catch (error) {
       failure = error;
     }
@@ -2186,6 +2188,7 @@ async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
       throw Object.assign(new EvidenceError({ code: "review_superseded",
         message: `The pull request moved during the review (${moved.text})` }),
         { moved: moved.text, headMoved: moved.headMoved });
+    if (identity) return identity;
     const giveUp = (reason) => new EvidenceError({ code: "check_identity_unavailable",
       message: `${failure?.code === "check_identity_mismatch" ? failure.message : describeFailure(failure)} (${reason})`,
       cause: failure });

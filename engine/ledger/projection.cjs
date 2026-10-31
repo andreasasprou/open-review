@@ -884,10 +884,23 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       convertedNewFindings.add(finding);
     } else warnings.push(`${warningId}: duplicate new finding retained the higher risk`);
   }
+  const decisionsByIssue = new Map();
+  for (const decision of decisions)
+    decisionsByIssue.set(decision.stable_id, decision);
   for (const prior of priorFindings) {
     if (conflictIds.has(prior.stable_id)) continue;
-    const evaluation = evaluationById.get(prior.stable_id);
+    let evaluation = evaluationById.get(prior.stable_id);
     if (!evaluation) continue;
+    // A design or deferral decision keeps its finding open, so a claimed direct
+    // supersession under that decision is folded as the same still_open evaluation.
+    const decision = decisionsByIssue.get(prior.stable_id);
+    if (evaluation.result === "superseded_by_human_decision" && decision &&
+      (DESIGN_DECISION_KINDS.has(decision.kind) || decision.kind === "DEFER_FOLLOW_UP") &&
+      evaluation.decision_ref === decisionRef(decision)) {
+      warnings.push(`${prior.stable_id}: ${decision.kind} cannot supersede; finding kept open`);
+      evaluation = { stable_id: evaluation.stable_id, result: "still_open", finding: evaluation.finding };
+      evaluationById.set(prior.stable_id, evaluation);
+    }
     if (evaluation.result === "still_open") {
       if (evaluation.finding?.stable_id !== prior.stable_id) {
         evaluation.finding = minimalBlockingFinding(evaluation.finding, prior.stable_id,
@@ -948,9 +961,6 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     });
   }
 
-  const decisionsByIssue = new Map();
-  for (const decision of decisions)
-    decisionsByIssue.set(decision.stable_id, decision);
   const challenges = normalizeEvidenceChallenges(
     evidence?.evidence_challenges || [],
   );
@@ -1008,7 +1018,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
         finding: structuredClone(carried) });
       continue;
     }
-    let evaluation = evaluationById.get(priorFinding.stable_id);
+    const evaluation = evaluationById.get(priorFinding.stable_id);
     const latestDecision = decisionsByIssue.get(priorFinding.stable_id) || null;
     const missingEvaluation = missingEvaluationIds.has(priorFinding.stable_id);
     // Missing model work cannot turn a new deferral or exception into authority.
@@ -1053,14 +1063,6 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
         );
       return finding;
     };
-    // A design or deferral decision keeps its finding open, so a claimed direct
-    // supersession under that decision is carried as still_open instead.
-    if (evaluation.result === "superseded_by_human_decision" && decision &&
-      (DESIGN_DECISION_KINDS.has(decision.kind) || decision.kind === "DEFER_FOLLOW_UP") &&
-      evaluation.decision_ref === decisionRef(decision)) {
-      warnings.push(`${priorFinding.stable_id}: ${decision.kind} cannot supersede; finding kept open`);
-      evaluation = { stable_id: evaluation.stable_id, result: "still_open", finding: evaluation.finding };
-    }
     if (
       ![
         "still_open",
@@ -1256,9 +1258,12 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       warnings.push(`${normalized.stable_id}: invalid reported finding retained as a blocker (${error.code})`);
     }
     // The same output kept a prior finding open and reported it again. Drop the
-    // copy only when the evaluated finding keeps every blocker and severity it adds.
+    // copy only when it is that finding (same frozen scenario and invariant) and
+    // the evaluated finding keeps every blocker and severity it adds.
     const evaluated = reportedStillOpenById.get(normalized.stable_id);
-    if (evaluated && (!isNewBlocker(normalized) || isMergeBlocker(evaluated)) &&
+    if (evaluated && normalized.failure_scenario === evaluated.failure_scenario &&
+      normalized.approved_invariant === evaluated.approved_invariant &&
+      (!isNewBlocker(normalized) || isMergeBlocker(evaluated)) &&
       SEVERITY_RANK[normalized.severity] <= SEVERITY_RANK[evaluated.severity]) {
       warnings.push(`${normalized.stable_id}: new copy of a still_open prior finding dropped`);
       continue;

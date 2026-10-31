@@ -2018,6 +2018,8 @@ test("a new copy of a still_open prior finding is dropped only when no blocker o
     [{ severity: "P2" }, {}], // the copy would add a blocker
     [{}, { severity: "P0" }], // the copy would raise the severity
     [null, { severity: "P2" }], // no still_open evaluation in this output
+    [{}, { severity: "P2", failure_scenario: "A different failure reuses the open stable ID." }],
+    [{}, { severity: "P2", approved_invariant: "A different invariant for the reused stable ID." }],
   ])
     assert.throws(() => run({ evaluated, copy }),
       (error) => error instanceof ContractError && error.code === "duplicate_or_reused_stable_id");
@@ -2050,4 +2052,19 @@ test("a design or deferral decision cannot supersede; the finding stays open und
   assert.throws(() => validateCandidate({ rawOutput: supersede("github-comment:500"), target: target(),
     priorProjection: firstProjection(), evidence: evidence() }),
   (error) => error instanceof ContractError && error.code === "invalid_direct_supersession");
+});
+
+test("a supersession under a deferral is folded exactly like the same still_open evaluation", () => {
+  const decision = { stable_id: "ISSUE-001", kind: "DEFER_FOLLOW_UP", invariant: "Keep the approved status update seam.",
+    scope: "Status update behavior only.", evidence: "The PR does not rely on it.", tracker: "TEST-1",
+    owner_or_triage: "Sample owner", decision_head_sha: SHA.head, comment_id: 500, actor_login: "sampleowner" };
+  const reported = finding({ disposition: "FOLLOW_UP", autonomous_eligibility: "YES" });
+  const fold = (evaluation) => validateCandidate({ rawOutput: output({ prior_issue_evaluations: [evaluation] }),
+    target: target(), priorProjection: firstProjection(), evidence: evidence({ humanDecisions: [decision] }) });
+  const superseded = fold({ stable_id: "ISSUE-001", result: "superseded_by_human_decision",
+    decision_ref: "github-comment:500", evidence: "The owner deferred it.", finding: reported });
+  const stillOpen = fold({ stable_id: "ISSUE-001", result: "still_open", finding: reported });
+  assert.equal(stillOpen.open_findings[0].disposition, "AUTHOR_DECISION");
+  assert.deepEqual(superseded.open_findings, stillOpen.open_findings);
+  assert.deepEqual(superseded.closed_findings, stillOpen.closed_findings);
 });

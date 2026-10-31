@@ -2586,3 +2586,18 @@ test("a pull request that moved during the review is reported as superseded with
     assert.deepEqual(sleeps, []);
   }
 });
+
+test("a direct-event identity that matches is still superseded when the pull request moved", async () => {
+  for (const [pull, moved, headMoved] of [
+    [{ head: { sha: SHA_C }, base: { ref: "main" } }, null, false],
+    [{ head: { sha: SHA_C }, base: { ref: "release" } }, "base main -> release", false],
+    [{ head: { sha: SHA_A }, base: { ref: "main" } }, "head cccccccc -> aaaaaaaa", true],
+  ]) {
+    const { args, github, sleeps } = correctionNative();
+    github.rest.pulls = { get: async () => ({ data: pull }) };
+    if (!moved) assert.equal((await loadCheckIdentity(args)).workflow_job_id, 10);
+    else await assert.rejects(loadCheckIdentity(args), (error) => error.code === "review_superseded" &&
+      error.moved === moved && error.headMoved === headMoved);
+    assert.deepEqual(sleeps, []);
+  }
+});
