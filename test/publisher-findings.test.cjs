@@ -203,3 +203,12 @@ test("25 complete findings fit both posted GitHub comments without losing state"
 	assert.deepEqual(persisted.open_issues.map((issue) => issue.id), issues.map((issue) => issue.stable_id));
 	assert.deepEqual(recorder.records, []);
 });
+
+test("an inline title carries one severity tag even when the model wrote one", () => {
+	const { formatInlineBody } = require("../engine/index.cjs");
+	const comment = { title: "Retry is not bounded", body: "The loop never stops.", category: null, suggestion: null };
+	for (const title of ["Retry is not bounded", "[P2] Retry is not bounded", "🔵 [P2] Retry is not bounded", "[P1] Retry is not bounded"])
+		assert.equal(formatInlineBody({ ...comment, title }, "P2").split("\n", 1)[0], "**🔵 [P2] Retry is not bounded**");
+	assert.equal(formatInlineBody({ ...comment, title: "[P2] Retry is not bounded" }, undefined).split("\n", 1)[0],
+		"**[P2] Retry is not bounded**");
+});
