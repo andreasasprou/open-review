@@ -2088,6 +2088,27 @@ async function collectLedgerEvidence({ github, owner, repo, prNumber, headSha,
     target: bundle.target };
 }
 
+// Only an observed difference counts as a move; an absent field is not one.
+function describePullMove({ pull, headSha, baseRef }) {
+  const moves = [];
+  const currentHead = pull?.head?.sha;
+  if (typeof currentHead === "string" && currentHead && currentHead !== headSha)
+    moves.push(`head ${String(headSha).slice(0, 8)} -> ${currentHead.slice(0, 8)}`);
+  const currentBase = pull?.base?.ref;
+  if (typeof currentBase === "string" && currentBase && currentBase !== baseRef)
+    moves.push(`base ${baseRef} -> ${currentBase}`);
+  return moves.length ? moves.join(", ") : null;
+}
+
+async function currentPullMove({ github, owner, repo, prNumber, headSha, baseRef }) {
+  try {
+    const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    return describePullMove({ pull, headSha, baseRef });
+  } catch {
+    return null; // A failed lookup proves nothing; the caller keeps its own error.
+  }
+}
+
 function identityMismatch(message) {
   return new EvidenceError({ code: "check_identity_mismatch", message });
 }
@@ -2144,9 +2165,10 @@ async function matchCheckIdentity({ github, owner, repo, runId, runAttempt, head
 }
 
 // Post-processing ends a long job, so identity retries share the evidence retry
-// budget. A bad caller job key or workflow source is structural and is not retried.
+// budget. A bad caller job key or workflow source is structural and is not retried;
+// a PR that moved cannot match again and is reported as superseded at once.
 async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
-  const { github, owner, repo, workflowRef, trustedWorkflowSha, callerJob } = options;
+  const { github, owner, repo, workflowRef, trustedWorkflowSha, callerJob, prNumber, headSha, baseRef } = options;
   const callerJobName = await resolveCallerJobName({ github, owner, repo, workflowRef, trustedWorkflowSha, callerJob });
   const retrySleep = budgetedSleep(sleep);
   for (let attempt = 1; ; attempt += 1) {
@@ -2157,6 +2179,11 @@ async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
     } catch (error) {
       failure = error;
     }
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    const moved = await currentPullMove({ github, owner, repo, prNumber, headSha, baseRef });
+    if (moved)
+      throw Object.assign(new EvidenceError({ code: "review_superseded",
+        message: `The pull request moved during the review (${moved})` }), { moved });
     const giveUp = (reason) => new EvidenceError({ code: "check_identity_unavailable",
       message: `${failure?.code === "check_identity_mismatch" ? failure.message : describeFailure(failure)} (${reason})`,
       cause: failure });
@@ -2174,7 +2201,7 @@ async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
 }
 
 Object.assign(module.exports, { CHALLENGE_MARKER: "[review-evidence-challenge:v1]",
-  collectLedgerEvidence, loadCheckIdentity, loadWorkflowRunLog,
+  collectLedgerEvidence, describePullMove, loadCheckIdentity, loadWorkflowRunLog,
   formatReviewTargetAttestation });
 
 // GitHub exposes the caller job key in GITHUB_JOB, but jobs.name is its display

@@ -2567,3 +2567,21 @@ test("check identity errors name the job filters and identity conditions that di
   await assert.rejects(loadCheckIdentity({ ...structural.args, callerJob: "bad key" }), /exact caller job key/);
   assert.deepEqual(structural.sleeps, []);
 });
+
+test("a pull request that moved during the review is reported as superseded without retrying", async () => {
+  for (const [pull, moved] of [
+    [{ head: { sha: SHA_A }, base: { ref: "main" } }, "head dddddddd -> aaaaaaaa"],
+    [{ head: { sha: SHA_D }, base: { ref: "release" } }, "base main -> release"],
+  ]) {
+    const { args, github, run, sleeps } = correctionNative({ event: "pull_request_target", headBranch: "feature" });
+    args.headSha = SHA_D;
+    run.pull_requests = [{ number: 42, head: pull.head, base: pull.base }];
+    github.rest.pulls = { get: async ({ pull_number }) => {
+      assert.equal(pull_number, 42);
+      return { data: pull };
+    } };
+    await assert.rejects(loadCheckIdentity(args), (error) => error.code === "review_superseded" &&
+      error.moved === moved && error.message === `The pull request moved during the review (${moved})`);
+    assert.deepEqual(sleeps, []);
+  }
+});

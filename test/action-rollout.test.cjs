@@ -30,10 +30,10 @@ async function postResultsWithPr(getPr) {
   symlinkSync(resolve(__dirname, '../engine'), join(root, 'open-review/engine'));
   const github = { rest: {
     pulls: { get: getPr },
-    checks: { update: async ({ check_run_id, conclusion }) => { updates.push([check_run_id, conclusion]); } },
+    checks: { update: async ({ check_run_id, conclusion, output }) => { updates.push([check_run_id, conclusion, output.title]); } },
   } };
   const core = { setFailed: (reason) => { updates.push(['failed', reason]); } };
-  const vars = { RUNNER_TEMP: root, PR_NUMBER: '7', CHECK_ID: '11', HEAD_SHA: 'a'.repeat(40), SHOULD_SKIP: 'false', REVIEW_MODE: 'full',
+  const vars = { RUNNER_TEMP: root, PR_NUMBER: '7', CHECK_ID: '11', HEAD_SHA: 'a'.repeat(40), BASE_REF: 'main', SHOULD_SKIP: 'false', REVIEW_MODE: 'full',
     REVIEW_GENERATED: 'true', JOB_STATUS: 'success' };
   const old = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]));
   Object.assign(process.env, vars);
@@ -48,17 +48,27 @@ async function postResultsWithPr(getPr) {
 }
 
 test('a PR merged during the review cancels the check and publishes nothing', async () => {
-  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'closed', merged: true } })), [[11, 'cancelled']]);
+  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'closed', merged: true } })), [[11, 'cancelled', 'Review Cancelled']]);
 });
 
-test('a new head pushed during the review cancels the check and publishes nothing', async () => {
-  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'open', merged: false, head: { sha: 'f'.repeat(40) } } })),
-    [[11, 'cancelled']]);
+test('a PR that moved during the review is superseded, publishes nothing and fails the job', async () => {
+  const superseded = (moved) => [
+    ['failed', `Superseded: the pull request moved during the review (${moved}); nothing was published. A new push or the review command reviews the current target.`],
+    [11, 'cancelled', 'Review Superseded']];
+  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'open', merged: false,
+    head: { sha: 'f'.repeat(40) }, base: { ref: 'main' } } })), superseded('head aaaaaaaa -> ffffffff'));
+  assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'open', merged: false,
+    head: { sha: 'a'.repeat(40) }, base: { ref: 'release' } } })), superseded('base main -> release'));
+});
+
+test('a superseded identity error on the carry and post-processing paths reaches the superseded check', () => {
+  const script = block('Post results', 'script');
+  assert.equal(script.match(/error\?\.code (?:!==|===) 'review_superseded'[\s\S]{0,300}?supersede\(error\.moved\)/g)?.length, 2);
 });
 
 test('a failed PR lookup completes the check as failed', async () => {
   assert.deepEqual(await postResultsWithPr(async () => { throw new Error('lookup failed'); }),
-    [['failed', 'Review post-processing failed; no trusted projection was completed.'], [11, 'failure']]);
+    [['failed', 'Review post-processing failed; no trusted projection was completed.'], [11, 'failure', 'Review Error']]);
 });
 
 function block(name, key) {
