@@ -2088,41 +2088,125 @@ async function collectLedgerEvidence({ github, owner, repo, prNumber, headSha,
     target: bundle.target };
 }
 
-async function loadCheckIdentity({ github, owner, repo, runId, runAttempt, headSha,
-  workflowRef, trustedWorkflowSha, runnerName, prNumber, baseRef, callerJob }) {
-  const callerJobName = await resolveCallerJobName({ github, owner, repo, workflowRef, trustedWorkflowSha, callerJob });
+// Only an observed difference counts as a move; an absent field is not one.
+// headMoved tells the caller whether a new head (with its own review run) exists.
+function describePullMove({ pull, headSha, baseRef }) {
+  const moves = [];
+  const currentHead = pull?.head?.sha;
+  const headMoved = typeof currentHead === "string" && Boolean(currentHead) && currentHead !== headSha;
+  if (headMoved) moves.push(`head ${String(headSha).slice(0, 8)} -> ${currentHead.slice(0, 8)}`);
+  const currentBase = pull?.base?.ref;
+  if (typeof currentBase === "string" && currentBase && currentBase !== baseRef)
+    moves.push(`base ${baseRef} -> ${currentBase}`);
+  return moves.length ? { text: moves.join(", "), headMoved } : null;
+}
+
+async function currentPullMove({ github, owner, repo, prNumber, headSha, baseRef }) {
+  try {
+    const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    return describePullMove({ pull, headSha, baseRef });
+  } catch {
+    return null; // A failed lookup proves nothing; the caller keeps its own error.
+  }
+}
+
+function identityMismatch(message) {
+  return new EvidenceError({ code: "check_identity_mismatch", message });
+}
+
+async function matchCheckIdentity({ github, owner, repo, runId, runAttempt, headSha,
+  workflowRef, trustedWorkflowSha, runnerName, prNumber, baseRef, callerJobName }) {
   const { data: run } = await github.rest.actions.getWorkflowRunAttempt({ owner, repo,
     run_id: Number(runId), attempt_number: Number(runAttempt) });
   const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, { owner, repo,
     run_id: Number(runId), attempt_number: Number(runAttempt), per_page: 100 });
-  const active = jobs.filter((job) => job.runner_name === runnerName && job.name === callerJobName &&
-    job.run_id === Number(runId) && job.run_attempt === Number(runAttempt) &&
-    job.head_sha === run.head_sha && job.status === "in_progress");
-  if (active.length !== 1) throw new Error("Could not identify one exact native review job from GitHub API");
+  const jobFilters = {
+    runner_name: (job) => job.runner_name === runnerName,
+    name: (job) => job.name === callerJobName,
+    run_id: (job) => job.run_id === Number(runId),
+    run_attempt: (job) => job.run_attempt === Number(runAttempt),
+    head_sha: (job) => job.head_sha === run.head_sha,
+    status: (job) => job.status === "in_progress",
+  };
+  const active = jobs.filter((job) => Object.values(jobFilters).every((matches) => matches(job)));
+  if (active.length !== 1) {
+    const excludedBy = Object.keys(jobFilters).filter((field) => jobs.some((job) => !jobFilters[field](job)));
+    throw identityMismatch(`Could not identify one exact native review job from GitHub API: ${active.length} of ${jobs.length} jobs matched${excludedBy.length ? `; filters that excluded jobs: ${excludedBy.join(", ")}` : ""}`);
+  }
   const job = active[0];
   const checkId = checkRunIdFromUrl(job.check_run_url);
-  if (!Number.isSafeInteger(checkId)) throw new Error("Native review job has no check-run URL");
+  if (!Number.isSafeInteger(checkId)) throw identityMismatch("Native review job has no check-run URL");
   const { data: check } = await github.rest.checks.get({ owner, repo, check_run_id: checkId });
   const eventIsDirect = ["issue_comment", "workflow_dispatch"].includes(run.event);
-  if (!["pull_request_target", "issue_comment", "workflow_dispatch"].includes(run.event) ||
-    run.id !== Number(runId) || run.run_attempt !== Number(runAttempt) ||
-    run.path !== workflowRef.split("@")[0].slice(`${owner}/${repo}/`.length) ||
-    run.repository?.full_name !== `${owner}/${repo}` ||
-    (run.event === "pull_request_target" && (run.head_sha !== headSha || !run.pull_requests?.some((pr) =>
-      pr.number === prNumber && pr.head?.sha === headSha && pr.base?.ref === baseRef))) ||
-    (eventIsDirect && (run.head_sha !== trustedWorkflowSha || `refs/heads/${run.head_branch}` !== workflowRef.split("@")[1])) ||
-    check.head_sha !== run.head_sha || check.id !== checkId ||
-    check.check_suite?.id !== run.check_suite_id || check.app?.slug !== "github-actions" ||
-    check.status !== "in_progress" || job.name !== check.name) {
-    throw new Error("Native review run, trusted workflow revision, job, check and PR identity disagree");
-  }
+  const pullRequestTarget = run.event === "pull_request_target";
+  const conditions = {
+    run_event: ["pull_request_target", "issue_comment", "workflow_dispatch"].includes(run.event),
+    run_id: run.id === Number(runId),
+    run_attempt: run.run_attempt === Number(runAttempt),
+    run_path: run.path === workflowRef.split("@")[0].slice(`${owner}/${repo}/`.length),
+    run_repository: run.repository?.full_name === `${owner}/${repo}`,
+    run_head_sha: !pullRequestTarget || run.head_sha === headSha,
+    run_pull_request: !pullRequestTarget || Boolean(run.pull_requests?.some((pr) =>
+      pr.number === prNumber && pr.head?.sha === headSha && pr.base?.ref === baseRef)),
+    trusted_workflow_sha: !eventIsDirect || run.head_sha === trustedWorkflowSha,
+    trusted_workflow_ref: !eventIsDirect || `refs/heads/${run.head_branch}` === workflowRef.split("@")[1],
+    check_head_sha: check.head_sha === run.head_sha,
+    check_id: check.id === checkId,
+    check_suite: check.check_suite?.id === run.check_suite_id,
+    check_app: check.app?.slug === "github-actions",
+    check_status: check.status === "in_progress",
+    check_name: job.name === check.name,
+  };
+  const failed = Object.keys(conditions).filter((name) => !conditions[name]);
+  if (failed.length > 0)
+    throw identityMismatch(`Native review run, trusted workflow revision, job, check and PR identity disagree: ${failed.join(", ")}`);
   return { workflow_path: run.path, workflow_ref: workflowRef, trusted_workflow_sha: trustedWorkflowSha,
     workflow_run_id: String(runId), workflow_run_attempt: Number(runAttempt), workflow_job_id: job.id,
     check_run_id: checkId, check_suite_id: check.check_suite.id, app_slug: check.app.slug, head_sha: run.head_sha };
 }
 
+// Post-processing ends a long job, so identity retries share the evidence retry
+// budget. A bad caller job key or workflow source is structural and is not retried.
+// A PR that moved is reported as superseded at once, also after a match: a direct
+// event binds the trusted workflow revision, not the PR, so it can match a moved PR.
+async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
+  const { github, owner, repo, workflowRef, trustedWorkflowSha, callerJob, prNumber, headSha, baseRef } = options;
+  const callerJobName = await resolveCallerJobName({ github, owner, repo, workflowRef, trustedWorkflowSha, callerJob });
+  const retrySleep = budgetedSleep(sleep);
+  for (let attempt = 1; ; attempt += 1) {
+    let identity = null;
+    let failure;
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop
+      identity = await matchCheckIdentity({ ...options, callerJobName });
+    } catch (error) {
+      failure = error;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    const moved = await currentPullMove({ github, owner, repo, prNumber, headSha, baseRef });
+    if (moved)
+      throw Object.assign(new EvidenceError({ code: "review_superseded",
+        message: `The pull request moved during the review (${moved.text})` }),
+        { moved: moved.text, headMoved: moved.headMoved });
+    if (identity) return identity;
+    const giveUp = (reason) => new EvidenceError({ code: "check_identity_unavailable",
+      message: `${failure?.code === "check_identity_mismatch" ? failure.message : describeFailure(failure)} (${reason})`,
+      cause: failure });
+    if (attempt === DEFAULT_PAGINATION_ATTEMPTS) throw giveUp(`after ${attempt} attempts`);
+    const delay = retryDelayMs({ error: failure, failed_attempt: attempt });
+    if (delay > MAX_RETRY_DELAY_MS)
+      throw giveUp(`requested retry delay ${delay}ms exceeds ${MAX_RETRY_DELAY_MS}ms`);
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop
+      await retrySleep(delay);
+    } catch (sleepError) {
+      throw giveUp(sleepError.message);
+    }
+  }
+}
+
 Object.assign(module.exports, { CHALLENGE_MARKER: "[review-evidence-challenge:v1]",
-  collectLedgerEvidence, loadCheckIdentity, loadWorkflowRunLog,
+  collectLedgerEvidence, describePullMove, loadCheckIdentity, loadWorkflowRunLog,
   formatReviewTargetAttestation });
 
 // GitHub exposes the caller job key in GITHUB_JOB, but jobs.name is its display

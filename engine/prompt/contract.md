@@ -81,6 +81,12 @@ Use `null` for a field that does not apply to its result. A non-null
 - `superseded_by_human_decision`: provide current-target `evidence` and the
   exact authenticated `decision_ref` that covers the invariant and scope.
 
+A human decision has one of six kinds. Only `APPROVE_BOUNDED_EXCEPTION` and
+`REJECT_FINDING` may supersede a finding directly. `REDESIGN_IN_PR`,
+`NARROW_BEHAVIOR`, and `EVOLVE_FRAMEWORK` keep it `still_open` as `FIX_IN_PR`
+with the decision's invariant and `decision_ref`; `DEFER_FOLLOW_UP` keeps it
+`still_open` as a tracked `FOLLOW_UP`.
+
 Do not use a free-form reply, thread resolution, missing ID, or Markdown to
 close a prior finding. A new failure scenario gets a new stable ID. The
 publisher preserves closed snapshots and consumed challenge history.

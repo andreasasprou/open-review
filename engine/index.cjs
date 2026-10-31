@@ -1445,13 +1445,18 @@ async function dismissInlineReview({ recorder,
 	}
 }
 
+// A model-written title can already start with a tag like the posted "🔵 [P2] Title".
+const LEADING_SEVERITY_TAG_RE = /^(?:(?:🔴|🟡|🔵)\s*)?\[P[0-2]\]\s*/iu;
+
 /**
  * Format an inline comment body with title, explanation, and optional suggestion.
+ * The badge carries the ledger severity, so a severity tag the model put at the
+ * start of its title is dropped instead of repeated.
  */
 function formatInlineBody(comment, severity) {
 	const severityBadge = formatSeverityBadge(severity);
 	const title = severityBadge
-		? `${severityBadge} ${comment.title}`
+		? `${severityBadge} ${String(comment.title).replace(LEADING_SEVERITY_TAG_RE, "") || comment.title}`
 		: comment.title;
 
 	let body = `**${title}**\n\n`;
