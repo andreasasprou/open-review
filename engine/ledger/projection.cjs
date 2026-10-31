@@ -785,7 +785,9 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     priorFindings.map((entry) => [entry.stable_id, entry]),
   );
   const candidateById = new Map();
+  const reportedCopiesById = new Map();
   for (const finding of rawOutput.new_findings) {
+    reportedCopiesById.set(finding?.stable_id, [...(reportedCopiesById.get(finding?.stable_id) || []), finding]);
     const prior = candidateById.get(finding?.stable_id);
     if (prior) {
       candidateById.set(finding.stable_id, moreRiskyFinding(prior, finding));
@@ -1258,13 +1260,25 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       warnings.push(`${normalized.stable_id}: invalid reported finding retained as a blocker (${error.code})`);
     }
     // The same output kept a prior finding open and reported it again. Drop the
-    // copy only when it is that finding (same frozen scenario and invariant) and
+    // copies only when every reported copy, including any the risk consolidation
+    // above discarded, is that finding (same frozen scenario and invariant) and
     // the evaluated finding keeps every blocker and severity it adds.
     const evaluated = reportedStillOpenById.get(normalized.stable_id);
-    if (evaluated && normalized.failure_scenario === evaluated.failure_scenario &&
-      normalized.approved_invariant === evaluated.approved_invariant &&
-      (!isNewBlocker(normalized) || isMergeBlocker(evaluated)) &&
-      SEVERITY_RANK[normalized.severity] <= SEVERITY_RANK[evaluated.severity]) {
+    const isEvaluatedFinding = (raw) => {
+      let copy;
+      try {
+        copy = normalizeFinding(withoutBlankLifecyclePlanes(raw, []),
+          { target: reviewTarget, newFinding: true, warnings: [] });
+      } catch (error) {
+        if (!(error instanceof ContractError)) throw error;
+        return false;
+      }
+      return copy.failure_scenario === evaluated.failure_scenario &&
+        copy.approved_invariant === evaluated.approved_invariant &&
+        (!isNewBlocker(copy) || isMergeBlocker(evaluated)) &&
+        SEVERITY_RANK[copy.severity] <= SEVERITY_RANK[evaluated.severity];
+    };
+    if (evaluated && reportedCopiesById.get(normalized.stable_id).every(isEvaluatedFinding)) {
       warnings.push(`${normalized.stable_id}: new copy of a still_open prior finding dropped`);
       continue;
     }

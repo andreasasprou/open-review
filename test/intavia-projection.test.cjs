@@ -2068,3 +2068,16 @@ test("a supersession under a deferral is folded exactly like the same still_open
   assert.deepEqual(superseded.open_findings, stillOpen.open_findings);
   assert.deepEqual(superseded.closed_findings, stillOpen.closed_findings);
 });
+
+test("a matching copy cannot hide a different new finding that reuses the same still_open ID", () => {
+  const matching = finding();
+  const different = finding({ title: "A different failure", failure_scenario: "A different failure reuses the open stable ID." });
+  for (const newFindings of [[matching, different], [different, matching]])
+    assert.throws(() => validateCandidate({
+      rawOutput: output({
+        prior_issue_evaluations: [{ stable_id: "ISSUE-001", result: "still_open", finding: finding() }],
+        new_findings: newFindings,
+      }),
+      target: target(), priorProjection: firstProjection(), evidence: evidence(),
+    }), (error) => error instanceof ContractError && error.code === "duplicate_or_reused_stable_id");
+});
