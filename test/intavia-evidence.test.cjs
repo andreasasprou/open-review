@@ -2418,7 +2418,9 @@ function correctionNative({ event = "workflow_dispatch", headBranch = "main", jo
   const args = { github, owner: "example-org", repo: "sample-app", runId: 12345, runAttempt: 1,
     headSha: SHA_C, baseRef: "main", prNumber: 42, workflowRef: "example-org/sample-app/.github/workflows/code-review.yaml@refs/heads/main",
     trustedWorkflowSha: SHA_D, runnerName: "shared-runner", callerJob: "review" };
-  return { github, args, run };
+  const sleeps = [];
+  args.sleep = async (ms) => { sleeps.push(ms); };
+  return { github, args, run, sleeps };
 }
 
 test("correction 2: dispatch provenance binds the actual workflow branch and revision", async () => {
@@ -2541,4 +2543,27 @@ test("shared action authenticates direct events against their actual trusted che
     run.head_branch = "feature";
     await assert.rejects(correctionCollect(github), /does not match its hosted/);
   }
+});
+
+test("check identity retries one wrong jobs answer within the evidence retry budget", async () => {
+  let calls = 0;
+  const { args, sleeps } = correctionNative({ jobs: (native) =>
+    calls++ === 0 ? [native(11, "Sibling")] : [native(10, "Review result")] });
+  assert.equal((await loadCheckIdentity(args)).workflow_job_id, 10);
+  assert.deepEqual(sleeps, [1_000]);
+});
+
+test("check identity errors name the job filters and identity conditions that disagreed", async () => {
+  const filtered = correctionNative({ jobs: (native) => [native(11, "Sibling"), { ...native(10, "Review result"), status: "completed" }] });
+  await assert.rejects(loadCheckIdentity(filtered.args), (error) => error.code === "check_identity_unavailable" &&
+    error.message === "Could not identify one exact native review job from GitHub API: 0 of 2 jobs matched; filters that excluded jobs: name, status (after 6 attempts)");
+  assert.deepEqual(filtered.sleeps, [1_000, 2_000, 4_000, 8_000, 8_000]);
+  const disagreeing = correctionNative();
+  disagreeing.github.rest.checks.get = async ({ check_run_id }) => ({ data: { id: check_run_id, head_sha: SHA_D,
+    check_suite: { id: 12 }, app: { slug: "github-actions" }, status: "completed", name: "Review result" } });
+  await assert.rejects(loadCheckIdentity(disagreeing.args),
+    /identity disagree: check_status \(after 6 attempts\)$/);
+  const structural = correctionNative();
+  await assert.rejects(loadCheckIdentity({ ...structural.args, callerJob: "bad key" }), /exact caller job key/);
+  assert.deepEqual(structural.sleeps, []);
 });
