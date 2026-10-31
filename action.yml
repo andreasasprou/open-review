@@ -1418,12 +1418,14 @@ runs:
           const prNumber = parseInt(process.env.PR_NUMBER, 10);
           const checkId = process.env.CHECK_ID ? Number(process.env.CHECK_ID) : null;
           // A PR whose head or base moved during the review was not reviewed at its
-          // current target. Cancel the check and publish nothing, but keep the job
-          // failed: a green job on an unchanged head (after a base change) or on a
-          // head pushed back later would read as a review that never happened.
-          const supersede = async (moved) => {
+          // current target. Cancel the check and publish nothing. A new head gets its
+          // own review run, as for a push before #8. On an unchanged head (a base
+          // change) keep the job failed: a green job there would read as a review of
+          // the current target that never happened.
+          const supersede = async (moved, headMoved) => {
             const summary = `Superseded: the pull request moved during the review (${moved}); nothing was published. A new push or the review command reviews the current target.`;
-            core.setFailed(summary);
+            if (headMoved) console.log(summary);
+            else core.setFailed(summary);
             if (checkId) await github.rest.checks.update({ owner, repo, check_run_id: checkId,
               status: 'completed', conclusion: 'cancelled', output: { title: 'Review Superseded', summary } });
           };
@@ -1500,7 +1502,7 @@ runs:
                 });
               } catch (error) {
                 if (error?.code !== 'review_superseded') throw error;
-                await supersede(error.moved);
+                await supersede(error.moved, error.headMoved);
                 return;
               }
               console.log(`TRUSTED_WORKFLOW_SHA: ${process.env.TRUSTED_WORKFLOW_SHA}`);
@@ -1597,8 +1599,7 @@ runs:
             const { describePullMove } = require(path.join(engineDir, 'ledger', 'evidence.cjs'));
             const moved = describePullMove({ pull: currentPr, headSha: process.env.HEAD_SHA, baseRef: process.env.BASE_REF });
             if (moved) {
-              console.log(`Superseded: the pull request moved during the review (${moved}).`);
-              await supersede(moved);
+              await supersede(moved.text, moved.headMoved);
               return;
             }
 
@@ -1676,7 +1677,7 @@ runs:
             if (error?.code === 'review_superseded') {
               console.log(`Superseded: ${error.message}.`);
               try {
-                await supersede(error.moved);
+                await supersede(error.moved, error.headMoved);
               } catch (updateError) {
                 recordCaughtError({ recorder, error: updateError, operation: "review.workflow", stage: "superseded_check", disposition: "recover", context: {} });
               }

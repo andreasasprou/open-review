@@ -2089,15 +2089,16 @@ async function collectLedgerEvidence({ github, owner, repo, prNumber, headSha,
 }
 
 // Only an observed difference counts as a move; an absent field is not one.
+// headMoved tells the caller whether a new head (with its own review run) exists.
 function describePullMove({ pull, headSha, baseRef }) {
   const moves = [];
   const currentHead = pull?.head?.sha;
-  if (typeof currentHead === "string" && currentHead && currentHead !== headSha)
-    moves.push(`head ${String(headSha).slice(0, 8)} -> ${currentHead.slice(0, 8)}`);
+  const headMoved = typeof currentHead === "string" && Boolean(currentHead) && currentHead !== headSha;
+  if (headMoved) moves.push(`head ${String(headSha).slice(0, 8)} -> ${currentHead.slice(0, 8)}`);
   const currentBase = pull?.base?.ref;
   if (typeof currentBase === "string" && currentBase && currentBase !== baseRef)
     moves.push(`base ${baseRef} -> ${currentBase}`);
-  return moves.length ? moves.join(", ") : null;
+  return moves.length ? { text: moves.join(", "), headMoved } : null;
 }
 
 async function currentPullMove({ github, owner, repo, prNumber, headSha, baseRef }) {
@@ -2183,7 +2184,8 @@ async function loadCheckIdentity({ sleep = defaultSleep, ...options }) {
     const moved = await currentPullMove({ github, owner, repo, prNumber, headSha, baseRef });
     if (moved)
       throw Object.assign(new EvidenceError({ code: "review_superseded",
-        message: `The pull request moved during the review (${moved})` }), { moved });
+        message: `The pull request moved during the review (${moved.text})` }),
+        { moved: moved.text, headMoved: moved.headMoved });
     const giveUp = (reason) => new EvidenceError({ code: "check_identity_unavailable",
       message: `${failure?.code === "check_identity_mismatch" ? failure.message : describeFailure(failure)} (${reason})`,
       cause: failure });

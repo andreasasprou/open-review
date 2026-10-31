@@ -2569,9 +2569,9 @@ test("check identity errors name the job filters and identity conditions that di
 });
 
 test("a pull request that moved during the review is reported as superseded without retrying", async () => {
-  for (const [pull, moved] of [
-    [{ head: { sha: SHA_A }, base: { ref: "main" } }, "head dddddddd -> aaaaaaaa"],
-    [{ head: { sha: SHA_D }, base: { ref: "release" } }, "base main -> release"],
+  for (const [pull, moved, headMoved] of [
+    [{ head: { sha: SHA_A }, base: { ref: "main" } }, "head dddddddd -> aaaaaaaa", true],
+    [{ head: { sha: SHA_D }, base: { ref: "release" } }, "base main -> release", false],
   ]) {
     const { args, github, run, sleeps } = correctionNative({ event: "pull_request_target", headBranch: "feature" });
     args.headSha = SHA_D;
@@ -2581,7 +2581,8 @@ test("a pull request that moved during the review is reported as superseded with
       return { data: pull };
     } };
     await assert.rejects(loadCheckIdentity(args), (error) => error.code === "review_superseded" &&
-      error.moved === moved && error.message === `The pull request moved during the review (${moved})`);
+      error.moved === moved && error.headMoved === headMoved &&
+      error.message === `The pull request moved during the review (${moved})`);
     assert.deepEqual(sleeps, []);
   }
 });

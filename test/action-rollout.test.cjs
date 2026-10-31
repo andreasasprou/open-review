@@ -51,19 +51,18 @@ test('a PR merged during the review cancels the check and publishes nothing', as
   assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'closed', merged: true } })), [[11, 'cancelled', 'Review Cancelled']]);
 });
 
-test('a PR that moved during the review is superseded, publishes nothing and fails the job', async () => {
-  const superseded = (moved) => [
-    ['failed', `Superseded: the pull request moved during the review (${moved}); nothing was published. A new push or the review command reviews the current target.`],
-    [11, 'cancelled', 'Review Superseded']];
+test('a PR that moved during the review is superseded and publishes nothing; only an unchanged head fails the job', async () => {
+  const summary = (moved) => `Superseded: the pull request moved during the review (${moved}); nothing was published. A new push or the review command reviews the current target.`;
   assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'open', merged: false,
-    head: { sha: 'f'.repeat(40) }, base: { ref: 'main' } } })), superseded('head aaaaaaaa -> ffffffff'));
+    head: { sha: 'f'.repeat(40) }, base: { ref: 'main' } } })), [[11, 'cancelled', 'Review Superseded']]);
   assert.deepEqual(await postResultsWithPr(async () => ({ data: { state: 'open', merged: false,
-    head: { sha: 'a'.repeat(40) }, base: { ref: 'release' } } })), superseded('base main -> release'));
+    head: { sha: 'a'.repeat(40) }, base: { ref: 'release' } } })),
+    [['failed', summary('base main -> release')], [11, 'cancelled', 'Review Superseded']]);
 });
 
 test('a superseded identity error on the carry and post-processing paths reaches the superseded check', () => {
   const script = block('Post results', 'script');
-  assert.equal(script.match(/error\?\.code (?:!==|===) 'review_superseded'[\s\S]{0,300}?supersede\(error\.moved\)/g)?.length, 2);
+  assert.equal(script.match(/error\?\.code (?:!==|===) 'review_superseded'[\s\S]{0,300}?supersede\(error\.moved, error\.headMoved\)/g)?.length, 2);
 });
 
 test('a failed PR lookup completes the check as failed', async () => {
