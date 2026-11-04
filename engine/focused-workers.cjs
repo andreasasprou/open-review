@@ -109,6 +109,15 @@ function selectSlices(patch, max, headerForFile = () => "") {
     .slice(0, max).map((entry, index) => ({ index, file: entry.file, hunks: entry.hunks }));
 }
 
+// The rules worker's input: the diff of production files only, the files a
+// slice worker may take (decision review-cost-trims).
+function productionPatch(patch, headerForFile = () => "") {
+  return patch.split(/(?=^diff --git )/m).filter((chunk) => {
+    const [entry] = chunk.startsWith("diff --git ") ? parseDiff(chunk) : [];
+    return entry && !excluded(entry.file, entry.deleted ? "" : headerForFile(entry.file));
+  }).join("");
+}
+
 function validOutput(output, slice) {
   const bounded = (value, max = 2000) => typeof value === "string" && value.length <= max;
   if (!output || typeof output !== "object" || Array.isArray(output)) return false;
@@ -193,6 +202,7 @@ async function runWorker(slice, options) {
       const args = ['--kill-after=30s', rules ? '12m' : '8m', 'codex', 'exec', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config',
         '--model', options.workerModel, '-c', `model_reasoning_effort="${options.workerReasoningEffort}"`, '-c', 'sandbox_mode="read-only"',
         '-c', 'allow_login_shell=false', '-c', 'web_search="disabled"',
+        '-c', 'skills.include_instructions=false', '-c', 'features.sleep_tool=false',
         '-c', `shell_environment_policy.exclude=${JSON.stringify(["CODEX_HOME", "HOME", "RUNNER_TEMP", ...(options.providerEnvKey ? [options.providerEnvKey] : [])])}`,
         ...configArgs(options.providerBaseUrl, options.providerEnvKey), '--disable', 'plugins', '--json',
         '--output-schema', path.join(__dirname, rules ? 'rules-worker-schema.json' : 'focused-worker-schema.json'), '-o', output, '-'];
@@ -345,7 +355,7 @@ async function run(options) {
   const patch = fs.readFileSync(path.join(options.outputDir, 'pr-diff.patch'), 'utf8');
   const max = workerCount(options.max, patch);
   process.stderr.write(`focused workers: ${max} (requested ${options.max}); worker model ${workerModel} at ${workerReasoningEffort}\n`);
-  const slices = selectSlices(patch, max, (file) => {
+  const headerForFile = (file) => {
     let fd;
     try {
       // Read regular files inside the checkout only; a PR symlink must not reach runner files.
@@ -356,8 +366,16 @@ async function run(options) {
       const buffer = Buffer.alloc(2000);
       return buffer.subarray(0, fs.readSync(fd, buffer, 0, 2000, 0)).toString('utf8');
     } catch { return ''; } finally { if (fd !== undefined) fs.closeSync(fd); }
-  });
-  const jobs = options.rules ? [...slices, { index: slices.length, file: RULES_FILE, kind: 'rules', hunks: [] }] : slices;
+  };
+  const slices = selectSlices(patch, max, headerForFile);
+  // The rules worker reads production hunks and the rule pack; a PR without a
+  // production change gives it nothing to check.
+  const rulesPatch = options.rules ? productionPatch(patch, headerForFile) : '';
+  const rulesPatchPath = path.join(options.outputDir, 'rules-worker.patch');
+  fs.rmSync(rulesPatchPath, { force: true });
+  if (rulesPatch) fs.writeFileSync(rulesPatchPath, rulesPatch);
+  else if (options.rules) process.stderr.write('rules worker: no production hunks; skipped\n');
+  const jobs = rulesPatch ? [...slices, { index: slices.length, file: RULES_FILE, kind: 'rules', hunks: [] }] : slices;
   const failed = (job, reason) => ({ file: job.file, ...(job.kind ? { kind: job.kind } : {}), status: 'error', reason, candidates: [], usage: {} });
   let result;
   const controller = new AbortController();
@@ -413,4 +431,4 @@ function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { excluded, parentModel, parseDiff, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };
+module.exports = { excluded, parentModel, parseDiff, productionPatch, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };

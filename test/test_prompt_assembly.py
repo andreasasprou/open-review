@@ -144,6 +144,27 @@ class AssemblyContractTest(unittest.TestCase):
         self.assertIn("result: compatible | counterexample | unresolved", prompt)
         self.assertIn("`unresolved` row under \"Risks Not Raised\"", prompt)
 
+    def test_prompt_rules_out_skill_files_and_costly_coordination(self):
+        result = assemble_cli(EXAMPLE_RULES)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = " ".join(result.stdout.split())
+        self.assertIn(
+            "Skill files the repository keeps for its own agents (for example "
+            "`.agents/skills/**/SKILL.md`) are not review guidance: open one only when the diff changes it.",
+            prompt,
+        )
+        delegation = prompt.split("### Delegation", 1)[1].split("Before delegating, list the", 1)[0]
+        for rule in (
+            "Spawn each child once, with its complete brief in the spawn message",
+            "Do not send a follow-up message unless the child asks a question",
+            "Always pass `fork_turns: \"none\"`. Omitting `fork_turns` forks the child, and a forked child "
+            "(`fork_turns` of `\"all\"` or a number, or `fork_context`) runs on the parent's model whatever model the spawn names.",
+            "Never call `list_agents`, `sleep`, `request_user_input` or `request_user_input_async`.",
+            "wait for the children with one blocking `wait_agent` call with a timeout of at least 300000 ms",
+            "Do not poll with short timeouts.",
+        ):
+            self.assertIn(rule, delegation)
+
 
 if __name__ == "__main__":
     unittest.main()
