@@ -395,9 +395,10 @@ async function run(options) {
 
 function main(argv) {
   if (argv[0] === 'parent-model') {
-    // Changed paths, one per line, on stdin; rename sources included.
+    // Changed paths, NUL-separated (`git diff --name-only -z`), on stdin, so
+    // quoting never hides a path; rename sources included.
     return Promise.resolve().then(() => {
-      const files = fs.readFileSync(0, 'utf8').split('\n').filter(Boolean);
+      const files = fs.readFileSync(0, 'utf8').split('\0').filter(Boolean);
       process.stdout.write(`${parentModel(argv[1], files)}\n`);
     });
   }

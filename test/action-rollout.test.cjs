@@ -328,6 +328,13 @@ test('the hosted parent model follows the PR risk rule and reaches every model c
   assert.equal(model(standard, 'auto'), 'model=gpt-6.1-sol\n');
   assert.equal(model(risky, 'auto'), 'model=gpt-6-astra\n');
   assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\n');
+  // A non-ASCII path, which git quotes in line output, still routes as risky (review round 2).
+  git(f.root, 'checkout', '-qb', 'workflow', standard);
+  mkdirSync(join(f.root, '.github/workflows'), { recursive: true });
+  writeFileSync(join(f.root, '.github/workflows/déploy.yml'), 'on: push\n');
+  git(f.root, 'add', '.github');
+  git(f.root, 'commit', '-qm', 'workflow');
+  assert.equal(model(git(f.root, 'rev-parse', 'HEAD'), 'auto'), 'model=gpt-6-astra\n');
   assert.match(action, /\n  parent-model:\n[\s\S]*?\n    default: auto\n/);
   assert.equal(action.match(/steps\.parent\.outputs\.model/g).length, 3);
   assert.ok(action.indexOf('    - name: Resolve parent model') < action.indexOf('    - name: Restore prior review session'));

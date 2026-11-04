@@ -120,8 +120,8 @@ changed 19 lines, about 5% of the PR.
     the passed head, or at the current merge base when the base moved in
     between, so a base-branch change the PR dropped stays visible;
   - anything else, including a latest BLOCK, a retargeted PR, a passed head
-    that was force-rewritten, a settlement without a recorded base, or
-    `--full-review`: a full review.
+    that was force-rewritten, a settlement without a recorded base, a changed
+    path with a newline in its name, or `--full-review`: a full review.
 - File identity is exact (modes and blob ids at the merge base and the
   head). Hunk text is not: an edit moved between two identical regions would
   match. A rebase over base-branch changes to the PR's own files therefore

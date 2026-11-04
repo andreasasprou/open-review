@@ -172,6 +172,9 @@ function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = nul
 	if (delta.length === 0) return { mode: "carry", reason: latest.head === headSha ? "same_head" : "same_patch", ...scope };
 	if (docsOnly(delta, docsPaths)) return { mode: "carry", reason: "docs_only_change", ...scope };
 	if (!isAncestor(git, latest.head, headSha)) return full("passed_head_rewritten");
+	// The runner passes the scoped paths line by line; a path with a newline
+	// would split and leave a change unreviewed.
+	if (delta.some((file) => file.includes("\n"))) return full("path_unrepresentable");
 	// When the base moved in between, a diff from the passed head would hide a
 	// base-branch change the PR dropped; review those files' whole PR patch.
 	const baseMoved = latest.base.mergeBase !== mergeBase;

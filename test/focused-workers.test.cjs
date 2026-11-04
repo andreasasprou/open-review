@@ -99,7 +99,7 @@ test('auto parent model is GPT-6 Astra only on a risky PR and GPT-6.1 Sol otherw
   assert.equal(parentModel('gpt-6.1-sol', ['infra/main.tf']), 'gpt-6.1-sol');
   assert.throws(() => parentModel('gpt-6" -c x', []), /plain model identifier/);
   const command = (value, files) => execFileSync('node', [path.join(__dirname, '../engine/focused-workers.cjs'), 'parent-model', value],
-    { input: files.join('\n'), encoding: 'utf8' });
+    { input: files.join('\0'), encoding: 'utf8' });
   assert.equal(command('auto', ['src/view.tsx', 'db/old-name.sql']), 'gpt-6-astra\n');
   assert.equal(command('auto', ['src/view.tsx']), 'gpt-6.1-sol\n');
 });

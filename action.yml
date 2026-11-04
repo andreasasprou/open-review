@@ -679,7 +679,7 @@ runs:
         MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
       run: |
         set -euo pipefail
-        MODEL="$(git diff --name-only --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
+        MODEL="$(git diff --name-only -z --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
           node "$RUNNER_TEMP/open-review/engine/focused-workers.cjs" parent-model "$PARENT_MODEL")"
         echo "model=$MODEL" >> "$GITHUB_OUTPUT"
         echo "Parent model: $MODEL (input: $PARENT_MODEL)"

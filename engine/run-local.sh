@@ -586,10 +586,15 @@ MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$BASE_SHA" "$HEAD_SHA")"
 # The merge base against the PR's own base branch at start; publication refuses
 # a settlement once that changes (a retargeted PR is another review target).
 PR_START_BASE_SHA="$(jq -r '.baseRefOid' "$RUN_DIR/pr.json")"
+if ! git -C "$ROOT" cat-file -e "$PR_START_BASE_SHA^{commit}" 2>/dev/null &&
+   ! git -C "$ROOT" fetch --quiet --no-tags origin "$PR_START_BASE_SHA" >>"$SETUP_LOG" 2>&1; then
+  echo "error: failed to fetch the PR's current base $PR_START_BASE_SHA; see $SETUP_LOG" >&2
+  exit 1
+fi
 PR_START_MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$PR_START_BASE_SHA" "$HEAD_SHA")"
 # The parent model follows the same risk rule as the focused workers, over the
 # whole PR's paths (rename sources included), so every round uses one model.
-if ! CODEX_MODEL="$(git -C "$ROOT" diff --name-only --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
+if ! CODEX_MODEL="$(git -C "$ROOT" diff --name-only -z --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
   node "$ENGINE_DIR/focused-workers.cjs" parent-model "$CODEX_MODEL")"; then
   echo "error: could not resolve the parent model; see the message above" >&2
   exit 1

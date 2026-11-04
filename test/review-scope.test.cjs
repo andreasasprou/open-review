@@ -156,6 +156,37 @@ test("an edit moved between identical regions of a file is a different patch", (
 		{ mode: "full", reason: "passed_head_rewritten", files: [] });
 });
 
+// Review P1 (round 2): a path with a newline split into two pathspecs and left its change unreviewed.
+test("a changed path the runner cannot pass line by line gets a full review", (t) => {
+	const { commit, lines, base, scope } = repository(t);
+	const reviewed = commit({ "src/pay\nload.js": "pay\n", "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") });
+	const head = commit({ "src/pay\nload.js": "pay, changed\n", "src/b.ts": lines("b").replace("b 7\n", "b 7 changed\n") });
+	assert.deepEqual(scope({ baseSha: base, headSha: head, latest: passed(reviewed, base) }),
+		{ mode: "full", reason: "path_unrepresentable", files: [] });
+});
+
+// Review P2 (round 2): a historical-base review needs the PR's current base, which may be absent locally.
+test("the runner fetches the PR's current base before computing its merge base", (t) => {
+	const { root: origin, commit, base } = repository(t);
+	const head = commit({ "src/new.ts": "new\n" });
+	const clone = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-scope-clone-"));
+	t.after(() => fs.rmSync(clone, { recursive: true, force: true }));
+	execFileSync("git", ["clone", "-q", origin, clone]);
+	execFileSync("git", ["-C", origin, "checkout", "-q", "main"]);
+	const moved = commit({ "src/later.ts": "later\n" }, "main moves after the clone");
+	const script = fs.readFileSync(path.join(__dirname, "../engine/run-local.sh"), "utf8");
+	const start = script.indexOf('PR_START_BASE_SHA="$(jq');
+	const block = script.slice(start, script.indexOf("\n", script.indexOf("PR_START_MERGE_BASE_SHA=", start)) + 1);
+	const run = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-scope-run-"));
+	t.after(() => fs.rmSync(run, { recursive: true, force: true }));
+	fs.writeFileSync(path.join(run, "pr.json"), JSON.stringify({ baseRefOid: moved }));
+	const output = execFileSync("bash", ["-euo", "pipefail", "-c", `${block}printf '%s' "$PR_START_MERGE_BASE_SHA"`], {
+		encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+		env: { ...process.env, ROOT: clone, RUN_DIR: run, HEAD_SHA: head, SETUP_LOG: path.join(run, "setup.log") },
+	});
+	assert.equal(output, base);
+});
+
 test("docs-only PRs skip the model and docs-only pushes after a pass carry it", (t) => {
 	const { run, commit, lines, base, scope } = repository(t);
 	const docs = commit({ "docs/guide.md": "guide, revised\n", "site/content/page.md": "page\n" });
