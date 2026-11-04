@@ -30,9 +30,9 @@ decision entry behind it.
 | `child-reasoning-effort` | `max` | [gpt-6-children](#gpt-6-children) |
 | `contract-investigator-model` | `gpt-6-sol` | [finder-models](#finder-models) |
 | `contract-investigator-reasoning-effort` | `high` | [finder-models](#finder-models) |
-| `worker-model` | `gpt-6-sol` | [worker-model](#worker-model) |
-| `worker-reasoning-effort` | `high` | [focused-workers](#focused-workers) |
-| `focused-workers` | `4` | [focused-workers](#focused-workers) |
+| `worker-model` | `gpt-6.1-sol` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
+| `worker-reasoning-effort` | `medium` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
+| `focused-workers` | `auto` (2 on sensitive paths, else 0) | [focused-workers-risk-gated](#focused-workers-risk-gated) |
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
 | `rules-worker` | `true` | [rules-worker](#rules-worker) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
@@ -44,6 +44,36 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### focused-workers-risk-gated
+
+**2026-11-04.** Owner decision on cost, without an evaluation run. The
+focused workers were about 37% of one consumer pool's weekly model tokens
+(1.7B uncached input and output tokens, about 11,000 worker sessions), more
+than any other single model use.
+
+- Decision: `focused-workers` defaults to `auto`. It runs 2 workers when the
+  PR changes a stored-data, security or infrastructure path (migrations, SQL
+  and schema files, database directories, auth, IAM, secrets and permission
+  code, `infra/`, Terraform and Pulumi, container files, CI workflows), tests
+  and docs excluded, and none otherwise. A consumer with its own risk tiers
+  passes an explicit count instead.
+- The focused and rules workers move from `gpt-6-sol` at `high` to
+  `gpt-6.1-sol` at `medium`, configurable with `worker-model` and
+  `worker-reasoning-effort`.
+- Accepted loss: PRs outside the sensitive paths lose the workers' extra
+  recall (3 known defects of 33 on the development set; see
+  [focused-workers](#focused-workers)). On sensitive PRs, 2 workers cover the
+  2 highest-churn files instead of 4. [worker-model](#worker-model) measured
+  GPT-6.1 Sol at high: equal known defects, fewer other real findings, a
+  slower stage. Medium effort was not measured.
+- Path rule, checked on 300 recent default-branch commits per consumer:
+  13% to 26% matched.
+- The confound in [worker-model](#worker-model) still holds: Codex 0.157.1
+  runs `gpt-6.1-sol` with fallback model metadata.
+- Evaluations that measure the workers pass an explicit count.
+- Reopen when the pool has capacity for the workers on every PR, or when an
+  evaluation shows the path rule misses most worker-found defects.
 
 ### worker-model
 

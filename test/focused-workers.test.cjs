@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { selectSlices, excluded, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
+const { selectSlices, excluded, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
 const { renderFocusedWorkerSection, readFocusedWorkers, loadPreviousState, postResults, MARKERS } = require('../engine/index.cjs');
 const { parseProjectionComment } = require('../engine/ledger/projection.cjs');
 const { createRecordingCaughtErrorDiagnosticRecorder } = require('./helpers/recording-recorder.cjs');
@@ -57,7 +57,23 @@ test('local runner rejects a focused worker count above four before review setup
   const result = spawnSync('bash', [script, '--pr', '1', '--rules', 'rules.md', '--focused-workers', '5'],
     { cwd: __dirname, encoding: 'utf8' });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /focused-workers must be an integer from 0 to 4/);
+  assert.match(result.stderr, /focused-workers must be auto or an integer from 0 to 4/);
+});
+
+test('auto runs two workers only when a PR changes a stored-data, security or infrastructure path', () => {
+  const auto = (...files) => workerCount('auto', files.map((file) => fileDiff(file, 1)).join(''));
+  for (const file of ['db/migrations/0001_init.sql', 'packages/db/schema.prisma', 'src/auth/session.ts', 'src/lib/requireAuth.ts',
+    'src/permissions.ts', 'infra/main.tf', 'deploy/Dockerfile', '.github/workflows/release.yml']) {
+    assert.equal(auto('src/view.tsx', file), 2, file);
+  }
+  assert.equal(workerCount('auto', fileDiff('src/auth/old.ts', 0, 3, true)), 2, 'deleting a sensitive file counts');
+  for (const files of [['src/view.tsx', 'src/author.ts'], ['docs/security/policy.md', 'README.md'],
+    ['src/auth/session.test.ts', 'db/__tests__/migrate.ts'], ['src/infrastructure/adapter.ts']]) {
+    assert.equal(auto(...files), 0, files.join(' '));
+  }
+  assert.equal(workerCount('4', fileDiff('src/view.tsx', 1)), 4);
+  assert.equal(workerCount(0, fileDiff('infra/main.tf', 1)), 0);
+  assert.throws(() => workerCount('5', ''), /auto or an integer from 0 to 4/);
 });
 
 test('generated header and exclusions are applied before churn order', () => {
@@ -262,12 +278,18 @@ fi
     assert.equal(fs.existsSync(home), false, 'worker auth home must be removed after completion');
   }
   assert.doesNotMatch(calls, /multi_agent/);
-  assert.match(calls, /--model gpt-6-sol/);
+  assert.equal(calls.match(/ --model gpt-6\.1-sol -c model_reasoning_effort="medium" /g)?.length, 4);
   assert.deepEqual(fs.readdirSync(homeRoot), []);
   fs.writeFileSync(path.join(bin, 'gtimeout'), `#!/usr/bin/env bash\necho invoked > "${path.join(root, 'gtimeout-called')}"\nexec "${path.join(bin, 'timeout')}" "$@"\n`, { mode: 0o755 });
+  fs.rmSync(path.join(root, 'calls'));
   execFileSync(process.execPath, [driver, 'run', '1', 'a'.repeat(40), homeRoot, path.join(root, 'auth.json'), path.join(root, '.codex-ci'), root, 'gtimeout'],
-    { cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    { cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WORKER_MODEL: 'gpt-7-sol', WORKER_REASONING_EFFORT: 'high' } });
   assert.equal(fs.readFileSync(path.join(root, 'gtimeout-called'), 'utf8'), 'invoked\n');
+  assert.match(fs.readFileSync(path.join(root, 'calls'), 'utf8'), / --model gpt-7-sol -c model_reasoning_effort="high" /);
+  const injected = spawnSync(process.execPath, [driver, 'run', '1', 'a'.repeat(40), homeRoot, path.join(root, 'auth.json'), path.join(root, '.codex-ci'), root],
+    { cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WORKER_REASONING_EFFORT: 'high" -c x="y' }, encoding: 'utf8' });
+  assert.notEqual(injected.status, 0);
+  assert.match(injected.stderr, /plain identifiers/);
 });
 
 test('slice selection reads no file outside the checkout through a PR symlink', async (t) => {

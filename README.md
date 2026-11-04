@@ -38,7 +38,8 @@ structured output, not the model's verdict word.
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
 | `provider-session-resume` | `false` | Allows session resume through a custom provider |
-| `focused-workers` | `4` | Advisory Sol workers, one per changed non-test file; findings go to a summary section and never block merge |
+| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes a stored-data, security or infrastructure path outside tests and docs, and none otherwise; `0` to `4` sets the maximum |
+| `worker-model` / `worker-reasoning-effort` | `gpt-6.1-sol` / `medium` | Focused and rules workers; empty uses these defaults |
 | `rules-worker` | `true` | Advisory check of every changed file, tests included, against `AGENTS.md` and the guidance it points to |
 | `review-budget-minutes` | `20` | Total hosted Codex budget across attempts (1–120 minutes) |
 | `pr-number` | empty | PR number for `workflow_dispatch` |
