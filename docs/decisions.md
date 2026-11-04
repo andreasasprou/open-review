@@ -71,6 +71,9 @@ threads 13% and the focused workers 20%.
   against Astra's 9, with 4 of its 18 findings invalid, at about a quarter of
   Astra's cost. Blocking findings on those PRs now come from it.
 - The path rule matched 40% of one consumer's last 1,195 merged PRs.
+- `eval/run-recall.sh` inherits `CODEX_MODEL`. An evaluation that measures
+  the parent sets it to one model, as worker evaluations pass an explicit
+  count.
 - The confound in [worker-model](#worker-model) holds: Codex 0.157.1 runs
   `gpt-6.1-sol` with fallback model metadata.
 - Reopen when an evaluation shows GPT-6.1 Sol missing blocking defects that
