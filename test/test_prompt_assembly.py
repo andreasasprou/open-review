@@ -144,6 +144,26 @@ class AssemblyContractTest(unittest.TestCase):
         self.assertIn("result: compatible | counterexample | unresolved", prompt)
         self.assertIn("`unresolved` row under \"Risks Not Raised\"", prompt)
 
+    def test_prompt_rules_out_skill_files_and_forked_children(self):
+        result = assemble_cli(EXAMPLE_RULES)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = " ".join(result.stdout.split())
+        self.assertIn(
+            "Skill files the repository keeps for its own agents (for example "
+            "`.agents/skills/**/SKILL.md`) are not review guidance: open one only when the diff changes it.",
+            prompt,
+        )
+        delegation = prompt.split("### Delegation", 1)[1].split("Before delegating, list the", 1)[0]
+        self.assertIn(
+            "Always pass `fork_turns: \"none\"` when you spawn a child. Omitting `fork_turns` forks the child, and a "
+            "forked child (`fork_turns` of `\"all\"` or a number, or `fork_context`) runs on the parent's model whatever "
+            "model the spawn names.",
+            delegation,
+        )
+        # The coordination discipline was dropped: it doubled coordination requests and wall time.
+        self.assertNotIn("wait_agent", delegation)
+        self.assertNotIn("follow-up message", delegation)
+
 
 if __name__ == "__main__":
     unittest.main()

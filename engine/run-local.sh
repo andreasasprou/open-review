@@ -1130,6 +1130,7 @@ if [ "$STREAM_RAW" = "true" ]; then
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
         -c "agents.default_subagent_reasoning_effort=\"$CODEX_SUBAGENT_REASONING\"" \
+        -c 'skills.include_instructions=false' \
         -c "shell_environment_policy.exclude=$SHELL_ENV_EXCLUDE" \
         --disable plugins \
         --json \
@@ -1158,6 +1159,7 @@ else
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
         -c "agents.default_subagent_reasoning_effort=\"$CODEX_SUBAGENT_REASONING\"" \
+        -c 'skills.include_instructions=false' \
         -c "shell_environment_policy.exclude=$SHELL_ENV_EXCLUDE" \
         --disable plugins \
         --json \
@@ -1247,6 +1249,13 @@ fi
   echo "Raw log: $CODEX_LOG"
   echo "Progress log: $PROGRESS_LOG"
 } | tee -a "$RUN_DIR/summary.txt"
+# A forked child runs on the parent's model whatever its spawn asked for. This
+# is a cost warning only; it never changes the merge gate.
+CHILDREN_ON_PARENT_MODEL="$(printf '%s\n' "$ROLLOUT_USAGE" | jq -r '(.childrenOnParentModel // []) | join(", ")' 2>/dev/null || true)"
+if [ -n "$CHILDREN_ON_PARENT_MODEL" ]; then
+  echo "Warning: child threads ran on the parent model without asking for it (forked spawn): $CHILDREN_ON_PARENT_MODEL" |
+    tee -a "$RUN_DIR/summary.txt" >&2
+fi
 
 if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
   REVIEW_MARKDOWN="$(jq -r '.review_markdown // empty' "$OUTPUT_JSON")"

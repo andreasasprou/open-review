@@ -94,12 +94,15 @@ function sumRolloutFile(file, recorder) {
 	let isSubagent = false;
 	let sessionId = null;
 	let originator = null;
+	let model = null;
+	let agentPath = null;
+	const spawns = [];
 	let content;
 	try {
 		content = fs.readFileSync(file, "utf8");
 	} catch (error) {
 		recordCaughtError({ recorder, error, operation: "review.usage", stage: "read_rollout", disposition: "recover", context: {} });
-		return { totals, tokenEvents, isSubagent, sessionId, originator };
+		return { totals, tokenEvents, isSubagent, sessionId, originator, model, agentPath, spawns };
 	}
 	for (const line of content.split("\n")) {
 		if (!line.trim()) continue;
@@ -111,6 +114,24 @@ function sumRolloutFile(file, recorder) {
 			if (typeof body.originator === "string") originator = body.originator;
 			if (body.thread_source === "subagent" || body.parent_thread_id) {
 				isSubagent = true;
+			}
+			const spawned = body.source?.subagent?.thread_spawn?.agent_path;
+			if (typeof spawned === "string") agentPath = spawned;
+			continue;
+		}
+		if (type === "turn_context") {
+			if (model === null && typeof body.model === "string") model = body.model;
+			continue;
+		}
+		if (type === "function_call" && body.name === "spawn_agent") {
+			let args = null;
+			try {
+				args = JSON.parse(body.arguments);
+			} catch (error) {
+				recordCaughtError({ recorder, error, operation: "review.usage", stage: "parse_spawn", disposition: "recover", context: {} });
+			}
+			if (args && typeof args.task_name === "string") {
+				spawns.push({ taskName: args.task_name, model: typeof args.model === "string" ? args.model : null });
 			}
 			continue;
 		}
@@ -126,7 +147,21 @@ function sumRolloutFile(file, recorder) {
 		}
 		if (matched) tokenEvents += 1;
 	}
-	return { totals, tokenEvents, isSubagent, sessionId, originator };
+	return { totals, tokenEvents, isSubagent, sessionId, originator, model, agentPath, spawns };
+}
+
+/**
+ * Child threads that ran on the parent's model although no spawn asked for it.
+ * A forked child (`fork_turns` other than "none") inherits the parent's model
+ * whatever model its spawn names (decision review-cost-trims).
+ */
+function childrenOnParentModel(threads) {
+	const parentModels = new Set(threads.filter((thread) => !thread.isSubagent && thread.model).map((thread) => thread.model));
+	const requested = new Map();
+	for (const { taskName, model } of threads.flatMap((thread) => thread.spawns)) requested.set(taskName, model);
+	return threads.filter((thread) => thread.isSubagent && parentModels.has(thread.model) &&
+		requested.get(String(thread.agentPath).split("/").pop()) !== thread.model)
+		.map((thread) => `${thread.agentPath ?? thread.sessionId} (${thread.model})`).toSorted();
 }
 
 // A resumed round continues the previous round's transcript, whose counters
@@ -174,23 +209,26 @@ function sumRolloutUsage(sessionsDir, recorder, baselines = baselinesFromEnv(rec
 	const files = sessionsDir ? findRolloutFiles(sessionsDir, recorder) : [];
 	let threads = 0;
 	let subagentThreads = 0;
+	const parsed = [];
 	for (const file of files) {
+		const thread = sumRolloutFile(file, recorder);
+		parsed.push(thread);
 		const {
 			totals: fileTotals,
 			tokenEvents,
 			isSubagent,
 			sessionId,
-		} = sumRolloutFile(file, recorder);
+		} = thread;
 		if (tokenEvents === 0) continue;
 		threads += 1;
 		if (isSubagent) subagentThreads += 1;
 		const net = netOfBaseline(fileTotals, sessionId && baselines[sessionId]);
 		for (const [key] of USAGE_FIELDS) totals[key] += net[key];
 	}
-	return { ...totals, threads, subagentThreads, files: files.length };
+	return { ...totals, threads, subagentThreads, files: files.length, childrenOnParentModel: childrenOnParentModel(parsed) };
 }
 
-module.exports = { sumRolloutUsage, sumRolloutFile, findRolloutFiles };
+module.exports = { sumRolloutUsage, sumRolloutFile, findRolloutFiles, childrenOnParentModel };
 
 if (require.main === module) runReviewCli(recorder => {
 	const sessionsDir = process.argv[2];

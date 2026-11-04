@@ -348,6 +348,22 @@ test('the parent opens at most two child threads, hosted and local', () => {
   }
 });
 
+test('every parent Codex invocation drops the skill list, hosted and local', () => {
+  const local = readFileSync(resolve(__dirname, '../engine/run-local.sh'), 'utf8');
+  // From the Codex command to its prompt on stdin; children share this session's config.
+  const invocations = (text, start) => text.split(start).slice(1).map((rest) => rest.split('- < .codex-ci/review-prompt.md')[0]);
+  const blocks = [
+    ...invocations(local, 'run_codex_exec \\\n'),
+    ...invocations(action, 'codex "${CODEX_MODE_ARGS[@]}" \\\n'),
+  ];
+  assert.equal(blocks.length, 3, 'two local invocations (raw stream or not) and one hosted');
+  for (const block of blocks) {
+    assert.match(block, /--strict-config/);
+    assert.match(block, /-c 'skills\.include_instructions=false' \\\n/);
+    assert.doesNotMatch(block, /sleep_tool/);
+  }
+});
+
 test('hosted prompt handles a multibyte character across the 4000-byte limit', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'open-review-body-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

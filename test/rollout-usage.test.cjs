@@ -43,7 +43,53 @@ test("sums the final counter of every rollout transcript", () => {
 		threads: 2,
 		subagentThreads: 1,
 		files: 3,
+		childrenOnParentModel: [],
 	});
+});
+
+test("names child threads that ran on the parent model without asking for it", (t) => {
+	const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "open-review-forked-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const line = (type, payload) => JSON.stringify({ type, payload });
+	const usage = line("event_msg", { type: "token_count", info: { total_token_usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 1 } } });
+	const spawn = (args) => line("response_item", { type: "function_call", name: "spawn_agent", arguments: JSON.stringify({ message: "brief", ...args }) });
+	const child = (name, model) => [
+		line("session_meta", { id: name, thread_source: "subagent", parent_thread_id: "root",
+			source: { subagent: { thread_spawn: { agent_path: `/root/${name}` } } } }),
+		line("turn_context", { model, effort: "high" }), usage,
+	];
+	const threads = {
+		root: [line("session_meta", { id: "root", thread_source: "user" }), line("turn_context", { model: "parent-x" }),
+			spawn({ task_name: "forked_map", model: "child-y", fork_turns: "all" }),
+			spawn({ task_name: "unnamed_fork" }),
+			spawn({ task_name: "asked_parent", model: "parent-x", fork_turns: "none" }),
+			spawn({ task_name: "plain_child", model: "child-y", fork_turns: "none" }), usage],
+		forked: child("forked_map", "parent-x"),
+		unnamed: child("unnamed_fork", "parent-x"),
+		asked: child("asked_parent", "parent-x"),
+		plain: child("plain_child", "child-y"),
+	};
+	for (const [name, lines] of Object.entries(threads)) fs.writeFileSync(path.join(dir, `rollout-${name}.jsonl`), `${lines.join("\n")}\n`);
+	const result = sumRolloutUsage(dir, createRecordingCaughtErrorDiagnosticRecorder());
+	assert.equal(result.subagentThreads, 4);
+	assert.deepEqual(result.childrenOnParentModel, ["/root/forked_map (parent-x)", "/root/unnamed_fork (parent-x)"]);
+});
+
+test("the local runner warns about a child on the parent model and leaves the gate alone", () => {
+	const local = fs.readFileSync(path.join(__dirname, "..", "engine", "run-local.sh"), "utf8");
+	const block = local.slice(local.indexOf("CHILDREN_ON_PARENT_MODEL="), local.indexOf("\nfi\n", local.indexOf("CHILDREN_ON_PARENT_MODEL=")) + 4);
+	const run = (rollout) => require("node:child_process").spawnSync("bash", ["-euo", "pipefail", "-c", `RUN_DIR="$(mktemp -d)"; trap 'rm -rf -- "$RUN_DIR"' EXIT\n${block}\ncat "$RUN_DIR/summary.txt" 2>/dev/null || true; echo reached`],
+		{ env: { ...process.env, ROLLOUT_USAGE: rollout }, encoding: "utf8" });
+	const warned = run(JSON.stringify({ childrenOnParentModel: ["/root/forked_map (parent-x)"] }));
+	assert.equal(warned.status, 0, warned.stderr);
+	assert.match(warned.stderr, /Warning: child threads ran on the parent model without asking for it \(forked spawn\): \/root\/forked_map \(parent-x\)/);
+	assert.match(warned.stdout, /^Warning: child threads ran on the parent model[^\n]*\nreached\n$/);
+	for (const rollout of ["{}", JSON.stringify({ childrenOnParentModel: [] })]) {
+		const quiet = run(rollout);
+		assert.equal(quiet.status, 0, quiet.stderr);
+		assert.equal(quiet.stdout, "reached\n");
+		assert.equal(quiet.stderr, "");
+	}
 });
 
 test("reports no threads when the sessions directory is missing", () => {
