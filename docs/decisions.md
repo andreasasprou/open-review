@@ -83,7 +83,7 @@ routing. It is integrated after [review-scope](#review-scope) lands.
   the next passing push fixed (required high), 14 blocked and cleared without
   a change to the named file, 28 low-risk, 17 docs, 10 agent-instruction, and
   a seeded random sample of 80 reviewed PRs for the high share. The path rule
-  alone marks 37 of the 49 required PRs high, 37 of the 80 sampled PRs (46%),
+  alone marks 39 of the 49 required PRs high, 37 of the 80 sampled PRs (46%),
   and 42% of all 924 merged PRs.
 - Rule for prompt `risk-triage-v1`, declared before the run:
   1. the final level is high on all 49 required PRs;
@@ -111,7 +111,51 @@ routing. It is integrated after [review-scope](#review-scope) lands.
   many known defects as GPT-6.1 Sol `medium` with no more invalid blocking
   findings; screen with 1 sample, and use 3 when the screen is within 1
   defect.
-- Result: pending.
+- A trivial PR still gets an exact-head settlement: the marker,
+  `Merge gate: **PASS**`, and a line naming the level, the rule version and
+  its inputs (`Review level: trivial (trivial-v1: N changed lines in M
+  files; no sensitive path); no model review required.`). The classifier
+  must be one engine function with a command-line entry, so a consumer's
+  merge gate can re-derive the level from base-owned engine code at the
+  exact head and its merge base, with docs-only paths and thresholds read
+  from the base branch, and refuse when the level differs.
+- Result, `risk-triage-v1` (digest `51c2f4f7fd66`): high on 49 of 49
+  required PRs (the model alone on 49 of 49, the path rule on 39) and on all
+  14 cleared ones; 81% of the sample high; 2 of 28 low-risk PRs high; 7 of 17
+  docs PRs docs, 10 high; no agent-instruction PR docs; no failed call.
+  Mean 3,090 input and 79 output tokens, 0.174 credits per call; latency
+  median 4.2 s, 90th percentile 6.9 s. Fails rule 2.
+- Result, `risk-triage-v2` (digest `b5580e8edfc4`; tuned on this set, so
+  optimistic): high on 49 of 49 required PRs (the model alone on 49 of 49)
+  and on all 14 cleared ones; 78% of the sample high (76% after the trivial
+  level); no low-risk PR high; 16 of 17 docs PRs docs; all 10
+  agent-instruction PRs normal; no failed call. 0.174 credits per call;
+  latency median 3.8 s, 90th percentile 6.6 s, maximum 11.8 s. Fails rule 2.
+  The `confidence` field carries no signal: means of 0.96 to 0.99 for every
+  tier.
+- Why the share stays high: the path rule alone covers 46% of the sample, and
+  the model marks 65% of the remaining non-trivial PRs high. 7 of the 10
+  required PRs outside the path rule were blocked over a compatibility path,
+  which the prompt must therefore treat as high; most other PRs in this
+  consumer also change contracts between separately deployed parts. Adding a
+  size cut to the model's high answers gives 71% high at 135 lines with no
+  loss, and 56% at 500 lines while losing 4 of the 13 blocked PRs outside the
+  path rule.
+- Credits per review on that consumer (771 measured runs, list rates): today
+  167 on average. Proposed: trivial 0; normal 19 with a GPT-6.1 Sol single
+  pass, or 9 with GPT-6.1 Terra, both estimated from the parent's measured
+  tokens, plus 0.17 for the triage call; high 141 to 165 with 2 GPT-6.1 Sol
+  workers. With the v2 shares (75% high, 17% normal, 8% trivial) a week costs
+  65% to 76% of today, before the savings of [review-scope](#review-scope).
+- Decision: not adopted for routing. `risk-triage-v2` is the calibrated
+  candidate: full recall, and it separates docs, agent instructions and
+  low-risk PRs. On this consumer the owner must choose between about 75% of
+  PRs at the high level and a cheaper high review, because a 40–50% share
+  costs blocking-defect recall. The trivial level and the error rule stand
+  without a model.
+- Reopen when the owner accepts a high share above 55%, when the high-level
+  review changes cost, or when another consumer's set is calibrated.
+
 ### review-cost-trims
 
 **2026-11-04.** Owner decision on cost, without a recall evaluation. Can a

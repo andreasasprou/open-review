@@ -15,7 +15,7 @@ const MODEL = "gpt-6.1-sol";
 const REASONING_EFFORT = "medium";
 // Bump with every prompt, schema or input-format change, and recalibrate
 // (docs/evaluation-protocol.md, "Risk triage calibration").
-const PROMPT_VERSION = "risk-triage-v1";
+const PROMPT_VERSION = "risk-triage-v2";
 const PROMPT = fs.readFileSync(path.join(__dirname, "risk-triage-prompt.txt"), "utf8");
 const TIMEOUT_MS = 60 * 1000;
 const RANK = { docs: 0, normal: 1, high: 2 };
