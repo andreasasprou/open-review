@@ -86,3 +86,41 @@ Record the question, the rule, the result and the decision in
   model output from a consumer repository. Keep them with the consumer.
 - `eval/run-recall.sh` and `eval/score-recall.cjs` run and score parent
   reviews against a recall manifest.
+
+## Risk triage calibration
+
+The risk-triage prompt (`engine/risk-triage-prompt.txt`, version in
+`engine/risk-triage.cjs`) is valid only for the calibration recorded in the
+latest [risk-triage](decisions.md#risk-triage) entry. That entry and the
+consumer manifests are the single source of truth. If calibration drifts,
+update the prompt and recalibrate; never adjust it by feel between
+calibrations.
+
+- **Who:** the engine maintainer who changes the prompt, the triage model,
+  its effort or its input format. Consumers report misses and refresh their
+  manifests; they do not edit the prompt.
+- **When:**
+  - a review blocks on a P0 or P1 finding in a PR that the triage marked
+    normal: add the PR to the consumer manifest as required, then
+    recalibrate;
+  - the weekly share of PRs the model marks high, outside the path rule,
+    moves by more than 10 percentage points from the calibrated share for
+    two consecutive weeks;
+  - the prompt, the schema, the input caps, the triage model or its effort
+    changes; bump `PROMPT_VERSION` first;
+  - otherwise every three months, with a freshly harvested sample.
+- **How:**
+  1. Refresh the manifest in the consumer repository
+     (`.open-review/calibration/risk-triage.json`). Required cases are PRs
+     whose review blocked on a P0 or P1 finding that a later passing push
+     fixed, at the head the block was raised on. Add a seeded random sample
+     of recent reviewed PRs, and docs, agent-instruction and low-risk PRs.
+     Keep the old cases.
+  2. Write the decision rule in the entry before the run.
+  3. Run `node eval/risk-triage-calibrate.cjs --manifest <manifest> --repo
+     <consumer checkout> --out <directory outside this repository>` from the
+     consumer checkout. Run at most twice per change.
+  4. Record the prompt version, its digest (`promptIdentity()`), and the
+     printed aggregate in the entry. Per-PR results stay with the consumer.
+- A miss is never fixed by lowering the path rule or the error rule: errors
+  and invalid answers stay high, and the path rule stays a floor.

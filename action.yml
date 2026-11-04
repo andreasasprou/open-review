@@ -43,10 +43,14 @@ inputs:
     required: true
   parent-model:
     description: >-
-      Codex model for the parent reviewer. "auto" uses gpt-6-astra when the PR
-      changes a stored-data, security or infrastructure path outside tests and
-      docs (the focused-worker rule), and gpt-6.1-sol otherwise; a model name
-      always uses that model.
+      Codex model for the parent reviewer. "auto" sets the review level
+      (engine/risk-triage.cjs): a PR that changes a stored-data, security or
+      infrastructure path outside tests and Markdown, or a review, merge-gate,
+      prompt, rule-pack or agent-instruction path, gets gpt-6-astra with focused
+      workers; otherwise a GPT-6.1 Sol triage call through provider-base-url
+      picks gpt-6-astra without focused workers, or one gpt-6.1-sol medium pass
+      without child threads, focused or rules workers. A model name always uses
+      that model with the configured workers and effort.
     default: auto
   parent-reasoning-effort:
     description: Reasoning effort for the parent reviewer.
@@ -60,7 +64,8 @@ inputs:
   focused-workers:
     description: >-
       Advisory focused file slices per review. "auto" runs 2 when the PR changes
-      a stored-data, security or infrastructure path outside tests and docs, and
+      a stored-data, security or infrastructure path outside tests and Markdown,
+      or a review, merge-gate, prompt, rule-pack or agent-instruction path, and
       none otherwise; an integer from 0 to 4 sets the maximum (0 disables them).
       Incremental reviews run no workers.
     default: auto
@@ -668,21 +673,45 @@ runs:
         echo "Commits in scope:"
         cat .codex-ci/review-commits.txt
 
-    # The whole PR's paths, rename sources included, so every round uses one model.
-    - name: Resolve parent model
+    # The review level over the whole PR, rename sources included, so the paths
+    # decide every round alike (decision risk-triage).
+    - name: Resolve review level
       id: parent
       if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
       shell: bash
       env:
         PARENT_MODEL: ${{ inputs.parent-model }}
+        RULES_PATH: ${{ inputs.rules-path }}
+        PR_TITLE: ${{ steps.pr.outputs.title }}
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
+        PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
+        PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
       run: |
         set -euo pipefail
-        MODEL="$(git diff --name-only -z --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
-          node "$RUNNER_TEMP/open-review/engine/focused-workers.cjs" parent-model "$PARENT_MODEL")"
-        echo "model=$MODEL" >> "$GITHUB_OUTPUT"
-        echo "Parent model: $MODEL (input: $PARENT_MODEL)"
+        if [ "$PARENT_MODEL" != "auto" ]; then
+          if ! [[ "$PARENT_MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::parent-model must be auto or a plain model identifier"
+            exit 1
+          fi
+          { echo "model=$PARENT_MODEL"; echo "level=configured"; echo "helpers=true"; } >> "$GITHUB_OUTPUT"
+          echo "Parent model: $PARENT_MODEL (configured)"
+          exit 0
+        fi
+        LEVEL_JSON="$(node "$RUNNER_TEMP/open-review/engine/risk-triage.cjs" level "$PWD" "$MERGE_BASE_SHA" "$HEAD_SHA" \
+          "$PR_TITLE" "$RUNNER_TEMP/open-review/pr-body.txt" "$RULES_PATH")"
+        {
+          echo "level=$(jq -r '.level' <<<"$LEVEL_JSON")"
+          echo "model=$(jq -r '.parentModel' <<<"$LEVEL_JSON")"
+          echo "reasoning=$(jq -r '.reasoning // ""' <<<"$LEVEL_JSON")"
+          echo "workers=$(jq -r '.workers' <<<"$LEVEL_JSON")"
+          echo "rules_worker=$(jq -r '.rulesWorker' <<<"$LEVEL_JSON")"
+          echo "helpers=$(jq -r '.helpers' <<<"$LEVEL_JSON")"
+        } >> "$GITHUB_OUTPUT"
+        if [ -n "$(jq -r '.triage.error // ""' <<<"$LEVEL_JSON")" ]; then
+          echo "::warning::Risk triage failed ($(jq -r '.triage.error' <<<"$LEVEL_JSON")); the PR gets the high level"
+        fi
+        echo "Review level: $(jq -c '{level, parentModel, workers, rulesWorker, helpers, triage: (.triage // {} | {version, risk, error})}' <<<"$LEVEL_JSON")"
 
     # ── Codex Setup & Execution ──────────────────────────────
     - name: Setup Node.js
@@ -936,6 +965,9 @@ runs:
       env:
         FOCUSED_WORKERS: ${{ inputs.focused-workers }}
         RULES_WORKER: ${{ inputs.rules-worker }}
+        RULES_PATH: ${{ inputs.rules-path }}
+        LEVEL_WORKERS: ${{ steps.parent.outputs.workers }}
+        LEVEL_RULES_WORKER: ${{ steps.parent.outputs.rules_worker }}
         REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}
         WORKER_MODEL: ${{ inputs.worker-model }}
         WORKER_REASONING_EFFORT: ${{ inputs.worker-reasoning-effort }}
@@ -950,6 +982,13 @@ runs:
         if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
           echo "::warning::rules-worker must be true or false" >&2
           exit 1
+        fi
+        # The review level sets "auto" and can turn the rules worker off.
+        if [ "$FOCUSED_WORKERS" = "auto" ] && [ -n "${LEVEL_WORKERS:-}" ]; then
+          FOCUSED_WORKERS="$LEVEL_WORKERS"
+        fi
+        if [ "${LEVEL_RULES_WORKER:-}" = "false" ]; then
+          RULES_WORKER=false
         fi
         # Incremental reviews run the parent alone.
         if [ "${REVIEW_MODE:-}" = "incremental" ]; then
@@ -983,7 +1022,8 @@ runs:
       env:
         RESUME_SESSION_ID: ${{ steps.resume.outputs.session_id }}
         CODEX_MODEL: ${{ steps.parent.outputs.model }}
-        CODEX_REASONING: ${{ inputs.parent-reasoning-effort }}
+        CODEX_REASONING: ${{ steps.parent.outputs.reasoning || inputs.parent-reasoning-effort }}
+        REVIEW_HELPERS: ${{ steps.parent.outputs.helpers }}
         CODEX_SUBAGENT_MODEL: ${{ inputs.child-model }}
         CODEX_SUBAGENT_REASONING: ${{ inputs.child-reasoning-effort }}
         CODEX_WEB_SEARCH_MODE: disabled
@@ -1060,7 +1100,7 @@ runs:
             --strict-config \
             --model "$CODEX_MODEL" \
             -c 'sandbox_mode="read-only"' \
-            -c 'features.multi_agent_v2.enabled=true' \
+            -c "features.multi_agent_v2.enabled=$REVIEW_HELPERS" \
             -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
             -c 'features.multi_agent_v2.tool_namespace="agents"' \
             -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \

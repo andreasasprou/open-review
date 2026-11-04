@@ -26,7 +26,7 @@ structured output, not the model's verdict word.
 | Input | Default | Purpose |
 |---|---|---|
 | `rules-path` | (required) | Rule pack path. It is read from the default branch. |
-| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` uses `gpt-6-astra` when the PR changes a stored-data, security or infrastructure path outside tests and docs, and `gpt-6.1-sol` otherwise; a model name always uses that model |
+| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` sets the review level: a PR that changes a stored-data, security or infrastructure path outside tests and Markdown, or a review, merge-gate, prompt, rule-pack or agent-instruction path, gets `gpt-6-astra` with 2 focused workers; otherwise a GPT-6.1 Sol triage call through `provider-base-url` gives `gpt-6-astra` without focused workers, or one `gpt-6.1-sol` `medium` pass without child threads or workers. A failed triage call counts as high. A model name always uses that model with the configured workers and effort |
 | `child-model` / `child-reasoning-effort` | `gpt-6-luna` / `max` | Default for child agents |
 | `codex-cli-version` | `0.157.1` | Exact `@openai/codex` version |
 | `provider-base-url` / `provider-env-key` | (required) / empty | The Responses-API model provider, with an optional variable that holds a Bearer key |
@@ -38,7 +38,7 @@ structured output, not the model's verdict word.
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
 | `provider-session-resume` | `false` | Allows session resume through a custom provider |
-| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes a stored-data, security or infrastructure path outside tests and docs, and none otherwise; `0` to `4` sets the maximum. Incremental reviews run none |
+| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes one of the `parent-model` paths that get `gpt-6-astra` with workers, and none otherwise; `0` to `4` sets the maximum. Incremental reviews run none |
 | `worker-model` / `worker-reasoning-effort` | `gpt-6.1-sol` / `medium` | Focused and rules workers; empty uses these defaults |
 | `rules-worker` | `true` | Advisory check of the changed production files (tests, docs and generated files excluded) against the rule pack |
 | `review-budget-minutes` | `20` | Total hosted Codex budget across attempts (1–120 minutes) |
@@ -117,8 +117,15 @@ reasoning within 10 minutes (`OPEN_REVIEW_INCREMENTAL_REASONING`,
 files' whole PR patch. Anything else, including a retargeted PR or a force-push
 that changed the patch, gets a full review; `--full-review` asks for one. `--docs-only-paths '<globs>'` lets a PR
 that changes only those paths pass without a model; read the globs from a
-trusted ref, never from the PR head. Each such settlement keeps the exact-head
-marker and names the passed head and settlement it builds on.
+trusted ref, never from the PR head. Docs-only paths never cover a file on the
+review floor (code or MDX under `docs/`, review policy, prompts, rule packs or
+agent instructions). Each such settlement keeps the exact-head marker and names
+the passed head and settlement it builds on.
+
+`--model auto` (the default) sets the review level per PR with a GPT-6.1 Sol
+triage call; every PR gets a model review. Without `--provider-base-url` the
+triage call cannot run, and every PR outside the sensitive paths gets the
+high level.
 
 `eval/run-recall.sh --manifest <cases.json> --rules <path> --arm a=<ref> ...`
 reviews known pre-fix PR heads and scores how many known defects each rule-pack

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { selectSlices, excluded, parentModel, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
+const { selectSlices, productionPatch, excluded, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
 const { renderFocusedWorkerSection, readFocusedWorkers, loadPreviousState, postResults, MARKERS } = require('../engine/index.cjs');
 const { parseProjectionComment } = require('../engine/ledger/projection.cjs');
 const { createRecordingCaughtErrorDiagnosticRecorder } = require('./helpers/recording-recorder.cjs');
@@ -74,7 +74,6 @@ test('auto runs two workers only when a PR changes a stored-data, security or in
   // Generated production files and schema files still route as risky; only tests and docs do not.
   for (const file of ['db/migrations/0002.generated.sql', 'infra/generated/policy.tf', 'src/schema.ts', 'schemas/customer.ts']) {
     assert.equal(auto('src/view.tsx', file), 2, file);
-    assert.equal(parentModel('auto', [file]), 'gpt-6-astra', file);
   }
   // Moving security code out of a sensitive path still counts its source.
   const renamed = 'diff --git a/src/auth/session.ts b/src/session.ts\nsimilarity index 90%\nrename from src/auth/session.ts\n' +
@@ -86,22 +85,33 @@ test('auto runs two workers only when a PR changes a stored-data, security or in
   assert.throws(() => workerCount('5', ''), /auto or an integer from 0 to 4/);
 });
 
-test('auto parent model is GPT-6 Astra only on a risky PR and GPT-6.1 Sol otherwise', () => {
-  for (const file of ['db/migrations/0001_init.sql', 'src/auth/session.ts', 'src/lib/requireAuth.ts', 'infra/main.tf',
-    '.github/workflows/release.yml']) {
-    assert.equal(parentModel('auto', ['src/view.tsx', file]), 'gpt-6-astra', file);
-  }
-  for (const files of [['src/view.tsx', 'src/author.ts'], ['docs/security/policy.md'], ['src/auth/session.test.ts'], []]) {
-    assert.equal(parentModel('auto', files), 'gpt-6.1-sol', files.join(' '));
-  }
-  // A consumer with its own tiers names the model; that choice is kept either way.
-  assert.equal(parentModel('gpt-6-astra', ['src/view.tsx']), 'gpt-6-astra');
-  assert.equal(parentModel('gpt-6.1-sol', ['infra/main.tf']), 'gpt-6.1-sol');
-  assert.throws(() => parentModel('gpt-6" -c x', []), /plain model identifier/);
-  const command = (value, files) => execFileSync('node', [path.join(__dirname, '../engine/focused-workers.cjs'), 'parent-model', value],
-    { input: files.join('\0'), encoding: 'utf8' });
-  assert.equal(command('auto', ['src/view.tsx', 'db/old-name.sql']), 'gpt-6-astra\n');
-  assert.equal(command('auto', ['src/view.tsx']), 'gpt-6.1-sol\n');
+test('the floor keeps code and MDX under docs, and review policy, prompts, rule packs and agent instructions', () => {
+  const { sensitivePaths } = require('../engine/focused-workers.cjs');
+  const floor = ['docs/auth/handler.ts', 'docs/security/page.mdx', 'AGENTS.md', 'apps/api/CLAUDE.md', '.agents/skills/deliver/SKILL.md',
+    '.claude/settings.json', '.open-review/rules.md', '.github/prompts/code-review.md', '.github/CODEOWNERS',
+    '.github/scripts/codex-review/index.cjs', 'scripts/merge-gate.cjs', 'scripts/ci-merge-queue-gates.mjs', 'scripts/review-policy.cjs',
+    'engine/prompt/core.md', 'engine/risk-triage-prompt.txt'];
+  assert.deepEqual(sensitivePaths(floor), floor);
+  const prose = ['docs/security/policy.md', 'README.md', 'docs/guide.md', 'apps/web/src/prompt-input.tsx', 'src/auth/session.test.ts'];
+  assert.deepEqual(sensitivePaths(prose), []);
+});
+
+test('the floor covers the engine, the action and the configured rule pack', () => {
+  const { sensitivePaths } = require('../engine/focused-workers.cjs');
+  assert.deepEqual(sensitivePaths(['engine/run-local.sh', 'engine/risk-triage.cjs', 'action.yml', 'config/review-rules.md']),
+    ['engine/run-local.sh', 'engine/risk-triage.cjs', 'action.yml', 'config/review-rules.md']);
+  assert.deepEqual(sensitivePaths(['config/team-guide.md']), [], 'an unconfigured Markdown file is prose');
+  assert.deepEqual(sensitivePaths(['config/team-guide.md'], ['config/team-guide.md']), ['config/team-guide.md'], 'the configured rule pack');
+});
+
+test('floor-protected files keep their focused workers and their rules-worker hunks', () => {
+  const diff = (file) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-a\n+b\n`;
+  const protectedFiles = ['docs/auth/handler.ts', 'docs/security/page.mdx', 'AGENTS.md', 'config/team-guide.md'];
+  const patch = [...protectedFiles, 'docs/guide.md'].map(diff).join('');
+  assert.deepEqual(selectSlices(patch, 4, () => '', ['config/team-guide.md']).map((slice) => slice.file).sort(), [...protectedFiles].sort());
+  const rules = productionPatch(patch, () => '', ['config/team-guide.md']);
+  for (const file of protectedFiles) assert.ok(rules.includes(`diff --git a/${file} `), file);
+  assert.ok(!rules.includes('docs/guide.md'), 'prose stays out');
 });
 
 test('generated header and exclusions are applied before churn order', () => {
@@ -736,7 +746,7 @@ function localWorkerStages() {
 
 function localWorkerEnv(root, worktree, extra = {}) {
   return { ...process.env, WORKTREE: worktree, REVIEW_PROMPTS_DIR: root, RUN_DIR: root,
-    PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', RULES_WORKER: 'true', ENGINE_DIR: root, FOCUSED_WORKERS: '0',
+    PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', RULES_WORKER: 'true', RULES_PATH: '.open-review/rules.md', ENGINE_DIR: root, FOCUSED_WORKERS: '0',
     DIFF_BASE_SHA: 'a'.repeat(40), ACTIVE_CODEX_HOME: root, TIMEOUT_CMD: 'timeout', ...extra };
 }
 
@@ -809,8 +819,9 @@ test('local byte budget includes the exact comment frame and section separators'
   const env = { ...process.env, SETTLEMENT_BODY: bodyPath, RUN_DIR: root,
     SETTLEMENT_MARKER: 'marker', HEAD_SHA: 'a'.repeat(40),
     MERGE_GATE_SUMMARY: 'Merge gate: PASS', RULES_CHANGED: 'false',
-    REVIEW_MARKDOWN: 'é'.repeat(32_350), REQUIRED_CODEX_CLI_VERSION: '0.157.1',
+    REVIEW_MARKDOWN: 'é'.repeat(32_310), REQUIRED_CODEX_CLI_VERSION: '0.157.1',
     SANDBOX_BACKEND: 'read-only', MODEL_PROVIDER: 'chatgpt',
+    REVIEW_LEVEL: 'model-high', TRIAGE_NOTE: 'risk-triage-v2:high', CODEX_MODEL: 'gpt-6-astra',
     EXECUTION_EVIDENCE_OUTPUT: 'commands=1' };
   const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `${functionText}\nwrite_settlement_body false`], { env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);

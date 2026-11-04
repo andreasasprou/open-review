@@ -24,7 +24,8 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `auto` (`gpt-6-astra` on sensitive paths, else `gpt-6.1-sol`) | [parent-model-risk-gated](#parent-model-risk-gated) |
+| `parent-model` | `auto`: review level (floor-high and model-high `gpt-6-astra`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage) |
+| Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
 | `child-model` | `gpt-6-luna` | [gpt-6-children](#gpt-6-children) |
@@ -33,9 +34,9 @@ decision entry behind it.
 | `contract-investigator-reasoning-effort` | `high` | [finder-models](#finder-models) |
 | `worker-model` | `gpt-6.1-sol` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
 | `worker-reasoning-effort` | `medium` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
-| `focused-workers` | `auto` (2 on sensitive paths, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope) |
+| `focused-workers` | `auto` (2 at floor-high, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope), [risk-triage](#risk-triage) |
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
-| `rules-worker` | `true`; skipped on incremental reviews and on PRs without a production change | [rules-worker](#rules-worker), [review-scope](#review-scope), [review-cost-trims](#review-cost-trims) |
+| `rules-worker` | `true`; skipped on incremental reviews, at the normal level and on PRs without a production change | [rules-worker](#rules-worker), [review-scope](#review-scope), [review-cost-trims](#review-cost-trims), [risk-triage](#risk-triage) |
 | Rules worker input | production-file hunks and the rule pack | [review-cost-trims](#review-cost-trims) |
 | Codex skill list (parent, children, workers) | off (`skills.include_instructions=false`) | [review-cost-trims](#review-cost-trims) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
@@ -51,6 +52,144 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### risk-triage
+
+**2026-11-04.** Owner idea: set each PR's review level with a deterministic
+check and a quick model triage instead of the path rule alone, and pass
+trivial PRs without a model review. The levels below were calibrated as
+first proposed; the owner's decision after the calibration sets the routing
+(the "Decision" item).
+
+- Levels, decided in this order from base-owned code:
+  - **high**, without a model call: the PR changes a path of the
+    [focused-workers-risk-gated](#focused-workers-risk-gated) rule. The GPT-6
+    Astra parent and 2 workers review it. PR text is attacker-controlled, so
+    no model answer can lower this floor.
+  - **trivial**, without a model call: no such path, and either every path is
+    a docs-only path (agent instructions and review rules excluded) or the PR
+    changes at most 20 lines in at most 3 files. Only mechanical checks run.
+  - otherwise the triage model decides. GPT-6.1 Sol at `medium` effort reads
+    the title and description (capped, marked untrusted), the changed files
+    with sizes and test, doc or generated tags, and changed-line excerpts
+    capped at 9,000 characters (`engine/risk-triage.cjs`,
+    `engine/risk-triage-prompt.txt`). It answers strict JSON
+    `{risk: high|normal|docs, reasons, confidence}`. A high answer gets the
+    full review. A normal or docs answer gets one single-pass review by a
+    cheaper model, without children or workers, in about 5 minutes. A request
+    error, a timeout or an invalid answer counts as high. The model can only
+    raise a level: "docs" on a PR that changes code is normal.
+- Calibration set: a manifest in one consumer repository
+  (`.open-review/calibration/risk-triage.json`) of 187 of its 924 PRs merged
+  in 9 days. It holds 49 PRs whose review blocked on a P0 or P1 finding that
+  the next passing push fixed (required high), 14 blocked and cleared without
+  a change to the named file, 28 low-risk, 17 docs, 10 agent-instruction, and
+  a seeded random sample of 80 reviewed PRs for the high share. The path rule
+  alone marks 39 of the 49 required PRs high, 37 of the 80 sampled PRs (46%),
+  and 42% of all 924 merged PRs.
+- Rule for prompt `risk-triage-v1`, declared before the run:
+  1. the final level is high on all 49 required PRs;
+  2. the final high share on the sample is at most 55% (owner target
+     40–50%);
+  3. no agent-instruction PR ends as docs;
+  4. at most 2% of calls fail;
+  5. the 90th-percentile latency is at most 30 s.
+  Pool capacity allows two runs: v1 and, if v1 fails, one revised prompt. A
+  revised prompt is tuned on this set, so its result is optimistic.
+- Trivial threshold, measured without a model on the 924 merged PRs and on
+  the 63 blocked PRs at the head the block was raised on: no blocked PR is
+  trivial at any threshold up to 100 lines in 5 files. The smallest blocked
+  PR outside the path rule changed 135 lines in 7 files; three smaller
+  blocked PRs (4 to 44 lines) are high through the path rule. At 20 lines and
+  3 files, 8% of merged PRs are trivial. Their reviews raised no P0 or P1
+  finding, 2 parent P2 findings (both on documentation text), 7 focused-worker
+  P2 findings and 91 repository-rule P2 findings. At 100 lines and 5 files, a
+  PR with a P1 finding (a CI script outside the workflow directory) would be
+  trivial. Keep the threshold at or below 50 lines in 3 files (11%).
+- Normal-level reviewer, not yet run because of pool capacity: GPT-6.1 Terra
+  at `low` and at `medium` against GPT-6.1 Sol at `medium`, each a single
+  pass without children or workers, on the development set's PRs outside the
+  path rule. Rule, declared now: adopt the cheapest arm that finds at least as
+  many known defects as GPT-6.1 Sol `medium` with no more invalid blocking
+  findings; screen with 1 sample, and use 3 when the screen is within 1
+  defect.
+- As proposed, a trivial PR would still get an exact-head PASS settlement
+  that a consumer's merge gate re-derives. The engine dropped this level (see
+  the Decision item).
+- Result, `risk-triage-v1` (digest `51c2f4f7fd66`): high on 49 of 49
+  required PRs (the model alone on 49 of 49, the path rule on 39) and on all
+  14 cleared ones; 81% of the sample high; 2 of 28 low-risk PRs high; 7 of 17
+  docs PRs docs, 10 high; no agent-instruction PR docs; no failed call.
+  Mean 3,090 input and 79 output tokens, 0.174 credits per call; latency
+  median 4.2 s, 90th percentile 6.9 s. Fails rule 2.
+- Result, `risk-triage-v2` (digest `b5580e8edfc4`; tuned on this set, so
+  optimistic): high on 49 of 49 required PRs (the model alone on 49 of 49)
+  and on all 14 cleared ones; 78% of the sample high (76% after the trivial
+  level); no low-risk PR high; 16 of 17 docs PRs docs; all 10
+  agent-instruction PRs normal; no failed call. 0.174 credits per call;
+  latency median 3.8 s, 90th percentile 6.6 s, maximum 11.8 s. Fails rule 2.
+  The `confidence` field carries no signal: means of 0.96 to 0.99 for every
+  tier.
+- Why the share stays high: the path rule alone covers 46% of the sample, and
+  the model marks 65% of the remaining non-trivial PRs high. 7 of the 10
+  required PRs outside the path rule were blocked over a compatibility path,
+  which the prompt must therefore treat as high; most other PRs in this
+  consumer also change contracts between separately deployed parts. Adding a
+  size cut to the model's high answers gives 71% high at 135 lines with no
+  loss, and 56% at 500 lines while losing 4 of the 13 blocked PRs outside the
+  path rule.
+- Credits per review on that consumer (771 measured runs, list rates): today
+  167 on average. Proposed: trivial 0; normal 19 with a GPT-6.1 Sol single
+  pass, or 9 with GPT-6.1 Terra, both estimated from the parent's measured
+  tokens, plus 0.17 for the triage call; high 141 to 165 with 2 GPT-6.1 Sol
+  workers. With the v2 shares (75% high, 17% normal, 8% trivial) a week costs
+  65% to 76% of today, before the savings of [review-scope](#review-scope).
+  Reviewing the trivial share at the normal level adds about 1% of today.
+- The share rule failed in both runs. A 40–50% high share would cost
+  blocking-defect recall on this consumer, so the owner chose a cheaper
+  review for PRs that only the model marks high.
+- Decision (owner, 2026-11-04): `parent-model: auto` routes by review level,
+  with `risk-triage-v2` as the triage prompt (`engine/risk-triage.cjs`
+  `LEVELS`):
+  - floor-high, the path rule: GPT-6 Astra, 2 focused workers, the rules
+    worker;
+  - model-high, a high, failed or missing triage answer: GPT-6 Astra with its
+    child threads and the rules worker, no focused workers;
+  - normal: one GPT-6.1 Sol pass at `medium`, without child threads, focused
+    workers or the rules worker;
+  - An explicit `parent-model` keeps the configured model, workers and effort.
+    An explicit `focused-workers` count overrides the level's.
+- No trivial level in the engine. An independent review of the first wiring
+  found that a no-model pass reopened bypasses that one consumer's own gate
+  had to close: binary, mode and symlink changes counted as 0 lines;
+  minified lines; code and MDX under `docs/` exempt from the floor; quoted
+  paths missing the floor; review-policy files passing unreviewed; and an
+  unreadable comment history read as "no BLOCK". Other consumers accept
+  engine settlements without re-checking them. Tiny PRs therefore get the
+  normal pass. A consumer may skip review for trivial PRs only in its own
+  merge gate, which must re-derive the level from base-owned code; one
+  consumer does. An engine-level trivial pass is reconsidered only together
+  with a gate-side re-check in every consumer that uses it.
+- The floor (`sensitivePaths` in `engine/focused-workers.cjs`) also covers
+  review and merge machinery, prompts, rule packs (the configured rule-pack
+  path included), agent instructions, `.github/`, `engine/` and `action.yml`,
+  even as Markdown, because a PR could weaken its own review through them.
+  Only tests and Markdown prose are exempt, so code and MDX under `docs/`
+  count. Paths are read NUL-delimited, so quoted names still match.
+- The floor wins over a consumer's docs-only paths: a PR or a push after a
+  pass that changes a floor file is neither skipped nor carried as docs-only.
+  Floor files stay eligible for focused workers and in the rules worker's
+  patch even when they are docs or tests.
+- `risk-triage.cjs` and its prompt are trusted runner files. A `risk` that is
+  not exactly one of the strings is an invalid answer, which counts as high.
+  Unreadable PR comments give a full review, never "no earlier settlement".
+- Measured shares at that consumer before the wider floor: about 42%
+  floor-high, 32% model-high and 25% normal of merged PRs.
+- The normal-level reviewer comparison above (GPT-6.1 Terra against GPT-6.1
+  Sol) runs when pool capacity allows.
+- Reopen when a review blocks on a P0 or P1 finding in a PR the triage marked
+  normal, when the normal-level comparison favours another model, or when the
+  calibration drifts (see the [evaluation protocol](evaluation-protocol.md#risk-triage-calibration)).
 
 ### review-cost-trims
 

@@ -21,9 +21,13 @@ Options:
                          (10m for an incremental review).
   --kill-after <duration>
                          Extra time before force-killing after timeout. Default: 60s.
-  --model <model|auto>   Parent model. auto: gpt-6-astra when the PR changes a stored-data,
-                         security or infrastructure path outside tests and docs, else
-                         gpt-6.1-sol. Default: CODEX_MODEL or auto.
+  --model <model|auto>   Parent model. auto sets the review level (engine/risk-triage.cjs):
+                         a stored-data, security or infrastructure path outside tests and
+                         Markdown, or a review, merge-gate, prompt, rule-pack or agent-
+                         instruction path, gets gpt-6-astra with focused workers; otherwise a GPT-6.1
+                         Sol triage call picks gpt-6-astra without focused workers, or one
+                         gpt-6.1-sol medium pass without helpers or workers.
+                         Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
   --focused-workers <auto|n>
                          Advisory focused file slices. Default: auto (2 when the PR
@@ -307,6 +311,8 @@ TRUSTED_RUNNER_FILES=(
   "ledger/evidence.cjs"
   "change-impact.cjs"
   "review-scope.cjs"
+  "risk-triage.cjs"
+  "risk-triage-prompt.txt"
 )
 
 # A consumer may pin the engine to the same commit as its hosted action.
@@ -592,14 +598,40 @@ if ! git -C "$ROOT" cat-file -e "$PR_START_BASE_SHA^{commit}" 2>/dev/null &&
   exit 1
 fi
 PR_START_MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$PR_START_BASE_SHA" "$HEAD_SHA")"
-# The parent model follows the same risk rule as the focused workers, over the
-# whole PR's paths (rename sources included), so every round uses one model.
-if ! CODEX_MODEL="$(git -C "$ROOT" diff --name-only -z --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
-  node "$ENGINE_DIR/focused-workers.cjs" parent-model "$CODEX_MODEL")"; then
-  echo "error: could not resolve the parent model; see the message above" >&2
+# The review level, over the whole PR (rename sources included), so the paths
+# decide every round alike; only PRs outside the sensitive paths get a triage
+# call (decision risk-triage). An explicit model keeps the configured workers
+# and reasoning.
+REVIEW_LEVEL="configured"
+REVIEW_HELPERS="true"
+TRIAGE_NOTE="none"
+if [ "$CODEX_MODEL" = "auto" ]; then
+  printf '%s\n' "$PR_BODY" > "$RUN_DIR/triage-body.txt"
+  if ! LEVEL_JSON="$(PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
+    node "$ENGINE_DIR/risk-triage.cjs" level "$ROOT" "$MERGE_BASE_SHA" "$HEAD_SHA" "$PR_TITLE" "$RUN_DIR/triage-body.txt" "$RULES_PATH")"; then
+    echo "error: could not resolve the review level; see the message above" >&2
+    exit 1
+  fi
+  printf '%s\n' "$LEVEL_JSON" > "$RUN_DIR/review-level.json"
+  REVIEW_LEVEL="$(jq -r '.level' <<<"$LEVEL_JSON")"
+  CODEX_MODEL="$(jq -r '.parentModel' <<<"$LEVEL_JSON")"
+  REVIEW_HELPERS="$(jq -r '.helpers' <<<"$LEVEL_JSON")"
+  LEVEL_REASONING="$(jq -r '.reasoning // ""' <<<"$LEVEL_JSON")"
+  if [ -n "$LEVEL_REASONING" ]; then
+    CODEX_REASONING="$LEVEL_REASONING"
+    INCREMENTAL_REASONING="$LEVEL_REASONING"
+  fi
+  if [ "$FOCUSED_WORKERS" = "auto" ]; then FOCUSED_WORKERS="$(jq -r '.workers' <<<"$LEVEL_JSON")"; fi
+  if [ "$(jq -r '.rulesWorker' <<<"$LEVEL_JSON")" = "false" ]; then RULES_WORKER=false; fi
+  TRIAGE_NOTE="$(jq -r 'if .triage == null then "none" else "\(.triage.version):\(.triage.risk // .triage.error)" end' <<<"$LEVEL_JSON")"
+  if [ "$(jq -r '.triage.error // ""' <<<"$LEVEL_JSON")" != "" ]; then
+    echo "warning: risk triage failed ($(jq -r '.triage.error' <<<"$LEVEL_JSON")); the PR gets the high level" >&2
+  fi
+elif ! [[ "$CODEX_MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: --model must be auto or a plain model identifier" >&2
   exit 1
 fi
-echo "Parent model: $CODEX_MODEL" | tee -a "$RUN_DIR/summary.txt"
+echo "Review level: $REVIEW_LEVEL (triage $TRIAGE_NOTE); parent model $CODEX_MODEL, reasoning $CODEX_REASONING, focused workers $FOCUSED_WORKERS, rules worker $RULES_WORKER, helpers $REVIEW_HELPERS" | tee -a "$RUN_DIR/summary.txt"
 "$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble \
   --rules "$REVIEW_PROMPTS_DIR/rules.md" \
   --parent-model "$CODEX_MODEL" \
@@ -679,18 +711,20 @@ publish_settlement() {
 SCOPE_JSON='{"mode":"full","reason":"unscoped_run","files":[]}'
 if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ "$HEAD_SHA" = "$REMOTE_HEAD_SHA" ] &&
    [ "$BASE_SHA" = "$(jq -r '.baseRefOid' "$RUN_DIR/pr.json")" ]; then
+  # Unread comments could hide a BLOCK, so they never read as "no settlement".
+  SCOPE_STATUS=0
   if ! gh api --paginate --slurp "repos/$CURRENT_REPOSITORY/issues/$PR_NUMBER/comments" \
     > "$RUN_DIR/pr-comments.json" 2>>"$SETUP_LOG"; then
-    echo "warning: PR comments are unreadable, so no earlier pass can scope this review; see $SETUP_LOG" >&2
-    printf '[]\n' > "$RUN_DIR/pr-comments.json"
-  fi
-  SCOPE_STATUS=0
-  SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
-    "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
-  if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
-  if [ "$SCOPE_STATUS" -eq 0 ]; then
-    SCOPE_JSON="$SCOPE_OUTPUT"
+    echo "warning: PR comments are unreadable; reviewing the whole PR. See $SETUP_LOG" >&2
+    SCOPE_JSON='{"mode":"full","reason":"settlement_history_unreadable","files":[]}'
   else
+    SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
+      "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" "$RULES_PATH" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
+  fi
+  if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
+  if [ -n "${SCOPE_OUTPUT:-}" ] && [ "$SCOPE_STATUS" -eq 0 ]; then
+    SCOPE_JSON="$SCOPE_OUTPUT"
+  elif [ "$SCOPE_STATUS" -ne 0 ]; then
     echo "warning: review scope is unavailable; reviewing the whole PR. See $SETUP_LOG" >&2
     SCOPE_JSON='{"mode":"full","reason":"scope_unavailable","files":[]}'
   fi
@@ -1095,7 +1129,7 @@ fi
 if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
    rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
    cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md"; then
-  (cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" \
+  (cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" RULES_PATH="$RULES_PATH" \
     WORKER_MODEL="${OPEN_REVIEW_WORKER_MODEL:-}" WORKER_REASONING_EFFORT="${OPEN_REVIEW_WORKER_REASONING_EFFORT:-}" \
     exec node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
       "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}") \
@@ -1124,7 +1158,7 @@ if [ "$STREAM_RAW" = "true" ]; then
         -c 'allow_login_shell=false' \
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
-        -c 'features.multi_agent_v2.enabled=true' \
+        -c "features.multi_agent_v2.enabled=$REVIEW_HELPERS" \
         -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
@@ -1153,7 +1187,7 @@ else
         -c 'allow_login_shell=false' \
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
-        -c 'features.multi_agent_v2.enabled=true' \
+        -c "features.multi_agent_v2.enabled=$REVIEW_HELPERS" \
         -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
@@ -1326,8 +1360,8 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
         cat "$RUN_DIR/focused-worker-section.md"
         printf '\n\n'
       fi
-      printf 'Local Code Review settlement: head=%s; runner=trusted-local; codex_cli=%s; sandbox_backend=%s; model_provider=%s; %s.\n' \
-        "$HEAD_SHA" "$REQUIRED_CODEX_CLI_VERSION" "$SANDBOX_BACKEND" "$MODEL_PROVIDER" "$EXECUTION_EVIDENCE_OUTPUT"
+      printf 'Local Code Review settlement: head=%s; runner=trusted-local; review_level=%s; triage=%s; model=%s; codex_cli=%s; sandbox_backend=%s; model_provider=%s; %s.\n' \
+        "$HEAD_SHA" "$REVIEW_LEVEL" "$TRIAGE_NOTE" "$CODEX_MODEL" "$REQUIRED_CODEX_CLI_VERSION" "$SANDBOX_BACKEND" "$MODEL_PROVIDER" "$EXECUTION_EVIDENCE_OUTPUT"
     } > "$SETTLEMENT_BODY"
   }
 

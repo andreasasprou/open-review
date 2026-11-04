@@ -302,7 +302,7 @@ test('incremental reviews start no focused or rules workers', (t) => {
   }
 });
 
-test('the hosted parent model follows the PR risk rule and reaches every model consumer', (t) => {
+test('the hosted review level follows the PR paths and the triage, and reaches every model consumer', (t) => {
   const f = fixture(t, false, false);
   const runnerTemp = mkdtempSync(join(tmpdir(), 'open-review-parent-temp-'));
   t.after(() => rmSync(runnerTemp, { recursive: true, force: true }));
@@ -317,27 +317,28 @@ test('the hosted parent model follows the PR risk rule and reaches every model c
   git(f.root, 'add', 'db');
   git(f.root, 'commit', '-qm', 'migration');
   const risky = git(f.root, 'rev-parse', 'HEAD');
+  writeFileSync(join(runnerTemp, 'open-review/pr-body.txt'), 'Adds a view.\n');
   const model = (head, input) => {
     writeFileSync(f.output, '');
-    const result = runShell(block('Resolve parent model', 'run'), f.root, {
-      PARENT_MODEL: input, HEAD_SHA: head, MERGE_BASE_SHA: f.base, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: f.output,
+    // No provider: the triage call fails and the PR gets the high level.
+    const result = runShell(block('Resolve review level', 'run'), f.root, {
+      PARENT_MODEL: input, RULES_PATH: '.open-review/rules.md', PR_TITLE: 'A view', HEAD_SHA: head, MERGE_BASE_SHA: f.base, RUNNER_TEMP: runnerTemp,
+      GITHUB_OUTPUT: f.output, PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '',
     });
     assert.equal(result.status, 0, result.stderr);
     return readFileSync(f.output, 'utf8');
   };
-  assert.equal(model(standard, 'auto'), 'model=gpt-6.1-sol\n');
-  assert.equal(model(risky, 'auto'), 'model=gpt-6-astra\n');
-  assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\n');
-  // A non-ASCII path, which git quotes in line output, still routes as risky (review round 2).
-  git(f.root, 'checkout', '-qb', 'workflow', standard);
-  mkdirSync(join(f.root, '.github/workflows'), { recursive: true });
-  writeFileSync(join(f.root, '.github/workflows/déploy.yml'), 'on: push\n');
-  git(f.root, 'add', '.github');
-  git(f.root, 'commit', '-qm', 'workflow');
-  assert.equal(model(git(f.root, 'rev-parse', 'HEAD'), 'auto'), 'model=gpt-6-astra\n');
+  assert.equal(model(standard, 'auto'),
+    'level=model-high\nmodel=gpt-6-astra\nreasoning=\nworkers=0\nrules_worker=true\nhelpers=true\n');
+  assert.equal(model(risky, 'auto'),
+    'level=floor-high\nmodel=gpt-6-astra\nreasoning=\nworkers=2\nrules_worker=true\nhelpers=true\n');
+  assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\nlevel=configured\nhelpers=true\n');
   assert.match(action, /\n  parent-model:\n[\s\S]*?\n    default: auto\n/);
   assert.equal(action.match(/steps\.parent\.outputs\.model/g).length, 3);
-  assert.ok(action.indexOf('    - name: Resolve parent model') < action.indexOf('    - name: Restore prior review session'));
+  for (const output of ['reasoning', 'workers', 'rules_worker', 'helpers']) {
+    assert.ok(action.includes(`steps.parent.outputs.${output}`), output);
+  }
+  assert.ok(action.indexOf('    - name: Resolve review level') < action.indexOf('    - name: Restore prior review session'));
 });
 
 test('the parent opens at most two child threads, hosted and local', () => {
