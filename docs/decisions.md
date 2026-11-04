@@ -32,18 +32,59 @@ decision entry behind it.
 | `contract-investigator-reasoning-effort` | `high` | [finder-models](#finder-models) |
 | `worker-model` | `gpt-6.1-sol` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
 | `worker-reasoning-effort` | `medium` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
-| `focused-workers` | `auto` (2 on sensitive paths, else 0) | [focused-workers-risk-gated](#focused-workers-risk-gated) |
+| `focused-workers` | `auto` (2 on sensitive paths, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope) |
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
-| `rules-worker` | `true` | [rules-worker](#rules-worker) |
+| `rules-worker` | `true`; skipped on incremental reviews | [rules-worker](#rules-worker), [review-scope](#review-scope) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
 | `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
 | `review-budget-minutes` | `20` | [review-budget](#review-budget) |
+| Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
+| `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
+| `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `10m` | [review-scope](#review-scope) |
+| `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
 
 ## Decisions
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### review-scope
+
+**2026-11-04.** Owner decision on cost, from an offline replay without a
+model run. On one consumer, 48% of review tokens over 9 days went to full
+re-reviews of PRs whose previous head had passed. The median push after a pass
+changed 19 lines, about 5% of the PR.
+
+- Decision: a publishing local run first classifies the head without a model
+  (`engine/review-scope.cjs`), from git and the PR's settlement comments by
+  repository writers:
+  - every changed path matches the consumer's `--docs-only-paths` (none by
+    default): PASS without a model;
+  - the latest settlement passed and the PR's patch is the same file for file
+    (a rebase, a merge from the base branch, a rerun) or now differs only in
+    docs-only paths: the pass is carried;
+  - the latest settlement passed on an ancestor of this head: an incremental
+    review of the files whose patch changed since, by the parent alone at
+    `high` reasoning within 10 minutes;
+  - anything else, including a latest BLOCK, a passed head that was
+    force-rewritten, or `--full-review`: a full review.
+- Every carried, skipped or incremental settlement uses the exact-head
+  marker and names the passed head and settlement it builds on.
+- Incremental reviews, hosted and local, run no focused or rules workers.
+  After a merge from the base branch, a hosted review covers the files whose
+  PR patch changed instead of the whole PR.
+- Replay of the 9 days through these rules, with the focused-worker cut:
+  45–53% of the earlier review tokens. It lost 0 of 21 acted-on blocking
+  findings and about 10% of acted-on advisory findings after adjusting for
+  chance, 14% counting repository-convention findings. Most lost findings
+  were older problems that a later full re-review spotted on unchanged code.
+- Evaluation rule, declared before the run: replay 30 PRs with 2 or more
+  reviewed heads. The incremental review must find every blocking finding
+  inside the new change and lose no more than 10% of acted-on P2 findings.
+  Not yet run.
+- Reopen when that evaluation fails, or when blocking findings per 100 PRs
+  (13 in the baseline) or fix-up PRs after merge rise.
 
 ### focused-workers-risk-gated
 

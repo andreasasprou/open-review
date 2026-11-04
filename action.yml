@@ -58,6 +58,7 @@ inputs:
       Advisory focused file slices per review. "auto" runs 2 when the PR changes
       a stored-data, security or infrastructure path outside tests and docs, and
       none otherwise; an integer from 0 to 4 sets the maximum (0 disables them).
+      Incremental reviews run no workers.
     default: auto
   worker-model:
     description: Codex model for the focused and rules workers. Empty uses the engine default (gpt-6.1-sol).
@@ -66,7 +67,7 @@ inputs:
     description: Reasoning effort for the focused and rules workers. Empty uses the engine default (medium).
     default: ""
   rules-worker:
-    description: Check every changed file against the repository's written rules (AGENTS.md and the guidance it points to) as an advisory summary section ("true" or "false").
+    description: Check every changed file against the repository's written rules (AGENTS.md and the guidance it points to) as an advisory summary section ("true" or "false"). Incremental reviews skip it.
     default: "true"
   codex-cli-version:
     description: Exact @openai/codex version to install and verify.
@@ -516,8 +517,18 @@ runs:
                 fi
               elif ! git merge-base --is-ancestor "$MERGE_BASE_SHA" "$SINCE"; then
                 # Base-branch commits reached the PR after the last pass (a merge
-                # from main). `SINCE..HEAD` would show their changes as PR changes.
+                # from main). `SINCE..HEAD` would show their changes as PR changes,
+                # so review only the files whose PR patch changed since. A patch
+                # that is unchanged, unreadable, or changed in a file that is the
+                # same at both heads keeps the full review.
                 REASON="merge_base_moved"
+                if DELTA="$(node "$RUNNER_TEMP/open-review/engine/review-scope.cjs" delta "$PWD" "$BASE_SHA" "$SINCE" "$HEAD_SHA")" &&
+                   jq -e '(.files | length) > 0 and .moved' <<<"$DELTA" >/dev/null; then
+                  MODE="incremental"
+                  DIFF_BASE="$SINCE"
+                  REASON="merge_base_moved_patch_changed"
+                  jq -r '.files[]' <<<"$DELTA" > "$RUNNER_TEMP/open-review/incremental-files.txt"
+                fi
               else
                 MODE="incremental"
                 DIFF_BASE="$SINCE"
@@ -623,12 +634,17 @@ runs:
         git diff --name-only "$MERGE_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files-full.txt
 
         if [ "$REVIEW_MODE" = "incremental" ] && git cat-file -e "${DIFF_BASE_SHA}^{commit}" 2>/dev/null; then
-          # Incremental diff scoped to PR files only.
-          if [ -s .codex-ci/changed-files-full.txt ]; then
+          # Incremental diff scoped to PR files only; after a merge from the
+          # base branch, to the files whose PR patch changed.
+          scope_files=.codex-ci/changed-files-full.txt
+          if [ -s "$RUNNER_TEMP/open-review/incremental-files.txt" ]; then
+            scope_files="$RUNNER_TEMP/open-review/incremental-files.txt"
+          fi
+          if [ -s "$scope_files" ]; then
             changed_files=()
             while IFS= read -r changed_file; do
               changed_files+=("$changed_file")
-            done < .codex-ci/changed-files-full.txt
+            done < "$scope_files"
             git diff "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${changed_files[@]}" \
               > .codex-ci/pr-diff.patch
             git diff --name-only "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${changed_files[@]}" \
@@ -915,6 +931,7 @@ runs:
       env:
         FOCUSED_WORKERS: ${{ inputs.focused-workers }}
         RULES_WORKER: ${{ inputs.rules-worker }}
+        REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}
         WORKER_MODEL: ${{ inputs.worker-model }}
         WORKER_REASONING_EFFORT: ${{ inputs.worker-reasoning-effort }}
         DIFF_BASE_SHA: ${{ steps.scope.outputs.diff_base_sha }}
@@ -928,6 +945,11 @@ runs:
         if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
           echo "::warning::rules-worker must be true or false" >&2
           exit 1
+        fi
+        # Incremental reviews run the parent alone.
+        if [ "${REVIEW_MODE:-}" = "incremental" ]; then
+          FOCUSED_WORKERS=0
+          RULES_WORKER=false
         fi
         WORKER_STATE="$RUNNER_TEMP/open-review/focused-workers"
         WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)"

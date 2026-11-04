@@ -38,7 +38,7 @@ structured output, not the model's verdict word.
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
 | `provider-session-resume` | `false` | Allows session resume through a custom provider |
-| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes a stored-data, security or infrastructure path outside tests and docs, and none otherwise; `0` to `4` sets the maximum |
+| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes a stored-data, security or infrastructure path outside tests and docs, and none otherwise; `0` to `4` sets the maximum. Incremental reviews run none |
 | `worker-model` / `worker-reasoning-effort` | `gpt-6.1-sol` / `medium` | Focused and rules workers; empty uses these defaults |
 | `rules-worker` | `true` | Advisory check of every changed file, tests included, against `AGENTS.md` and the guidance it points to |
 | `review-budget-minutes` | `20` | Total hosted Codex budget across attempts (1–120 minutes) |
@@ -106,6 +106,18 @@ machine's `codex` is another version, it installs the pinned version once into
 `${XDG_CACHE_HOME:-~/.cache}/open-review/codex/<version>` and uses it for that
 run only. It needs model credentials: `--provider-base-url <url>`, or a
 ChatGPT login (`codex login`).
+
+A publishing run reviews only what changed since the PR last passed. When the
+latest settlement on the PR passed and the PR's patch is the same file for file
+(a rebase, a merge from the base branch, a rerun), it carries that pass without
+a model. When the passed head is an ancestor of the current head, the parent
+alone reviews the files whose patch changed since, at `high` reasoning within
+10 minutes (`OPEN_REVIEW_INCREMENTAL_REASONING`, `OPEN_REVIEW_INCREMENTAL_TIMEOUT`).
+Anything else, including a force-push that changed the patch, gets a full
+review; `--full-review` asks for one. `--docs-only-paths '<globs>'` lets a PR
+that changes only those paths pass without a model; read the globs from a
+trusted ref, never from the PR head. Each such settlement keeps the exact-head
+marker and names the passed head and settlement it builds on.
 
 `eval/run-recall.sh --manifest <cases.json> --rules <path> --arm a=<ref> ...`
 reviews known pre-fix PR heads and scores how many known defects each rule-pack
