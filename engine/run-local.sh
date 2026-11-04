@@ -23,7 +23,8 @@ Options:
                          Extra time before force-killing after timeout. Default: 60s.
   --model <model|auto>   Parent model. auto sets the review level (engine/risk-triage.cjs):
                          a stored-data, security or infrastructure path outside tests and
-                         docs gets gpt-6-astra with focused workers; otherwise a GPT-6.1
+                         Markdown, or a review, merge-gate, prompt, rule-pack or agent-
+                         instruction path, gets gpt-6-astra with focused workers; otherwise a GPT-6.1
                          Sol triage call picks gpt-6-astra without focused workers, or one
                          gpt-6.1-sol medium pass without helpers or workers.
                          Default: CODEX_MODEL or auto.
@@ -39,10 +40,6 @@ Options:
                          review (`**` crosses directories). A PR changing only these
                          passes without a model. Default: OPEN_REVIEW_DOCS_ONLY_PATHS, or
                          none. Pass them from a trusted ref, never from the PR head.
-  --trivial-limit <lines/files|off>
-                         A PR without a sensitive path that changes at most this many lines
-                         in at most this many files passes without a model, unless its
-                         latest review blocked. Default: OPEN_REVIEW_TRIVIAL_LIMIT or 50/3.
   --full-review          Review the whole PR even after a passed review.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
   --use-user-codex-home  Use the current CODEX_HOME/~/.codex instead of a clean temp home.
@@ -108,7 +105,6 @@ CODEX_WEB_SEARCH_MODE="${CODEX_WEB_SEARCH_MODE:-disabled}"
 FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-auto}"
 RULES_WORKER="${OPEN_REVIEW_RULES_WORKER:-true}"
 DOCS_ONLY_PATHS="${OPEN_REVIEW_DOCS_ONLY_PATHS:-}"
-TRIVIAL_LIMIT="${OPEN_REVIEW_TRIVIAL_LIMIT:-50/3}"
 FULL_REVIEW="${OPEN_REVIEW_FULL_REVIEW:-false}"
 INCREMENTAL_REASONING="${OPEN_REVIEW_INCREMENTAL_REASONING:-high}"
 INCREMENTAL_TIMEOUT="${OPEN_REVIEW_INCREMENTAL_TIMEOUT:-10m}"
@@ -171,10 +167,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --docs-only-paths)
       DOCS_ONLY_PATHS="${2:-}"
-      shift 2
-      ;;
-    --trivial-limit)
-      TRIVIAL_LIMIT="${2:-}"
       shift 2
       ;;
     --full-review)
@@ -244,10 +236,6 @@ if ! [[ "$FOCUSED_WORKERS" =~ ^([0-4]|auto)$ ]]; then
 fi
 if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
   echo "error: --rules-worker must be true or false" >&2
-  exit 1
-fi
-if ! [[ "$TRIVIAL_LIMIT" =~ ^(off|[0-9]{1,4}/[0-9]{1,3})$ ]]; then
-  echo "error: --trivial-limit must be <lines>/<files> or off" >&2
   exit 1
 fi
 if ! [[ "$FULL_REVIEW" =~ ^(true|false)$ ]]; then
@@ -323,6 +311,8 @@ TRUSTED_RUNNER_FILES=(
   "ledger/evidence.cjs"
   "change-impact.cjs"
   "review-scope.cjs"
+  "risk-triage.cjs"
+  "risk-triage-prompt.txt"
 )
 
 # A consumer may pin the engine to the same commit as its hosted action.
@@ -609,16 +599,16 @@ if ! git -C "$ROOT" cat-file -e "$PR_START_BASE_SHA^{commit}" 2>/dev/null &&
 fi
 PR_START_MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$PR_START_BASE_SHA" "$HEAD_SHA")"
 # The review level, over the whole PR (rename sources included), so the paths
-# decide every round alike; only PRs outside the sensitive paths and the trivial
-# limit get a triage call (decision risk-triage). An explicit model keeps the
-# configured workers and reasoning.
+# decide every round alike; only PRs outside the sensitive paths get a triage
+# call (decision risk-triage). An explicit model keeps the configured workers
+# and reasoning.
 REVIEW_LEVEL="configured"
 REVIEW_HELPERS="true"
 TRIAGE_NOTE="none"
 if [ "$CODEX_MODEL" = "auto" ]; then
   printf '%s\n' "$PR_BODY" > "$RUN_DIR/triage-body.txt"
   if ! LEVEL_JSON="$(PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
-    node "$ENGINE_DIR/risk-triage.cjs" level "$ROOT" "$MERGE_BASE_SHA" "$HEAD_SHA" "$PR_TITLE" "$RUN_DIR/triage-body.txt" "$TRIVIAL_LIMIT")"; then
+    node "$ENGINE_DIR/risk-triage.cjs" level "$ROOT" "$MERGE_BASE_SHA" "$HEAD_SHA" "$PR_TITLE" "$RUN_DIR/triage-body.txt")"; then
     echo "error: could not resolve the review level; see the message above" >&2
     exit 1
   fi
@@ -721,18 +711,20 @@ publish_settlement() {
 SCOPE_JSON='{"mode":"full","reason":"unscoped_run","files":[]}'
 if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ "$HEAD_SHA" = "$REMOTE_HEAD_SHA" ] &&
    [ "$BASE_SHA" = "$(jq -r '.baseRefOid' "$RUN_DIR/pr.json")" ]; then
+  # Unread comments could hide a BLOCK, so they never read as "no settlement".
+  SCOPE_STATUS=0
   if ! gh api --paginate --slurp "repos/$CURRENT_REPOSITORY/issues/$PR_NUMBER/comments" \
     > "$RUN_DIR/pr-comments.json" 2>>"$SETUP_LOG"; then
-    echo "warning: PR comments are unreadable, so no earlier pass can scope this review; see $SETUP_LOG" >&2
-    printf '[]\n' > "$RUN_DIR/pr-comments.json"
-  fi
-  SCOPE_STATUS=0
-  SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
-    "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" "$TRIVIAL_LIMIT" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
-  if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
-  if [ "$SCOPE_STATUS" -eq 0 ]; then
-    SCOPE_JSON="$SCOPE_OUTPUT"
+    echo "warning: PR comments are unreadable; reviewing the whole PR. See $SETUP_LOG" >&2
+    SCOPE_JSON='{"mode":"full","reason":"settlement_history_unreadable","files":[]}'
   else
+    SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
+      "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
+  fi
+  if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
+  if [ -n "${SCOPE_OUTPUT:-}" ] && [ "$SCOPE_STATUS" -eq 0 ]; then
+    SCOPE_JSON="$SCOPE_OUTPUT"
+  elif [ "$SCOPE_STATUS" -ne 0 ]; then
     echo "warning: review scope is unavailable; reviewing the whole PR. See $SETUP_LOG" >&2
     SCOPE_JSON='{"mode":"full","reason":"scope_unavailable","files":[]}'
   fi
@@ -745,7 +737,6 @@ SCOPE_FILE_COUNT="$(jq -r '.files | length' <<<"$SCOPE_JSON")"
 # Recorded in every settlement; a later run scopes from it only on the same base.
 SCOPE_BASE_LINE="Review base: \`$BASE_REF\` at $MERGE_BASE_SHA."
 case "$SCOPE_MODE:$SCOPE_REASON" in
-  skip:trivial) SCOPE_LINE="Review level: trivial ($(jq -r '.rule' <<<"$SCOPE_JSON"): $(jq -r '.lines' <<<"$SCOPE_JSON") changed lines in $SCOPE_FILE_COUNT files; no sensitive path); no model review required." ;;
   skip:*) SCOPE_LINE="Review scope: skipped, docs only. All $SCOPE_FILE_COUNT changed files match the docs-only paths, so no model reviewed this PR." ;;
   carry:same_head) SCOPE_LINE="Review scope: carried. This head already passed: $SCOPE_SETTLEMENT" ;;
   carry:same_patch) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). This head's patch is the same file for file." ;;
@@ -774,8 +765,7 @@ const scope = JSON.parse(scopeText);
 const mergeGate = deriveMergeGate({ open_findings: [] });
 const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
 const mergeGateLine = mergeGateSummary.split('\n', 1)[0];
-const reason = scope.mode !== 'skip' ? `carried from ${scope.from.slice(0, 8)}`
-  : scope.reason === 'trivial' ? 'trivial, no model review' : 'skipped, docs only';
+const reason = scope.mode === 'skip' ? 'skipped, docs only' : `carried from ${scope.from.slice(0, 8)}`;
 fs.writeFileSync(file, `${JSON.stringify({
   reviewScope: scope, reviewMarkdown: '', verdict, mergeGate, mergeGateSummary, mergeGateLine,
   statusState: 'success', statusDescription: truncateStatusDescription(`${plainMergeGateLine(mergeGateLine).split(' — ')[0]} — ${reason}`),

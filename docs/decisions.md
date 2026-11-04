@@ -26,7 +26,6 @@ decision entry behind it.
 | --- | --- | --- |
 | `parent-model` | `auto`: review level (floor-high and model-high `gpt-6-astra`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage) |
 | Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
-| `--trivial-limit` (local) | `50/3`: pass without a model | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
 | `child-model` | `gpt-6-luna` | [gpt-6-children](#gpt-6-children) |
@@ -114,14 +113,9 @@ first proposed; the owner's decision after the calibration sets the routing
   many known defects as GPT-6.1 Sol `medium` with no more invalid blocking
   findings; screen with 1 sample, and use 3 when the screen is within 1
   defect.
-- A trivial PR still gets an exact-head settlement: the marker,
-  `Merge gate: **PASS**`, and a line naming the level, the rule version and
-  its inputs (`Review level: trivial (trivial-v1: N changed lines in M
-  files; no sensitive path); no model review required.`). The classifier
-  must be one engine function with a command-line entry, so a consumer's
-  merge gate can re-derive the level from base-owned engine code at the
-  exact head and its merge base, with docs-only paths and thresholds read
-  from the base branch, and refuse when the level differs.
+- As proposed, a trivial PR would still get an exact-head PASS settlement
+  that a consumer's merge gate re-derives. The engine dropped this level (see
+  the Decision item).
 - Result, `risk-triage-v1` (digest `51c2f4f7fd66`): high on 49 of 49
   required PRs (the model alone on 49 of 49, the path rule on 39) and on all
   14 cleared ones; 81% of the sample high; 2 of 28 low-risk PRs high; 7 of 17
@@ -150,6 +144,7 @@ first proposed; the owner's decision after the calibration sets the routing
   tokens, plus 0.17 for the triage call; high 141 to 165 with 2 GPT-6.1 Sol
   workers. With the v2 shares (75% high, 17% normal, 8% trivial) a week costs
   65% to 76% of today, before the savings of [review-scope](#review-scope).
+  Reviewing the trivial share at the normal level adds about 1% of today.
 - The share rule failed in both runs. A 40–50% high share would cost
   blocking-defect recall on this consumer, so the owner chose a cheaper
   review for PRs that only the model marks high.
@@ -162,17 +157,30 @@ first proposed; the owner's decision after the calibration sets the routing
     child threads and the rules worker, no focused workers;
   - normal: one GPT-6.1 Sol pass at `medium`, without child threads, focused
     workers or the rules worker;
-  - trivial: no sensitive path, at most 50 changed lines in at most 3 files,
-    and the latest review did not block. The local runner passes it without a
-    model and names the level, rule and counts in the settlement;
-    `risk-triage.cjs trivial` re-derives it for a merge gate. A consumer
-    turns it off with `--trivial-limit off`. The hosted action has no
-    model-free pass yet, so there the triage decides these PRs.
   - An explicit `parent-model` keeps the configured model, workers and effort.
     An explicit `focused-workers` count overrides the level's.
-- Measured shares at that consumer: about 42% floor-high, 32% model-high,
-  17% normal and 8% trivial of merged PRs (the trivial share is for 20 lines;
-  50 lines gives 11%).
+- No trivial level in the engine. An independent review of the first wiring
+  found that a no-model pass reopened bypasses that one consumer's own gate
+  had to close: binary, mode and symlink changes counted as 0 lines;
+  minified lines; code and MDX under `docs/` exempt from the floor; quoted
+  paths missing the floor; review-policy files passing unreviewed; and an
+  unreadable comment history read as "no BLOCK". Other consumers accept
+  engine settlements without re-checking them. Tiny PRs therefore get the
+  normal pass. A consumer may skip review for trivial PRs only in its own
+  merge gate, which must re-derive the level from base-owned code; one
+  consumer does. An engine-level trivial pass is reconsidered only together
+  with a gate-side re-check in every consumer that uses it.
+- The floor (`sensitivePaths` in `engine/focused-workers.cjs`) also covers
+  review and merge machinery, prompts, rule packs, agent instructions and
+  `.github/`, even as Markdown, because a PR could weaken its own review
+  through them. Only tests and Markdown prose are exempt, so code and MDX
+  under `docs/` count. Paths are read NUL-delimited, so quoted names still
+  match.
+- `risk-triage.cjs` and its prompt are trusted runner files. A `risk` that is
+  not exactly one of the strings is an invalid answer, which counts as high.
+  Unreadable PR comments give a full review, never "no earlier settlement".
+- Measured shares at that consumer before the wider floor: about 42%
+  floor-high, 32% model-high and 25% normal of merged PRs.
 - The normal-level reviewer comparison above (GPT-6.1 Terra against GPT-6.1
   Sol) runs when pool capacity allows.
 - Reopen when a review blocks on a P0 or P1 finding in a PR the triage marked

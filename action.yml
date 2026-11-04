@@ -45,7 +45,8 @@ inputs:
     description: >-
       Codex model for the parent reviewer. "auto" sets the review level
       (engine/risk-triage.cjs): a PR that changes a stored-data, security or
-      infrastructure path outside tests and docs gets gpt-6-astra with focused
+      infrastructure path outside tests and Markdown, or a review, merge-gate,
+      prompt, rule-pack or agent-instruction path, gets gpt-6-astra with focused
       workers; otherwise a GPT-6.1 Sol triage call through provider-base-url
       picks gpt-6-astra without focused workers, or one gpt-6.1-sol medium pass
       without child threads, focused or rules workers. A model name always uses
@@ -63,7 +64,8 @@ inputs:
   focused-workers:
     description: >-
       Advisory focused file slices per review. "auto" runs 2 when the PR changes
-      a stored-data, security or infrastructure path outside tests and docs, and
+      a stored-data, security or infrastructure path outside tests and Markdown,
+      or a review, merge-gate, prompt, rule-pack or agent-instruction path, and
       none otherwise; an integer from 0 to 4 sets the maximum (0 disables them).
       Incremental reviews run no workers.
     default: auto
@@ -672,8 +674,7 @@ runs:
         cat .codex-ci/review-commits.txt
 
     # The review level over the whole PR, rename sources included, so the paths
-    # decide every round alike (decision risk-triage). The hosted action has no
-    # model-free pass, so trivial PRs get the triage call.
+    # decide every round alike (decision risk-triage).
     - name: Resolve review level
       id: parent
       if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
@@ -697,7 +698,7 @@ runs:
           exit 0
         fi
         LEVEL_JSON="$(node "$RUNNER_TEMP/open-review/engine/risk-triage.cjs" level "$PWD" "$MERGE_BASE_SHA" "$HEAD_SHA" \
-          "$PR_TITLE" "$RUNNER_TEMP/open-review/pr-body.txt" off)"
+          "$PR_TITLE" "$RUNNER_TEMP/open-review/pr-body.txt")"
         {
           echo "level=$(jq -r '.level' <<<"$LEVEL_JSON")"
           echo "model=$(jq -r '.parentModel' <<<"$LEVEL_JSON")"

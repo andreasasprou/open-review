@@ -85,6 +85,17 @@ test('auto runs two workers only when a PR changes a stored-data, security or in
   assert.throws(() => workerCount('5', ''), /auto or an integer from 0 to 4/);
 });
 
+test('the floor keeps code and MDX under docs, and review policy, prompts, rule packs and agent instructions', () => {
+  const { sensitivePaths } = require('../engine/focused-workers.cjs');
+  const floor = ['docs/auth/handler.ts', 'docs/security/page.mdx', 'AGENTS.md', 'apps/api/CLAUDE.md', '.agents/skills/deliver/SKILL.md',
+    '.claude/settings.json', '.open-review/rules.md', '.github/prompts/code-review.md', '.github/CODEOWNERS',
+    '.github/scripts/codex-review/index.cjs', 'scripts/merge-gate.cjs', 'scripts/ci-merge-queue-gates.mjs', 'scripts/review-policy.cjs',
+    'engine/prompt/core.md', 'engine/risk-triage-prompt.txt'];
+  assert.deepEqual(sensitivePaths(floor), floor);
+  const prose = ['docs/security/policy.md', 'README.md', 'docs/guide.md', 'apps/web/src/prompt-input.tsx', 'src/auth/session.test.ts'];
+  assert.deepEqual(sensitivePaths(prose), []);
+});
+
 test('generated header and exclusions are applied before churn order', () => {
   const patch = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1,3 @@\n+x\n+y\n+z\n' +
     'diff --git a/b.ts b/b.ts\n--- a/b.ts\n+++ b/b.ts\n@@ -0,0 +1,1 @@\n+x\n';

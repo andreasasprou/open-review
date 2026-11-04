@@ -331,7 +331,7 @@ test('the hosted review level follows the PR paths and the triage, and reaches e
   assert.equal(model(standard, 'auto'),
     'level=model-high\nmodel=gpt-6-astra\nreasoning=\nworkers=0\nrules_worker=true\nhelpers=true\n');
   assert.equal(model(risky, 'auto'),
-    'level=floor-high\nmodel=gpt-6-astra\nreasoning=\nworkers=auto\nrules_worker=true\nhelpers=true\n');
+    'level=floor-high\nmodel=gpt-6-astra\nreasoning=\nworkers=2\nrules_worker=true\nhelpers=true\n');
   assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\nlevel=configured\nhelpers=true\n');
   assert.match(action, /\n  parent-model:\n[\s\S]*?\n    default: auto\n/);
   assert.equal(action.match(/steps\.parent\.outputs\.model/g).length, 3);

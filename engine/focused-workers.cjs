@@ -16,8 +16,8 @@ const RULES_KEYS = ["title", "file", "line", "severity", "rule_source", "change"
 const RULES_FILE = "(repository rules)";
 const MAX_WORKERS = 4;
 // "auto" runs AUTO_WORKERS slices on a PR that changes a stored-data, security or
-// infrastructure path outside tests and docs, and none otherwise (decision
-// focused-workers-risk-gated).
+// infrastructure path outside tests and Markdown, or a review-policy path, and
+// none otherwise (decisions focused-workers-risk-gated, risk-triage).
 const AUTO_WORKERS = 2;
 const SENSITIVE_PATHS = [
   /\.(sql|prisma|tf|tfvars)$/i,
@@ -26,6 +26,19 @@ const SENSITIVE_PATHS = [
   /[a-z](Auth|OAuth|Iam|Permissions?|Secrets?|Security)([A-Z0-9/_.-]|$)/,
   /(^|\/)infra\//i, /(^|\/)(Dockerfile|docker-compose)[^/]*$/i, /^\.github\/(workflows|actions)\//,
   /(^|[/_.-])schemas?([/_.-]|$)/i,
+];
+// Review and merge machinery, prompts, rule packs and agent instructions: a PR
+// could weaken its own review through them, so they count even as Markdown or
+// tests (decision risk-triage).
+const POLICY_PATHS = [
+  /^\.github\//,
+  /(^|\/)(AGENTS|CLAUDE|GEMINI)\.md$/i,
+  /(^|\/)SKILL\.md$/i,
+  /(^|\/)\.(agents|claude|codex|cursor|open-review)\//i,
+  /(^|\/)prompts?\//i,
+  /prompt[^/]*\.(md|txt)$/i,
+  /(^|[/_.-])(code-review|codex-review|review-polic\w*|merge-(gate|queue)\w*|sign-?off\w*)([/_.-]|$)/i,
+  /(^|\/)CODEOWNERS$/,
 ];
 const WORKER_MODEL = "gpt-6.1-sol";
 const WORKER_REASONING_EFFORT = "medium";
@@ -76,8 +89,14 @@ function parseDiff(patch) {
 
 // Risk routing ignores only tests and docs. Generated, fixture or lockfile
 // paths are skipped as worker slices, but a generated migration still counts.
+// Only tests and Markdown prose are exempt: code and MDX under docs/ are not.
+function floorExempt(file) {
+  return excluded(file) === "test" || /\.md$/i.test(file);
+}
+
 function sensitivePaths(files) {
-  return files.filter((file) => !["test", "doc"].includes(excluded(file)) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
+  return files.filter((file) => POLICY_PATHS.some((pattern) => pattern.test(file)) ||
+    (!floorExempt(file) && SENSITIVE_PATHS.some((pattern) => pattern.test(file))));
 }
 
 function workerCount(value, patch) {

@@ -75,19 +75,19 @@ function repository(t) {
 }
 
 test("the review level asks the triage model only when the paths do not decide", async (t) => {
-  const { reviewLevel, parseTrivialLimit } = require("../engine/risk-triage.cjs");
+  const { reviewLevel } = require("../engine/risk-triage.cjs");
   const { root, commit, lines, base } = repository(t);
   const calls = [];
   const stub = (result, error = null) => async ({ input }) => { calls.push(input); return { result, error, usage: null, ms: 1 }; };
   const level = (head, triageImpl, extra = {}) => reviewLevel({ root, mergeBase: base, head, title: "t", body: "b",
-    limit: parseTrivialLimit(), baseUrl: "http://pool", apiKey: "", triageImpl, ...extra });
+    baseUrl: "http://pool", apiKey: "", triageImpl, ...extra });
 
+  // Every PR outside the floor gets a model review, however small.
   const small = commit({ "src/a.ts": lines("a", 8) });
-  assert.deepEqual(await level(small, stub(answer("high"))),
-    { level: "trivial", rule: "trivial-v1", lines: 3, files: 1, floorPaths: [], parentModel: "gpt-6.1-sol", reasoning: "medium",
-      workers: 0, rulesWorker: false, helpers: false, triage: null });
-  assert.equal(calls.length, 0, "a trivial PR costs no model call");
-  assert.equal((await level(small, stub(answer("high")), { limit: null })).level, "model-high", "limit off: the model decides");
+  const tiny = await level(small, stub(answer("normal")));
+  assert.deepEqual([tiny.level, tiny.parentModel, tiny.reasoning, tiny.workers, tiny.rulesWorker, tiny.helpers],
+    ["normal", "gpt-6.1-sol", "medium", 0, false, false]);
+  assert.equal(calls.length, 1);
 
   const large = commit({ "src/b.ts": lines("b", 80) });
   const high = await level(large, stub(answer("high")));
@@ -106,18 +106,34 @@ test("the review level asks the triage model only when the paths do not decide",
   const sensitive = commit({ "db/migrations/001_add.sql": "alter table t add c int;\n" });
   const floor = await level(sensitive, stub(answer("normal")));
   assert.deepEqual([floor.level, floor.parentModel, floor.workers, floor.floorPaths, floor.triage],
-    ["floor-high", "gpt-6-astra", "auto", ["db/migrations/001_add.sql"], null]);
+    ["floor-high", "gpt-6-astra", 2, ["db/migrations/001_add.sql"], null]);
   assert.equal(calls.length, before, "the model never sees a floor-high PR");
 });
 
-test("the trivial command re-derives a trivial level without a model", (t) => {
+test("a risk that is not exactly one of the tier strings is invalid, so the PR is high", () => {
+  for (const risk of [["high"], ["normal"], { normal: 1 }, 1, null, "HIGH"]) {
+    assert.equal(parseTriage(JSON.stringify({ risk, reasons: ["r"], confidence: 0.8 })), null, JSON.stringify(risk));
+  }
+});
+
+test("paths git would quote still hit the floor", async (t) => {
+  const { reviewLevel } = require("../engine/risk-triage.cjs");
+  const { root, commit, base } = repository(t);
+  const stub = async () => ({ result: answer("normal"), error: null, usage: null, ms: 1 });
+  for (const file of ['.github/workflows/re"lease.yml', "infra/main\ttab.tf", "db/migrations/new\nline.sql", "src/auth/sésame.ts"]) {
+    const head = commit({ [file]: "x\n" });
+    const level = await reviewLevel({ root, mergeBase: base, head, title: "t", body: "b", baseUrl: "http://pool", apiKey: "", triageImpl: stub });
+    assert.equal(level.level, "floor-high", JSON.stringify(file));
+    assert.ok(level.floorPaths.includes(file), JSON.stringify(level.floorPaths));
+  }
+});
+
+test("every engine file the local runner runs or reads is checked against the trusted engine", () => {
+  const fs = require("node:fs");
   const path = require("node:path");
-  const { execFileSync } = require("node:child_process");
-  const { root, commit, lines, base } = repository(t);
-  const head = commit({ "src/a.ts": lines("a", 8) });
-  const derive = (limit) => JSON.parse(execFileSync("node", [path.join(__dirname, "../engine/risk-triage.cjs"), "trivial", root, base, head, limit],
-    { encoding: "utf8", env: { ...process.env, PROVIDER_BASE_URL: "" } }));
-  assert.deepEqual(derive("50/3"), { level: "trivial", rule: "trivial-v1", lines: 3, files: 1, floorPaths: [], trivial: true });
-  assert.equal(derive("2/3").trivial, false);
-  assert.equal(derive("off").trivial, false);
+  const script = fs.readFileSync(path.join(__dirname, "../engine/run-local.sh"), "utf8");
+  const trusted = [...script.match(/TRUSTED_RUNNER_FILES=\(([\s\S]*?)\)/)[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  const used = new Set([...script.matchAll(/\$ENGINE_DIR\/([A-Za-z0-9_./-]+)/g)].map((match) => match[1]));
+  used.add("risk-triage-prompt.txt"); // read by risk-triage.cjs
+  assert.deepEqual([...used].filter((file) => !trusted.includes(file)), []);
 });

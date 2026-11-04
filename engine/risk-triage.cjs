@@ -1,13 +1,13 @@
 "use strict";
 
-// Review level of a PR (decision risk-triage). In order:
+// Review level of a PR (decision risk-triage):
 // - floor-high: the PR changes a sensitive path (focused-workers.cjs); no model call;
-// - trivial: no sensitive path and at most TRIVIAL_LIMIT changed lines and files;
-//   no model review (review-scope.cjs publishes the pass);
 // - otherwise GPT-6.1 Sol at medium effort reads a capped summary of the PR and
 //   answers high (model-high) or normal. Any request error, timeout or invalid
 //   answer is model-high. PR text is attacker-controlled, so the model can only
-//   raise a level: it never sees floor-high or trivial PRs.
+//   raise a level: it never sees a floor-high PR.
+// Every PR gets a model review: a level without one needs a merge gate that
+// re-derives it, so it belongs to the consumer, not this engine.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -22,18 +22,12 @@ const REASONING_EFFORT = "medium";
 const PROMPT_VERSION = "risk-triage-v2";
 const PROMPT = fs.readFileSync(path.join(__dirname, "risk-triage-prompt.txt"), "utf8");
 const TIMEOUT_MS = 60 * 1000;
-// Owner decision 2026-11-04: at most 50 changed lines in at most 3 files.
-const TRIVIAL_RULE = "trivial-v1";
-const TRIVIAL_LIMIT = { lines: 50, files: 3 };
-// What each model-reviewed level runs. `workers: "auto"` is 2 focused workers.
+// What each level runs.
 const LEVELS = {
-  "floor-high": { parentModel: "gpt-6-astra", reasoning: null, workers: "auto", rulesWorker: true, helpers: true },
+  "floor-high": { parentModel: "gpt-6-astra", reasoning: null, workers: 2, rulesWorker: true, helpers: true },
   "model-high": { parentModel: "gpt-6-astra", reasoning: null, workers: 0, rulesWorker: true, helpers: true },
   normal: { parentModel: "gpt-6.1-sol", reasoning: "medium", workers: 0, rulesWorker: false, helpers: false },
 };
-// A trivial PR passes without a model (review-scope.cjs); when its latest review
-// blocked or a full review is requested, it gets the normal review.
-LEVELS.trivial = LEVELS.normal;
 const RANK = { docs: 0, normal: 1, high: 2 };
 const LIMITS = { title: 300, body: 2500, files: 150, excerpts: 9000, perFile: 1500, line: 160 };
 const SCHEMA = {
@@ -128,7 +122,8 @@ function parseTriage(text) {
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (Object.keys(value).sort().join() !== "confidence,reasons,risk") return null;
-  if (!Object.hasOwn(RANK, value.risk)) return null;
+  // Exactly one of the strings: a non-string key would coerce (["high"] is "high").
+  if (typeof value.risk !== "string" || !Object.hasOwn(RANK, value.risk)) return null;
   if (!Array.isArray(value.reasons) || value.reasons.length < 1 || value.reasons.length > 3 ||
     value.reasons.some((reason) => typeof reason !== "string" || reason.length === 0 || reason.length > 500)) return null;
   if (typeof value.confidence !== "number" || !(value.confidence >= 0 && value.confidence <= 1)) return null;
@@ -182,77 +177,39 @@ async function triage({ baseUrl, apiKey = "", input, timeoutMs = TIMEOUT_MS, fet
   }
 }
 
-/** "50/3" or "off" (null): the consumer's trivial limit. */
-function parseTrivialLimit(text = `${TRIVIAL_LIMIT.lines}/${TRIVIAL_LIMIT.files}`) {
-  if (text === "off") return null;
-  const match = /^(\d{1,4})\/(\d{1,3})$/.exec(String(text));
-  if (!match) throw new Error("trivial limit must be <lines>/<files> or off");
-  return { lines: Number(match[1]), files: Number(match[2]) };
-}
-
-/**
- * The deterministic part of the level, from `git diff --numstat --no-renames`
- * entries ({ file, added, removed }; rename sources included): floor-high,
- * trivial, or null when the model decides.
- */
-function deterministicLevel(files, limit) {
-  const paths = files.map((entry) => entry.file);
-  const floorPaths = sensitivePaths(paths);
-  const lines = files.reduce((sum, entry) => sum + entry.added + entry.removed, 0);
-  const facts = { rule: TRIVIAL_RULE, lines, files: paths.length, floorPaths };
-  if (floorPaths.length > 0) return { level: "floor-high", ...facts };
-  if (limit && paths.length > 0 && paths.length <= limit.files && lines <= limit.lines) return { level: "trivial", ...facts };
-  return { level: null, ...facts };
-}
-
-/** `git diff --numstat` text as { file, added, removed }; a binary file counts no lines. */
-function parseNumstat(text) {
-  return String(text).split("\n").filter(Boolean).map((line) => {
-    const [added, removed, ...file] = line.split("\t");
-    return { file: file.join("\t"), added: added === "-" ? 0 : Number(added), removed: removed === "-" ? 0 : Number(removed) };
-  });
-}
-
-function numstat(root, mergeBase, head) {
-  return parseNumstat(execFileSync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--numstat", "--no-renames", mergeBase, head],
-    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+/** Every path the PR changes, rename sources included, decoded losslessly (NUL-delimited). */
+function changedPaths(root, mergeBase, head) {
+  return execFileSync("git", ["-C", root, "diff", "--name-only", "-z", "--no-renames", mergeBase, head],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).split("\0").filter(Boolean);
 }
 
 /** The review level and what it runs; calls the triage model only when the paths do not decide. */
-async function reviewLevel({ root, mergeBase, head, title, body, limit, baseUrl, apiKey, triageImpl = triage }) {
-  const fixed = deterministicLevel(numstat(root, mergeBase, head), limit);
-  if (fixed.level !== null) return { ...fixed, ...(LEVELS[fixed.level] ?? {}), triage: null };
+async function reviewLevel({ root, mergeBase, head, title, body, baseUrl, apiKey, triageImpl = triage }) {
+  const floorPaths = sensitivePaths(changedPaths(root, mergeBase, head));
+  if (floorPaths.length > 0) return { level: "floor-high", floorPaths, ...LEVELS["floor-high"], triage: null };
   const patch = execFileSync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--no-renames", "--no-color", "--no-ext-diff", mergeBase, head],
     { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
   const outcome = baseUrl
     ? await triageImpl({ baseUrl, apiKey, input: triageInput({ title, body, patch }) })
     : { result: null, error: "no_provider", detail: "no provider base URL for the triage call", usage: null, ms: 0 };
-  // "docs" on a PR that is not docs-only is normal; docs-only PRs never get here.
+  // "docs" on a PR outside the docs-only paths is normal.
   const level = outcome.result && outcome.result.risk !== "high" ? "normal" : "model-high";
-  return { ...fixed, level, ...LEVELS[level],
+  return { level, floorPaths, ...LEVELS[level],
     triage: { version: PROMPT_VERSION, risk: outcome.result?.risk ?? null, reasons: outcome.result?.reasons ?? [],
       error: outcome.error ?? null, detail: outcome.detail ?? null, ms: outcome.ms } };
 }
 
 async function main(argv) {
-  const [command, root, mergeBase, head, ...rest] = argv;
-  if (![root, mergeBase, head].every((value) => typeof value === "string" && value !== "")) {
-    throw new Error("usage: risk-triage.cjs level <root> <merge-base> <head> <title> <body-file> <trivial-limit> | trivial <root> <merge-base> <head> <trivial-limit>");
+  const [command, root, mergeBase, head, title, bodyFile] = argv;
+  if (command !== "level" || ![root, mergeBase, head, title, bodyFile].every((value) => typeof value === "string" && value !== "")) {
+    throw new Error("usage: risk-triage.cjs level <root> <merge-base> <head> <title> <body-file>");
   }
-  if (command === "trivial") {
-    // For a merge gate re-deriving a trivial settlement: no model, no network.
-    const fixed = deterministicLevel(numstat(root, mergeBase, head), parseTrivialLimit(rest[0]));
-    process.stdout.write(`${JSON.stringify({ ...fixed, trivial: fixed.level === "trivial" })}\n`);
-    return;
-  }
-  if (command !== "level") throw new Error(`unknown command ${command}`);
-  const [title, bodyFile, limitText] = rest;
   const keyName = process.env.PROVIDER_ENV_KEY || "";
   const result = await reviewLevel({ root, mergeBase, head, title, body: fs.readFileSync(bodyFile, "utf8"),
-    limit: parseTrivialLimit(limitText), baseUrl: process.env.PROVIDER_BASE_URL || "", apiKey: keyName ? process.env[keyName] || "" : "" });
+    baseUrl: process.env.PROVIDER_BASE_URL || "", apiKey: keyName ? process.env[keyName] || "" : "" });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { MODEL, REASONING_EFFORT, PROMPT_VERSION, TRIVIAL_RULE, LEVELS, promptIdentity, triageInput, requestBody, parseTriage,
-  finalRisk, triage, parseTrivialLimit, parseNumstat, deterministicLevel, reviewLevel };
+module.exports = { MODEL, REASONING_EFFORT, PROMPT_VERSION, LEVELS, promptIdentity, triageInput, requestBody, parseTriage,
+  finalRisk, triage, reviewLevel };
