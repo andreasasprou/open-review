@@ -637,9 +637,11 @@ publish_settlement() {
 }
 
 # Review scope, from git and the PR's settlement comments alone (review-scope.cjs).
-# Runs that cannot publish, and reviews of an explicit head or base, stay full.
+# Runs that cannot publish, and reviews of another head or base than the PR's
+# current ones, stay full. A wrapper may pass the current ones explicitly.
 SCOPE_JSON='{"mode":"full","reason":"unscoped_run","files":[]}'
-if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ -z "$HEAD_SHA_OVERRIDE" ] && [ -z "$BASE_SHA_OVERRIDE" ]; then
+if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ "$HEAD_SHA" = "$REMOTE_HEAD_SHA" ] &&
+   [ "$BASE_SHA" = "$(jq -r '.baseRefOid' "$RUN_DIR/pr.json")" ]; then
   if ! gh api --paginate --slurp "repos/$CURRENT_REPOSITORY/issues/$PR_NUMBER/comments" \
     > "$RUN_DIR/pr-comments.json" 2>>"$SETUP_LOG"; then
     echo "warning: PR comments are unreadable, so no earlier pass can scope this review; see $SETUP_LOG" >&2

@@ -235,3 +235,27 @@ test("the local runner settles a carried or skipped head without a model, under 
 	})();
 	assert.match(moved, /PR head changed during local review; refusing settlement/);
 });
+
+test("the runner scopes a review of the PR's current head and base, even when a wrapper names them", (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-scope-gate-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const script = fs.readFileSync(path.join(__dirname, "../engine/run-local.sh"), "utf8");
+	const block = script.slice(script.indexOf("SCOPE_JSON='{\"mode\":\"full\",\"reason\":\"unscoped_run\""), script.indexOf('SCOPE_MODE="$(jq'));
+	const bin = path.join(root, "bin");
+	fs.mkdirSync(bin);
+	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\necho '[]'\n", { mode: 0o755 });
+	fs.writeFileSync(path.join(bin, "node"), `#!/bin/sh\necho '{"mode":"incremental","reason":"since_passed_review","files":["a"]}'\n`, { mode: 0o755 });
+	const head = "a".repeat(40);
+	const base = "b".repeat(40);
+	fs.writeFileSync(path.join(root, "pr.json"), JSON.stringify({ headRefOid: head, baseRefOid: base }));
+	const scope = (extra) => execFileSync("bash", ["-euo", "pipefail", "-c", `${block}\nprintf '%s' "$SCOPE_JSON"`], {
+		encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RUN_DIR: root,
+			SETUP_LOG: path.join(root, "setup.log"), PUBLISH_TRUSTED_ARTIFACTS: "true", REMOTE_HEAD_SHA: head, HEAD_SHA: head, BASE_SHA: base,
+			CURRENT_REPOSITORY: "example/repo", PR_NUMBER: "1", ENGINE_DIR: root, ROOT: root, SETTLEMENT_MARKER: MARKER,
+			DOCS_ONLY_PATHS: "", FULL_REVIEW: "false", ...extra },
+	});
+	assert.equal(JSON.parse(scope({})).mode, "incremental", "current head and base, named or not");
+	assert.equal(JSON.parse(scope({ HEAD_SHA: "c".repeat(40) })).reason, "unscoped_run", "a historical head");
+	assert.equal(JSON.parse(scope({ BASE_SHA: "c".repeat(40) })).reason, "unscoped_run", "another base");
+	assert.equal(JSON.parse(scope({ PUBLISH_TRUSTED_ARTIFACTS: "false" })).reason, "unscoped_run", "a non-publishing run");
+});
