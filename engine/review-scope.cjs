@@ -1,25 +1,26 @@
 "use strict";
 
 // Mechanical review scope: which part of a PR still needs a model. Reads git and
-// the PR's own settlement comments; never runs a model.
+// the PR's own settlement comments; never runs a model. A carried or incremental
+// pass is used only when it is provably equivalent; anything else is full.
 //
 // - skip: every path the PR changes matches the consumer's docs-only paths.
-// - carry: the latest trusted settlement passed, and the PR's patch is the same
-//   file for file (a rebase, a merge from the base branch or a rerun), or now
-//   differs from the passed one only in docs-only files.
-// - incremental: the latest trusted settlement passed on an ancestor of this
-//   head; only the files whose patch changed since then need review.
-// - full: anything else, including a passed head that was force-rewritten.
+// - carry: the latest trusted settlement passed on the same base branch, and
+//   every file of the PR has the same base and result blobs as at the passed
+//   head (a rerun, or a rebase or merge that left the PR's files alone), or
+//   differs only in docs-only files.
+// - incremental: the latest trusted settlement passed on the same base branch
+//   at an ancestor of this head; only the files whose blobs changed are
+//   reviewed, from the passed head, or from the current merge base when the
+//   base moved in between (so a dropped base-branch change shows).
+// - full: anything else, including a retargeted PR, a passed head that was
+//   force-rewritten, or a settlement that does not record its base.
 
 const { execFileSync } = require("node:child_process");
-const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const { recordCaughtError, runReviewCli } = require("./diagnostics-runtime.cjs");
 
 const WRITE_PERMISSIONS = new Set(["write", "maintain", "admin"]);
-// Fixed output: user diff configuration must not change a patch's identity.
-const PATCH_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary",
-	"--src-prefix=a/", "--dst-prefix=b/", "--unified=3"];
 
 function gitRunner(root) {
 	return (args) => execFileSync("git", ["-C", root, "-c", "core.quotePath=false", ...args],
@@ -64,37 +65,23 @@ function changedPaths(git, from, to) {
 	return git(["diff", "--name-only", "-z", "--no-renames", from, to]).split("\0").filter(Boolean);
 }
 
-// One digest per changed file, without blob ids or hunk line numbers, so a rebase
-// that only moves a hunk keeps its identity (as `git patch-id` does). Null when
-// the patch cannot be attributed to its files.
-function filePatchDigests(git, from, to) {
-	const paths = changedPaths(git, from, to);
-	const byHeader = new Map(paths.map((path) => [`diff --git a/${path} b/${path}`, path]));
-	const digests = new Map();
-	let path = null;
-	let hash = null;
-	// Every line ends in a newline, so the last file's digest gains no empty line.
-	for (const line of git(["diff", ...PATCH_FLAGS, from, to]).replace(/\n$/u, "").split("\n")) {
-		if (line.startsWith("diff --git ")) {
-			if (path !== null) digests.set(path, hash.digest("hex"));
-			path = byHeader.get(line) ?? null;
-			if (path === null || digests.has(path)) return null;
-			hash = createHash("sha256");
-		} else if (path === null) {
-			if (line !== "") return null;
-		} else if (!line.startsWith("index ")) {
-			hash.update(line.startsWith("@@") ? "@@\n" : `${line}\n`);
-		}
+// Each changed file's exact identity in a PR: its modes and blob ids at the
+// merge base and at the head. Hunk text alone is not an identity: an edit moved
+// between two identical regions of a file would look the same.
+function fileStates(git, from, to) {
+	const fields = git(["diff", "--raw", "-z", "--no-renames", "--no-abbrev", from, to]).split("\0");
+	const states = new Map();
+	for (let index = 0; index + 1 < fields.length; index += 2) {
+		if (!fields[index].startsWith(":")) throw new Error("unexpected raw diff output");
+		states.set(fields[index + 1], fields[index]);
 	}
-	if (path !== null) digests.set(path, hash.digest("hex"));
-	return digests.size === paths.length ? digests : null;
+	return states;
 }
 
-/** Files whose patch differs between two versions of a PR, or null when unreadable. */
+/** Files whose base or result differs between two versions of a PR. */
 function patchDelta(git, { before, after }) {
-	const old = filePatchDigests(git, before.mergeBase, before.head);
-	const current = filePatchDigests(git, after.mergeBase, after.head);
-	if (old === null || current === null) return null;
+	const old = fileStates(git, before.mergeBase, before.head);
+	const current = fileStates(git, after.mergeBase, after.head);
 	return [...new Set([...old.keys(), ...current.keys()])].filter((path) => old.get(path) !== current.get(path)).sort();
 }
 
@@ -102,15 +89,25 @@ function escapeExpression(text) {
 	return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** Settlement comments the local runner publishes, in comment order, with their merge gate. */
+// The base a settlement reviewed against, from the runner-written lines right
+// after the merge-gate summary; review text further down cannot supply it.
+function recordedBase(body) {
+	const verdict = body.indexOf("\nModel verdict (display only): ");
+	if (verdict < 0) return null;
+	const match = /^\nReview scope: [^\n]*\nReview base: `([^`\n]+)` at ([0-9a-f]{40})\.\n/u.exec(body.slice(body.indexOf("\n", verdict + 1) + 1));
+	return match ? { baseRef: match[1], mergeBase: match[2] } : null;
+}
+
+/** Settlement comments the local runner publishes, in comment order, with their merge gate and base. */
 function parseSettlements(comments, { marker, attributionHeader = "" }) {
 	const header = attributionHeader ? `${escapeExpression(attributionHeader)}\\n\\n` : "";
 	const pattern = new RegExp(`^<!-- ${escapeExpression(marker)} head=([0-9a-f]{40}) -->\\n\\n${header}Merge gate: \\*\\*(PASS|BLOCK|UNKNOWN)\\*\\*`, "u");
 	return comments.flatMap((comment) => {
-		const match = pattern.exec(String(comment?.body ?? ""));
+		const body = String(comment?.body ?? "");
+		const match = pattern.exec(body);
 		const author = comment?.user?.login;
 		return match && Number.isSafeInteger(comment.id) && typeof author === "string" && author !== ""
-			? [{ id: comment.id, head: match[1], gate: match[2], author, url: String(comment.html_url ?? "") }]
+			? [{ id: comment.id, head: match[1], gate: match[2], author, url: String(comment.html_url ?? ""), base: recordedBase(body) }]
 			: [];
 	}).sort((left, right) => left.id - right.id);
 }
@@ -150,11 +147,12 @@ function isAncestor(git, ancestor, head) {
 }
 
 /**
- * Review scope for `headSha`. `latest` is the latest trusted settlement on the PR
- * or null; its head must already be fetched. `settlementsVerified` is false when
- * the settlements' authors could not be checked. A full review names its reason.
+ * Review scope for `headSha` on `baseRef` at `baseSha`. `latest` is the latest
+ * trusted settlement on the PR or null; its head and recorded merge base must
+ * already be fetched. `settlementsVerified` is false when the settlements'
+ * authors could not be checked. A full review names its reason.
  */
-function classify({ git, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false }) {
+function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false }) {
 	const full = (reason) => ({ mode: "full", reason, files: [] });
 	const mergeBase = git(["merge-base", baseSha, headSha]).trim();
 	const files = changedPaths(git, mergeBase, headSha);
@@ -163,27 +161,22 @@ function classify({ git, baseSha, headSha, docsPaths = [], latest = null, settle
 	if (!settlementsVerified) return full("settlement_author_unverified");
 	if (latest === null) return full("no_settled_review");
 	if (latest.gate !== "PASS") return full("last_review_not_passed");
-	if (!commitExists(git, latest.head)) return full("passed_head_missing");
-	let passedMergeBase;
-	try {
-		passedMergeBase = git(["merge-base", baseSha, latest.head]).trim();
-	} catch {
-		return full("passed_head_unrelated");
-	}
+	if (latest.base === null) return full("passed_base_unrecorded");
+	if (latest.base.baseRef !== baseRef) return full("base_retargeted");
+	if (!commitExists(git, latest.head) || !commitExists(git, latest.base.mergeBase)) return full("passed_head_missing");
 	const delta = patchDelta(git, {
-		before: { mergeBase: passedMergeBase, head: latest.head },
+		before: { mergeBase: latest.base.mergeBase, head: latest.head },
 		after: { mergeBase, head: headSha },
 	});
-	if (delta === null) return full("patch_unreadable");
 	const scope = { from: latest.head, settlement: latest.url, files: delta };
 	if (delta.length === 0) return { mode: "carry", reason: latest.head === headSha ? "same_head" : "same_patch", ...scope };
 	if (docsOnly(delta, docsPaths)) return { mode: "carry", reason: "docs_only_change", ...scope };
 	if (!isAncestor(git, latest.head, headSha)) return full("passed_head_rewritten");
-	// A merge that drops a base-branch change alters the patch but not the files
-	// since the passed head; a diff from that head would not show it.
-	const moved = new Set(changedPaths(git, latest.head, headSha));
-	if (!delta.every((path) => moved.has(path))) return full("patch_changed_by_base");
-	return { mode: "incremental", reason: "since_passed_review", ...scope };
+	// When the base moved in between, a diff from the passed head would hide a
+	// base-branch change the PR dropped; review those files' whole PR patch.
+	const baseMoved = latest.base.mergeBase !== mergeBase;
+	return { mode: "incremental", reason: baseMoved ? "since_passed_review_base_moved" : "since_passed_review",
+		diffBase: baseMoved ? mergeBase : latest.head, ...scope };
 }
 
 function readComments(file) {
@@ -204,21 +197,8 @@ function githubPermission(recorder, repository, login) {
 
 function main(recorder, argv) {
 	const [command, ...args] = argv;
-	if (command === "delta") {
-		// Hosted scope: the files whose PR patch changed between two reviewed heads.
-		const [root, baseSha, sinceSha, headSha] = args;
-		const git = gitRunner(root);
-		const delta = patchDelta(git, {
-			before: { mergeBase: git(["merge-base", baseSha, sinceSha]).trim(), head: sinceSha },
-			after: { mergeBase: git(["merge-base", baseSha, headSha]).trim(), head: headSha },
-		});
-		if (delta === null) throw new Error("PR patch could not be attributed to its files");
-		const moved = new Set(changedPaths(git, sinceSha, headSha));
-		process.stdout.write(`${JSON.stringify({ files: delta, moved: delta.every((path) => moved.has(path)) })}\n`);
-		return;
-	}
-	if (command !== "classify") throw new Error("usage: review-scope.cjs classify|delta ...");
-	const [root, repository, baseSha, headSha, commentsFile, marker, docsPathsText, fullReview] = args;
+	if (command !== "classify") throw new Error("usage: review-scope.cjs classify <root> <repository> <base-ref> <base-sha> <head-sha> <comments.json> <marker> <docs-paths> <full-review>");
+	const [root, repository, baseRef, baseSha, headSha, commentsFile, marker, docsPathsText, fullReview] = args;
 	const git = gitRunner(root);
 	const settlements = parseSettlements(readComments(commentsFile),
 		{ marker, attributionHeader: process.env.OPEN_REVIEW_ATTRIBUTION_HEADER || "" });
@@ -230,18 +210,19 @@ function main(recorder, argv) {
 		recordCaughtError({ recorder, error, operation: "review.scope", stage: "trusted_settlement", disposition: "recover", context: {} });
 		settlementsVerified = false;
 	}
-	if (latest !== null && !commitExists(git, latest.head)) {
+	const missing = latest === null ? [] : [latest.head, latest.base?.mergeBase].filter((sha) => sha && !commitExists(git, sha));
+	if (missing.length > 0) {
 		try {
-			git(["fetch", "--quiet", "--no-tags", "origin", latest.head]);
+			git(["fetch", "--quiet", "--no-tags", "origin", ...missing]);
 		} catch (error) {
-			// A passed head that cannot be fetched cannot scope this review; classify reports it.
+			// A passed head or base that cannot be fetched cannot scope this review; classify reports it.
 			recordCaughtError({ recorder, error, operation: "review.scope", stage: "fetch_passed_head", disposition: "recover", context: {} });
 		}
 	}
-	process.stdout.write(`${JSON.stringify(classify({ git, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
+	process.stdout.write(`${JSON.stringify(classify({ git, baseRef, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
 		latest, settlementsVerified, fullReview: fullReview === "true" }))}\n`);
 }
 
 if (require.main === module) runReviewCli((recorder) => main(recorder, process.argv.slice(2)));
 
-module.exports = { classify, docsOnly, filePatchDigests, latestTrustedSettlement, parseDocsPaths, parseSettlements, patchDelta };
+module.exports = { classify, docsOnly, fileStates, latestTrustedSettlement, parseDocsPaths, parseSettlements, patchDelta, recordedBase };

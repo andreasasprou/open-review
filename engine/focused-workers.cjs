@@ -25,6 +25,7 @@ const SENSITIVE_PATHS = [
   /(^|[/_.-])(auth|authn|authz|authori[sz]\w*|authenticat\w*|oauth\w*|iam|rls|secrets?|security|permissions?|crypto)([/_.-]|$)/i,
   /[a-z](Auth|OAuth|Iam|Permissions?|Secrets?|Security)([A-Z0-9/_.-]|$)/,
   /(^|\/)infra\//i, /(^|\/)(Dockerfile|docker-compose)[^/]*$/i, /^\.github\/(workflows|actions)\//,
+  /(^|[/_.-])schemas?([/_.-]|$)/i,
 ];
 // "auto" parent model: GPT-6 Astra on a PR that changes one of those paths,
 // GPT-6.1 Sol otherwise (decision parent-model-risk-gated).
@@ -68,13 +69,19 @@ function parseDiff(patch) {
       if (line.startsWith("+") && !line.startsWith("+++")) added++;
       else if (line.startsWith("-") && !line.startsWith("---")) removed++;
     }
-    return { file: pathname, deleted: newMatch?.[1]?.trim() === "/dev/null" || /^deleted file mode /m.test(chunk), added, removed,
+    // A renamed or copied file's source path, which risk routing also reads.
+    const renameFrom = chunk.match(/^(?:rename|copy) from (.+)$/m)?.[1];
+    const previous = gitPath(oldMatch?.[1], "a") || (renameFrom ? unquoteGitPath(renameFrom) : "");
+    return { file: pathname, previous: previous !== pathname ? previous : "",
+      deleted: newMatch?.[1]?.trim() === "/dev/null" || /^deleted file mode /m.test(chunk), added, removed,
       hunks: [...chunk.matchAll(/^@@ -\S+ \+\S+ @@/gm)].map((m) => m[0]) };
   }).filter(Boolean);
 }
 
+// Risk routing ignores only tests and docs. Generated, fixture or lockfile
+// paths are skipped as worker slices, but a generated migration still counts.
 function sensitivePaths(files) {
-  return files.filter((file) => !excluded(file) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
+  return files.filter((file) => !["test", "doc"].includes(excluded(file)) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
 }
 
 /** The parent reviewer's model for `auto` or an explicit model, from the PR's changed paths. */
@@ -86,7 +93,10 @@ function parentModel(value, files) {
 }
 
 function workerCount(value, patch) {
-  if (value === "auto") return sensitivePaths(parseDiff(patch).map((entry) => entry.file)).length > 0 ? AUTO_WORKERS : 0;
+  if (value === "auto") {
+    const files = parseDiff(patch).flatMap((entry) => [entry.file, entry.previous].filter(Boolean));
+    return sensitivePaths(files).length > 0 ? AUTO_WORKERS : 0;
+  }
   if (!/^[0-4]$/.test(String(value))) throw new Error("focused-workers must be auto or an integer from 0 to 4");
   return Number(value);
 }

@@ -248,52 +248,34 @@ test('explicit --since retains incremental scope', async (t) => {
   assert.match(readFileSync(f.output, 'utf8'), /review_scope_reason=since_requested_sha/);
 });
 
-test('a merge from the base branch reviews only the files whose PR patch changed since the last review', (t) => {
+test('a merge from the base branch after the last pass makes a full review', (t) => {
   const f = fixture(t, false, false);
-  const runnerTemp = mkdtempSync(join(tmpdir(), 'open-review-scope-temp-'));
-  t.after(() => rmSync(runnerTemp, { recursive: true, force: true }));
-  cpSync(resolve(__dirname, '../engine'), join(runnerTemp, 'open-review/engine'), { recursive: true });
   git(f.root, 'checkout', '-qb', 'pr', f.base);
   writeFileSync(join(f.root, 'pr.txt'), 'one\n');
-  git(f.root, 'add', 'pr.txt');
+  git(f.root, 'add', '.');
   git(f.root, 'commit', '-qm', 'pr one');
   const reviewed = git(f.root, 'rev-parse', 'HEAD');
   writeFileSync(join(f.root, 'pr.txt'), 'two\n');
   git(f.root, 'commit', '-qam', 'pr two');
   const pushed = git(f.root, 'rev-parse', 'HEAD');
-  git(f.root, 'reset', '-q', '--hard', reviewed);
   git(f.root, 'merge', '-q', '--no-edit', f.trusted);
   const merged = git(f.root, 'rev-parse', 'HEAD');
-  writeFileSync(join(f.root, 'pr.txt'), 'three\n');
-  git(f.root, 'commit', '-qam', 'pr three');
-  const mergedAndChanged = git(f.root, 'rev-parse', 'HEAD');
   mkdirSync(join(f.root, '.codex-ci'));
   writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
     priorProjection: {}, modelReviewRequired: false, humanDecisions: [], evidenceChallenges: [],
   }));
   const scope = (head) => {
     writeFileSync(f.output, '');
-    rmSync(join(runnerTemp, 'open-review/incremental-files.txt'), { force: true });
     const result = runShell(block('Determine review scope', 'run'), f.root, {
       BASE_SHA: f.trusted, HEAD_SHA: head, LAST_REVIEWED_SHA: reviewed,
       FORCE_FULL_REVIEW: 'false', RESET_STATE: 'false', SINCE_SHA: '',
-      EVENT_NAME: 'pull_request_target', GITHUB_OUTPUT: f.output, RUNNER_TEMP: runnerTemp,
+      EVENT_NAME: 'pull_request_target', GITHUB_OUTPUT: f.output,
     });
     assert.equal(result.status, 0, result.stderr);
     return readFileSync(f.output, 'utf8');
   };
   assert.match(scope(pushed), /review_mode=incremental\n[^]*review_scope_reason=since_last_review/);
-  // The PR's own patch is unchanged by the merge: nothing new to review incrementally.
-  assert.match(scope(merged), /review_mode=full\n[^]*review_scope_reason=merge_base_moved\n/);
-  assert.match(scope(mergedAndChanged), /review_mode=incremental\n[^]*review_scope_reason=merge_base_moved_patch_changed\n[^]*diff_base_sha=/);
-  assert.equal(readFileSync(join(runnerTemp, 'open-review/incremental-files.txt'), 'utf8'), 'pr.txt\n');
-  const diff = runShell(block('Generate diff', 'run'), f.root, {
-    DIFF_BASE_SHA: reviewed, HEAD_SHA: mergedAndChanged, MERGE_BASE_SHA: f.trusted,
-    REVIEW_MODE: 'incremental', RUNNER_TEMP: runnerTemp,
-  });
-  assert.equal(diff.status, 0, diff.stderr);
-  assert.equal(readFileSync(join(f.root, '.codex-ci/changed-files.txt'), 'utf8'), 'pr.txt\n');
-  assert.doesNotMatch(readFileSync(join(f.root, '.codex-ci/pr-diff.patch'), 'utf8'), /source\.txt/);
+  assert.match(scope(merged), /review_mode=full\n[^]*review_scope_reason=merge_base_moved/);
 });
 
 test('incremental reviews start no focused or rules workers', (t) => {

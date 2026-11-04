@@ -521,18 +521,8 @@ runs:
                 fi
               elif ! git merge-base --is-ancestor "$MERGE_BASE_SHA" "$SINCE"; then
                 # Base-branch commits reached the PR after the last pass (a merge
-                # from main). `SINCE..HEAD` would show their changes as PR changes,
-                # so review only the files whose PR patch changed since. A patch
-                # that is unchanged, unreadable, or changed in a file that is the
-                # same at both heads keeps the full review.
+                # from main). `SINCE..HEAD` would show their changes as PR changes.
                 REASON="merge_base_moved"
-                if DELTA="$(node "$RUNNER_TEMP/open-review/engine/review-scope.cjs" delta "$PWD" "$BASE_SHA" "$SINCE" "$HEAD_SHA")" &&
-                   jq -e '(.files | length) > 0 and .moved' <<<"$DELTA" >/dev/null; then
-                  MODE="incremental"
-                  DIFF_BASE="$SINCE"
-                  REASON="merge_base_moved_patch_changed"
-                  jq -r '.files[]' <<<"$DELTA" > "$RUNNER_TEMP/open-review/incremental-files.txt"
-                fi
               else
                 MODE="incremental"
                 DIFF_BASE="$SINCE"
@@ -638,17 +628,12 @@ runs:
         git diff --name-only "$MERGE_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files-full.txt
 
         if [ "$REVIEW_MODE" = "incremental" ] && git cat-file -e "${DIFF_BASE_SHA}^{commit}" 2>/dev/null; then
-          # Incremental diff scoped to PR files only; after a merge from the
-          # base branch, to the files whose PR patch changed.
-          scope_files=.codex-ci/changed-files-full.txt
-          if [ -s "$RUNNER_TEMP/open-review/incremental-files.txt" ]; then
-            scope_files="$RUNNER_TEMP/open-review/incremental-files.txt"
-          fi
-          if [ -s "$scope_files" ]; then
+          # Incremental diff scoped to PR files only.
+          if [ -s .codex-ci/changed-files-full.txt ]; then
             changed_files=()
             while IFS= read -r changed_file; do
               changed_files+=("$changed_file")
-            done < "$scope_files"
+            done < .codex-ci/changed-files-full.txt
             git diff "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${changed_files[@]}" \
               > .codex-ci/pr-diff.patch
             git diff --name-only "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${changed_files[@]}" \

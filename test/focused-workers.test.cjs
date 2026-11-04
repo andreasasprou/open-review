@@ -71,6 +71,16 @@ test('auto runs two workers only when a PR changes a stored-data, security or in
     ['src/auth/session.test.ts', 'db/__tests__/migrate.ts'], ['src/infrastructure/adapter.ts']]) {
     assert.equal(auto(...files), 0, files.join(' '));
   }
+  // Generated production files and schema files still route as risky; only tests and docs do not.
+  for (const file of ['db/migrations/0002.generated.sql', 'infra/generated/policy.tf', 'src/schema.ts', 'schemas/customer.ts']) {
+    assert.equal(auto('src/view.tsx', file), 2, file);
+    assert.equal(parentModel('auto', [file]), 'gpt-6-astra', file);
+  }
+  // Moving security code out of a sensitive path still counts its source.
+  const renamed = 'diff --git a/src/auth/session.ts b/src/session.ts\nsimilarity index 90%\nrename from src/auth/session.ts\n' +
+    'rename to src/session.ts\n--- a/src/auth/session.ts\n+++ b/src/session.ts\n' + hunk(1, 1);
+  assert.equal(workerCount('auto', renamed), 2, 'rename with an edit');
+  assert.equal(workerCount('auto', 'diff --git a/src/auth/old.ts b/src/old.ts\nsimilarity index 100%\nrename from src/auth/old.ts\nrename to src/old.ts\n'), 2, 'pure rename');
   assert.equal(workerCount('4', fileDiff('src/view.tsx', 1)), 4);
   assert.equal(workerCount(0, fileDiff('infra/main.tf', 1)), 0);
   assert.throws(() => workerCount('5', ''), /auto or an integer from 0 to 4/);

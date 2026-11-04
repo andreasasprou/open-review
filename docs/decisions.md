@@ -110,19 +110,28 @@ changed 19 lines, about 5% of the PR.
   repository writers:
   - every changed path matches the consumer's `--docs-only-paths` (none by
     default): PASS without a model;
-  - the latest settlement passed and the PR's patch is the same file for file
-    (a rebase, a merge from the base branch, a rerun) or now differs only in
-    docs-only paths: the pass is carried;
-  - the latest settlement passed on an ancestor of this head: an incremental
-    review of the files whose patch changed since, by the parent alone at
-    `high` reasoning within 10 minutes;
-  - anything else, including a latest BLOCK, a passed head that was
-    force-rewritten, or `--full-review`: a full review.
-- Every carried, skipped or incremental settlement uses the exact-head
-  marker and names the passed head and settlement it builds on.
+  - the latest settlement passed on the same base branch, and every file of
+    the PR has the same base and result blobs as at the passed head (a rerun,
+    or a rebase or merge that left the PR's files alone), or now differs only
+    in docs-only paths: the pass is carried;
+  - the latest settlement passed on the same base branch at an ancestor of
+    this head: an incremental review of the files whose blobs changed, by the
+    parent alone at `high` reasoning within 10 minutes. The diff starts at
+    the passed head, or at the current merge base when the base moved in
+    between, so a base-branch change the PR dropped stays visible;
+  - anything else, including a latest BLOCK, a retargeted PR, a passed head
+    that was force-rewritten, a settlement without a recorded base, or
+    `--full-review`: a full review.
+- File identity is exact (modes and blob ids at the merge base and the
+  head). Hunk text is not: an edit moved between two identical regions would
+  match. A rebase over base-branch changes to the PR's own files therefore
+  loses its carried pass.
+- Every settlement uses the exact-head marker and records its base branch and
+  merge base (`Review base:`); a carried or incremental one names the passed
+  head and settlement it builds on. Publication refuses a settlement when
+  the PR's head, base branch or merge base changed during the run.
 - Incremental reviews, hosted and local, run no focused or rules workers.
-  After a merge from the base branch, a hosted review covers the files whose
-  PR patch changed instead of the whole PR.
+  After a merge from the base branch, a hosted review stays full.
 - Replay of the 9 days through these rules, with the focused-worker cut:
   45–53% of the earlier review tokens. It lost 0 of 21 acted-on blocking
   findings and about 10% of acted-on advisory findings after adjusting for

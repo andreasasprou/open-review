@@ -107,14 +107,15 @@ machine's `codex` is another version, it installs the pinned version once into
 run only. It needs model credentials: `--provider-base-url <url>`, or a
 ChatGPT login (`codex login`).
 
-A publishing run reviews only what changed since the PR last passed. When the
-latest settlement on the PR passed and the PR's patch is the same file for file
-(a rebase, a merge from the base branch, a rerun), it carries that pass without
-a model. When the passed head is an ancestor of the current head, the parent
-alone reviews the files whose patch changed since, at `high` reasoning within
-10 minutes (`OPEN_REVIEW_INCREMENTAL_REASONING`, `OPEN_REVIEW_INCREMENTAL_TIMEOUT`).
-Anything else, including a force-push that changed the patch, gets a full
-review; `--full-review` asks for one. `--docs-only-paths '<globs>'` lets a PR
+A publishing run reviews only what changed since the PR last passed on the same
+base branch. When every file of the PR has the same base and result blobs as at
+the passed head (a rerun, or a rebase or merge that left the PR's files alone),
+it carries that pass without a model. When the passed head is an ancestor of the
+current head, the parent alone reviews the files that changed, at `high`
+reasoning within 10 minutes (`OPEN_REVIEW_INCREMENTAL_REASONING`,
+`OPEN_REVIEW_INCREMENTAL_TIMEOUT`); if the base moved in between, it reads those
+files' whole PR patch. Anything else, including a retargeted PR or a force-push
+that changed the patch, gets a full review; `--full-review` asks for one. `--docs-only-paths '<globs>'` lets a PR
 that changes only those paths pass without a model; read the globs from a
 trusted ref, never from the PR head. Each such settlement keeps the exact-head
 marker and names the passed head and settlement it builds on.
