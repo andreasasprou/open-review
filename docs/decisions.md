@@ -24,8 +24,9 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `gpt-6-astra` | [parent-model](#parent-model) |
-| `parent-reasoning-effort` | `high` | [parent-model](#parent-model) |
+| `parent-model` | `auto` (`gpt-6-astra` on sensitive paths, else `gpt-6.1-sol`) | [parent-model-risk-gated](#parent-model-risk-gated) |
+| `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
+| Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
 | `child-model` | `gpt-6-luna` | [gpt-6-children](#gpt-6-children) |
 | `child-reasoning-effort` | `max` | [gpt-6-children](#gpt-6-children) |
 | `contract-investigator-model` | `gpt-6-sol` | [finder-models](#finder-models) |
@@ -48,6 +49,51 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### parent-model-risk-gated
+
+**2026-11-04.** Owner decision on cost, without an evaluation run. In one
+consumer pool, the GPT-6 Astra parent was 46% of model usage, its child
+threads 13% and the focused workers 20%.
+
+- Decision: `parent-model` defaults to `auto`. GPT-6 Astra reviews a PR that
+  changes a stored-data, security or infrastructure path outside tests and
+  docs (the path rule of
+  [focused-workers-risk-gated](#focused-workers-risk-gated)); GPT-6.1 Sol
+  reviews every other PR. The rule reads every path of the PR, rename sources
+  included, so all rounds of a PR use one model. A consumer with its own risk
+  tiers passes the model for each tier.
+- Effort: `parent-reasoning-effort` stays `high` for both models. That is the
+  setting under which GPT-6.1 Sol was measured as a parent
+  ([parent-model](#parent-model)); no other effort was measured.
+- Accepted loss: on PRs outside the sensitive paths, a weaker parent. On the
+  development set GPT-6.1 Sol found 6 of 33 known defects (+3 partial)
+  against Astra's 9, with 4 of its 18 findings invalid, at about a quarter of
+  Astra's cost. Blocking findings on those PRs now come from it.
+- The path rule matched 40% of one consumer's last 1,195 merged PRs.
+- The confound in [worker-model](#worker-model) holds: Codex 0.157.1 runs
+  `gpt-6.1-sol` with fallback model metadata.
+- Reopen when an evaluation shows GPT-6.1 Sol missing blocking defects that
+  Astra finds outside the sensitive paths, or when the pool has capacity for
+  Astra on every PR.
+
+### child-thread-cap
+
+**2026-11-04.** Owner decision on cost. The parent may keep at most 2 child
+threads open, down from 3. Codex 0.157.1 has no limit on total child threads,
+but parents keep their children open, so this limit acts as one: in 739
+recent runs on one consumer no review opened more than 3.
+
+- Children per review in those runs: none in 5%, one in 19%, two in 69%,
+  three in 7%; none nested. The first child is usually the dependency map and
+  the second the contract investigator ([recall-mode](#recall-mode)); a third
+  was an ad hoc probe of failure paths, state precedence or contracts.
+- Saving: about 3% of child-thread tokens, under 0.5% of that pool.
+- Accepted loss: not measured; it affects the 7% of reviews that opened a
+  third child. A limit of 1 would save about 39% of child-thread tokens but
+  drop the contract investigator from about 70% of reviews. Not adopted.
+- Reopen when an evaluation shows a third child finding known defects that
+  the first two miss.
 
 ### review-scope
 

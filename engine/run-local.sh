@@ -21,7 +21,9 @@ Options:
                          (10m for an incremental review).
   --kill-after <duration>
                          Extra time before force-killing after timeout. Default: 60s.
-  --model <model>        Codex model. Default: CODEX_MODEL or gpt-6-astra.
+  --model <model|auto>   Parent model. auto: gpt-6-astra when the PR changes a stored-data,
+                         security or infrastructure path outside tests and docs, else
+                         gpt-6.1-sol. Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
   --focused-workers <auto|n>
                          Advisory focused file slices. Default: auto (2 when the PR
@@ -91,7 +93,7 @@ BASE_SHA_OVERRIDE=""
 CODEX_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-20m}"
 KILL_AFTER="${CODEX_REVIEW_KILL_AFTER:-60s}"
 REQUIRED_CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.157.1}"
-export CODEX_MODEL="${CODEX_MODEL:-gpt-6-astra}"
+export CODEX_MODEL="${CODEX_MODEL:-auto}"
 export CODEX_REASONING="${CODEX_REASONING:-high}"
 export CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-gpt-6-luna}"
 export CODEX_SUBAGENT_REASONING="${CODEX_SUBAGENT_REASONING:-max}"
@@ -580,6 +582,14 @@ git -C "$ROOT" show "$RULES_SOURCE:$RULES_PATH" > "$REVIEW_PROMPTS_DIR/rules.md"
   echo "error: failed to stage rule pack $RULES_SOURCE:$RULES_PATH; see $SETUP_LOG" >&2
   exit 1
 }
+# The parent model follows the same risk rule as the focused workers, over the
+# whole PR's paths (rename sources included), so every round uses one model.
+if ! CODEX_MODEL="$(git -C "$ROOT" diff --name-only --no-renames "$(git -C "$ROOT" merge-base "$BASE_SHA" "$HEAD_SHA")" "$HEAD_SHA" |
+  node "$ENGINE_DIR/focused-workers.cjs" parent-model "$CODEX_MODEL")"; then
+  echo "error: could not resolve the parent model; see the message above" >&2
+  exit 1
+fi
+echo "Parent model: $CODEX_MODEL" | tee -a "$RUN_DIR/summary.txt"
 "$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble \
   --rules "$REVIEW_PROMPTS_DIR/rules.md" \
   --parent-model "$CODEX_MODEL" \
@@ -1077,7 +1087,7 @@ if [ "$STREAM_RAW" = "true" ]; then
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
         -c 'features.multi_agent_v2.enabled=true' \
-        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=3' \
+        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
@@ -1105,7 +1115,7 @@ else
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
         -c 'features.multi_agent_v2.enabled=true' \
-        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=3' \
+        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \

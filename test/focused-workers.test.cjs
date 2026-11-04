@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { selectSlices, excluded, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
+const { selectSlices, excluded, parentModel, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
 const { renderFocusedWorkerSection, readFocusedWorkers, loadPreviousState, postResults, MARKERS } = require('../engine/index.cjs');
 const { parseProjectionComment } = require('../engine/ledger/projection.cjs');
 const { createRecordingCaughtErrorDiagnosticRecorder } = require('./helpers/recording-recorder.cjs');
@@ -74,6 +74,24 @@ test('auto runs two workers only when a PR changes a stored-data, security or in
   assert.equal(workerCount('4', fileDiff('src/view.tsx', 1)), 4);
   assert.equal(workerCount(0, fileDiff('infra/main.tf', 1)), 0);
   assert.throws(() => workerCount('5', ''), /auto or an integer from 0 to 4/);
+});
+
+test('auto parent model is GPT-6 Astra only on a risky PR and GPT-6.1 Sol otherwise', () => {
+  for (const file of ['db/migrations/0001_init.sql', 'src/auth/session.ts', 'src/lib/requireAuth.ts', 'infra/main.tf',
+    '.github/workflows/release.yml']) {
+    assert.equal(parentModel('auto', ['src/view.tsx', file]), 'gpt-6-astra', file);
+  }
+  for (const files of [['src/view.tsx', 'src/author.ts'], ['docs/security/policy.md'], ['src/auth/session.test.ts'], []]) {
+    assert.equal(parentModel('auto', files), 'gpt-6.1-sol', files.join(' '));
+  }
+  // A consumer with its own tiers names the model; that choice is kept either way.
+  assert.equal(parentModel('gpt-6-astra', ['src/view.tsx']), 'gpt-6-astra');
+  assert.equal(parentModel('gpt-6.1-sol', ['infra/main.tf']), 'gpt-6.1-sol');
+  assert.throws(() => parentModel('gpt-6" -c x', []), /plain model identifier/);
+  const command = (value, files) => execFileSync('node', [path.join(__dirname, '../engine/focused-workers.cjs'), 'parent-model', value],
+    { input: files.join('\n'), encoding: 'utf8' });
+  assert.equal(command('auto', ['src/view.tsx', 'db/old-name.sql']), 'gpt-6-astra\n');
+  assert.equal(command('auto', ['src/view.tsx']), 'gpt-6.1-sol\n');
 });
 
 test('generated header and exclusions are applied before churn order', () => {

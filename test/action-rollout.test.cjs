@@ -320,6 +320,45 @@ test('incremental reviews start no focused or rules workers', (t) => {
   }
 });
 
+test('the hosted parent model follows the PR risk rule and reaches every model consumer', (t) => {
+  const f = fixture(t, false, false);
+  const runnerTemp = mkdtempSync(join(tmpdir(), 'open-review-parent-temp-'));
+  t.after(() => rmSync(runnerTemp, { recursive: true, force: true }));
+  cpSync(resolve(__dirname, '../engine'), join(runnerTemp, 'open-review/engine'), { recursive: true });
+  git(f.root, 'checkout', '-qb', 'pr', f.base);
+  writeFileSync(join(f.root, 'view.tsx'), 'view\n');
+  git(f.root, 'add', 'view.tsx');
+  git(f.root, 'commit', '-qm', 'ui');
+  const standard = git(f.root, 'rev-parse', 'HEAD');
+  mkdirSync(join(f.root, 'db/migrations'), { recursive: true });
+  writeFileSync(join(f.root, 'db/migrations/0002.sql'), 'select 1;\n');
+  git(f.root, 'add', 'db');
+  git(f.root, 'commit', '-qm', 'migration');
+  const risky = git(f.root, 'rev-parse', 'HEAD');
+  const model = (head, input) => {
+    writeFileSync(f.output, '');
+    const result = runShell(block('Resolve parent model', 'run'), f.root, {
+      PARENT_MODEL: input, HEAD_SHA: head, MERGE_BASE_SHA: f.base, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: f.output,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return readFileSync(f.output, 'utf8');
+  };
+  assert.equal(model(standard, 'auto'), 'model=gpt-6.1-sol\n');
+  assert.equal(model(risky, 'auto'), 'model=gpt-6-astra\n');
+  assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\n');
+  assert.match(action, /\n  parent-model:\n[\s\S]*?\n    default: auto\n/);
+  assert.equal(action.match(/steps\.parent\.outputs\.model/g).length, 3);
+  assert.ok(action.indexOf('    - name: Resolve parent model') < action.indexOf('    - name: Restore prior review session'));
+});
+
+test('the parent opens at most two child threads, hosted and local', () => {
+  const local = readFileSync(resolve(__dirname, '../engine/run-local.sh'), 'utf8');
+  for (const text of [action, local]) {
+    assert.doesNotMatch(text, /max_concurrent_threads_per_session=(?!2')/);
+    assert.match(text, /max_concurrent_threads_per_session=2'/);
+  }
+});
+
 test('hosted prompt handles a multibyte character across the 4000-byte limit', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'open-review-body-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

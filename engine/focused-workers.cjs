@@ -26,6 +26,10 @@ const SENSITIVE_PATHS = [
   /[a-z](Auth|OAuth|Iam|Permissions?|Secrets?|Security)([A-Z0-9/_.-]|$)/,
   /(^|\/)infra\//i, /(^|\/)(Dockerfile|docker-compose)[^/]*$/i, /^\.github\/(workflows|actions)\//,
 ];
+// "auto" parent model: GPT-6 Astra on a PR that changes one of those paths,
+// GPT-6.1 Sol otherwise (decision parent-model-risk-gated).
+const RISK_PARENT_MODEL = "gpt-6-astra";
+const STANDARD_PARENT_MODEL = "gpt-6.1-sol";
 const WORKER_MODEL = "gpt-6.1-sol";
 const WORKER_REASONING_EFFORT = "medium";
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
@@ -71,6 +75,14 @@ function parseDiff(patch) {
 
 function sensitivePaths(files) {
   return files.filter((file) => !excluded(file) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
+}
+
+/** The parent reviewer's model for `auto` or an explicit model, from the PR's changed paths. */
+function parentModel(value, files) {
+  if (value === "auto") return sensitivePaths(files).length > 0 ? RISK_PARENT_MODEL : STANDARD_PARENT_MODEL;
+  // The model is interpolated into Codex arguments and the prompt.
+  if (!/^[A-Za-z0-9._-]+$/.test(String(value))) throw new Error("parent model must be auto or a plain model identifier");
+  return value;
 }
 
 function workerCount(value, patch) {
@@ -372,6 +384,13 @@ async function run(options) {
 }
 
 function main(argv) {
+  if (argv[0] === 'parent-model') {
+    // Changed paths, one per line, on stdin; rename sources included.
+    return Promise.resolve().then(() => {
+      const files = fs.readFileSync(0, 'utf8').split('\n').filter(Boolean);
+      process.stdout.write(`${parentModel(argv[1], files)}\n`);
+    });
+  }
   if (argv[0] !== 'run') throw new Error('usage: focused-workers.cjs run <auto|max> <base-sha> <home-root> <auth-source> <output-dir> <root> [timeout|gtimeout]');
   const [, max, baseSha, homeRoot, authSource, outputDir, root, timeoutCommand = 'timeout'] = argv;
   if (!/^[0-9a-f]{40}$/.test(baseSha)) throw new Error('base SHA must be a full SHA');
@@ -383,4 +402,4 @@ function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { excluded, parseDiff, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };
+module.exports = { excluded, parentModel, parseDiff, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };

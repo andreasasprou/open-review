@@ -26,7 +26,7 @@ structured output, not the model's verdict word.
 | Input | Default | Purpose |
 |---|---|---|
 | `rules-path` | (required) | Rule pack path. It is read from the default branch. |
-| `parent-model` / `parent-reasoning-effort` | `gpt-6-astra` / `high` | Parent reviewer |
+| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` uses `gpt-6-astra` when the PR changes a stored-data, security or infrastructure path outside tests and docs, and `gpt-6.1-sol` otherwise; a model name always uses that model |
 | `child-model` / `child-reasoning-effort` | `gpt-6-luna` / `max` | Default for child agents |
 | `codex-cli-version` | `0.157.1` | Exact `@openai/codex` version |
 | `provider-base-url` / `provider-env-key` | (required) / empty | The Responses-API model provider, with an optional variable that holds a Bearer key |

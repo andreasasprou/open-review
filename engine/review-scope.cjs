@@ -115,12 +115,18 @@ function parseSettlements(comments, { marker, attributionHeader = "" }) {
 	}).sort((left, right) => left.id - right.id);
 }
 
-/** The newest settlement whose author can write to the repository; anyone can comment. */
+/**
+ * The newest settlement whose author can write to the repository; anyone can
+ * comment. `permissionOf` returns null when it cannot tell, and then this throws:
+ * skipping that author could pass over a newer BLOCK.
+ */
 function latestTrustedSettlement(settlements, permissionOf) {
 	const permissions = new Map();
 	for (const settlement of [...settlements].reverse()) {
 		if (!permissions.has(settlement.author)) permissions.set(settlement.author, permissionOf(settlement.author));
-		if (WRITE_PERMISSIONS.has(permissions.get(settlement.author))) return settlement;
+		const permission = permissions.get(settlement.author);
+		if (permission === null) throw new Error("settlement author's permission is unreadable");
+		if (WRITE_PERMISSIONS.has(permission)) return settlement;
 	}
 	return null;
 }
@@ -145,14 +151,16 @@ function isAncestor(git, ancestor, head) {
 
 /**
  * Review scope for `headSha`. `latest` is the latest trusted settlement on the PR
- * or null; its head must already be fetched. A full review names its reason.
+ * or null; its head must already be fetched. `settlementsVerified` is false when
+ * the settlements' authors could not be checked. A full review names its reason.
  */
-function classify({ git, baseSha, headSha, docsPaths = [], latest = null, fullReview = false }) {
+function classify({ git, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false }) {
 	const full = (reason) => ({ mode: "full", reason, files: [] });
 	const mergeBase = git(["merge-base", baseSha, headSha]).trim();
 	const files = changedPaths(git, mergeBase, headSha);
 	if (docsOnly(files, docsPaths)) return { mode: "skip", reason: "docs_only", files };
 	if (fullReview) return full("full_review_requested");
+	if (!settlementsVerified) return full("settlement_author_unverified");
 	if (latest === null) return full("no_settled_review");
 	if (latest.gate !== "PASS") return full("last_review_not_passed");
 	if (!commitExists(git, latest.head)) return full("passed_head_missing");
@@ -214,7 +222,14 @@ function main(recorder, argv) {
 	const git = gitRunner(root);
 	const settlements = parseSettlements(readComments(commentsFile),
 		{ marker, attributionHeader: process.env.OPEN_REVIEW_ATTRIBUTION_HEADER || "" });
-	const latest = latestTrustedSettlement(settlements, (login) => githubPermission(recorder, repository, login));
+	let latest = null;
+	let settlementsVerified = true;
+	try {
+		latest = latestTrustedSettlement(settlements, (login) => githubPermission(recorder, repository, login));
+	} catch (error) {
+		recordCaughtError({ recorder, error, operation: "review.scope", stage: "trusted_settlement", disposition: "recover", context: {} });
+		settlementsVerified = false;
+	}
 	if (latest !== null && !commitExists(git, latest.head)) {
 		try {
 			git(["fetch", "--quiet", "--no-tags", "origin", latest.head]);
@@ -224,7 +239,7 @@ function main(recorder, argv) {
 		}
 	}
 	process.stdout.write(`${JSON.stringify(classify({ git, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
-		latest, fullReview: fullReview === "true" }))}\n`);
+		latest, settlementsVerified, fullReview: fullReview === "true" }))}\n`);
 }
 
 if (require.main === module) runReviewCli((recorder) => main(recorder, process.argv.slice(2)));

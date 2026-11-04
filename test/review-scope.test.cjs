@@ -59,6 +59,7 @@ test("a PR without a passed review, or whose latest review blocked, gets a full 
 	assert.equal(classify({ git, baseSha: base, headSha: head, latest: settlement(reviewed, "BLOCK") }).reason, "last_review_not_passed");
 	assert.equal(classify({ git, baseSha: base, headSha: head, latest: settlement(reviewed), fullReview: true }).reason, "full_review_requested");
 	assert.equal(classify({ git, baseSha: base, headSha: head, latest: settlement("f".repeat(40)) }).reason, "passed_head_missing");
+	assert.equal(classify({ git, baseSha: base, headSha: head, latest: null, settlementsVerified: false }).reason, "settlement_author_unverified");
 });
 
 test("a force-push that rewrote the passed head and changed the patch gets a full review", (t) => {
@@ -156,7 +157,9 @@ test("only a writer's settlement for the marker scopes a review", () => {
 	assert.deepEqual(settlements.map((entry) => entry.id), [1, 2, 3]);
 	const permission = (login) => (login === "maintainer" ? "write" : "read");
 	assert.deepEqual(latestTrustedSettlement(settlements, permission), { id: 2, head, gate: "BLOCK", author: "maintainer", url: "u2" });
-	assert.equal(latestTrustedSettlement(settlements, () => null), null);
+	assert.equal(latestTrustedSettlement(settlements, () => "read"), null);
+	// An unreadable permission must not skip a newer writer's BLOCK for an older PASS.
+	assert.throws(() => latestTrustedSettlement(settlements, (login) => (login === "maintainer" ? null : "read")), /unreadable/);
 	const header = "> Posted by the operator.";
 	assert.deepEqual(parseSettlements([{ id: 6, user: { login: "maintainer" }, body: body("PASS", `${header}\n\n`) }],
 		{ marker: MARKER, attributionHeader: header }).map((entry) => entry.gate), ["PASS"]);
@@ -180,6 +183,8 @@ test("the classify command reads the PR's comments and the author's permission",
 	assert.deepEqual(classifyCommand("docs/**", "false"),
 		{ mode: "incremental", reason: "since_passed_review", from: passed, settlement: "u9", files: ["src/b.ts"] });
 	assert.equal(classifyCommand("", "true").reason, "full_review_requested");
+	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+	assert.equal(classifyCommand("", "false").reason, "settlement_author_unverified");
 });
 
 test("the local runner settles a carried or skipped head without a model, under the exact-head marker", (t) => {
