@@ -35,7 +35,9 @@ decision entry behind it.
 | `worker-reasoning-effort` | `medium` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
 | `focused-workers` | `auto` (2 on sensitive paths, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope) |
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
-| `rules-worker` | `true`; skipped on incremental reviews | [rules-worker](#rules-worker), [review-scope](#review-scope) |
+| `rules-worker` | `true`; skipped on incremental reviews and on PRs without a production change | [rules-worker](#rules-worker), [review-scope](#review-scope), [review-cost-trims](#review-cost-trims) |
+| Rules worker input | production-file hunks and the rule pack | [review-cost-trims](#review-cost-trims) |
+| Codex skill list and sleep tool (parent, children, workers) | off (`skills.include_instructions=false`, `features.sleep_tool=false`) | [review-cost-trims](#review-cost-trims) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
 | `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
@@ -49,6 +51,85 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### review-cost-trims
+
+**2026-11-04.** Owner decision on cost, without a recall evaluation. Can a
+review drop context and coordination calls that find nothing? An audit of 635
+retained local reviews on one consumer over 7 days found the parent paying
+for its context more than for its thinking: 21 requests per review on
+average, each re-sending a context that grows from about 35k to 126k tokens.
+
+- Evidence from the audit:
+  - Codex injected the repository's skill list into every session, about 18%
+    of the parent's first request; the parent opened a human review skill in
+    634 of 635 reviews, and children and workers re-read skill files.
+  - Coordination-only parent requests (spawn, follow-up messages, waits,
+    `list_agents`, `request_user_input_async` and `sleep`) were 24% of parent
+    cost. Exec mode has no user, so every `request_user_input_async` was waste.
+  - 69 children spawned with the default `fork_turns` (`all`) ran on the
+    parent's GPT-6 Astra whatever model the spawn named: 42% of child cost.
+  - The rules worker read the whole diff and the guidance chain, about 2.2M
+    input tokens per review and 13% of the pool.
+- Decision:
+  - Parent, child and worker sessions run with
+    `skills.include_instructions=false` and `features.sleep_tool=false`.
+    Children share the parent session's configuration. The prompt says
+    repository skill files are not review guidance.
+  - The Delegation rules ask for one spawn per child with its full brief, no
+    follow-up unless the child asks, `fork_turns: "none"` on every spawn, no
+    `list_agents`, `sleep` or user-input calls, and one blocking wait after
+    the parent's own reads.
+  - The local runner warns, without changing the gate, when a child ran on the
+    parent model although its spawn did not ask for it.
+  - The rules worker reads the production-file hunks of the diff (the files a
+    focused worker may take) and the rule pack, not the whole diff and the
+    guidance chain. A PR without a production change runs no rules worker.
+- Accepted loss: not measured on a recall set. In the audit window 40% of the
+  rules worker's 1,051 candidates (22% of its P2 candidates) were on test or
+  documentation files; it no longer checks those files, and rules it read
+  only from guidance outside the rule pack. The parent no longer sees the
+  skill list, which also stops the skill-driven extra children.
+- Not changed: models, reasoning efforts, worker counts and time limits.
+- Proof: one non-publishing review of one sensitive PR at the audit's typical
+  size (32 KB diff, 9 files), with the same head, base, rule pack, parent
+  model and effort (GPT-6 Astra, `xhigh`), children and workers (4 focused
+  workers and the rules worker on GPT-6 Sol `high`) as a retained run from 4
+  days earlier. Credits at list price:
+
+  | | before | after |
+  | --- | --- | --- |
+  | Total | 130.6 | 97.9 (-25%) |
+  | Parent | 82.9 | 67.1 |
+  | Children (dependency map, contract investigator) | 6.8 | 7.7 |
+  | Rules worker | 18.6 (2.2M input tokens) | 3.0 (0.1M) |
+  | Focused workers | 22.3 | 20.2 |
+  | Parent requests | 22 | 19 |
+  | Coordination-only parent requests | 4 (13.9 credits) | 8 (22.9 credits) |
+  | Parent first request | 34.6k tokens | 28.3k tokens |
+  | Wall time | 4m44s | 10m48s |
+
+  - Codex 0.157.1 accepted both keys under `--strict-config` and rejects
+    unknown ones. No thread of the after-run received the skill list
+    (children's first requests fell from about 22k to 16k tokens). A probe
+    against a local stub provider showed both keys remove the skill block and
+    the `sleep` and `clock` tools from the first request.
+  - Neither run forked a child or ran one on the parent model. On a retained
+    run with a forked child, the new check names it.
+  - Coordination: the after-run sent no follow-up message and called no
+    `list_agents`, but it waited 4 times with `wait_agent` and twice through
+    `wait` on a nonexistent command. `wait_agent` returns on every mailbox
+    update without content, and the contract investigator starts only after
+    the dependency map returns, so the review waits in two phases. Wall time
+    doubled because the dependency map child ran 14 requests against 7.
+  - Both reviews passed with no parent findings. The rules worker reported 3
+    advisory findings before and none after: two were on test or
+    documentation files, and the third cited a rule outside the rule pack.
+  - Confounders: one sample per arm; the PR's discussion context had grown
+    since the earlier run; upstream load was not controlled.
+- Reopen when a recall evaluation shows these rules losing known defects, or
+  when a pinned Codex version changes skill injection, `fork_turns` defaults
+  or the sleep tool.
 
 ### parent-model-risk-gated
 
