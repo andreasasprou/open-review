@@ -171,11 +171,15 @@ first proposed; the owner's decision after the calibration sets the routing
   consumer does. An engine-level trivial pass is reconsidered only together
   with a gate-side re-check in every consumer that uses it.
 - The floor (`sensitivePaths` in `engine/focused-workers.cjs`) also covers
-  review and merge machinery, prompts, rule packs, agent instructions and
-  `.github/`, even as Markdown, because a PR could weaken its own review
-  through them. Only tests and Markdown prose are exempt, so code and MDX
-  under `docs/` count. Paths are read NUL-delimited, so quoted names still
-  match.
+  review and merge machinery, prompts, rule packs (the configured rule-pack
+  path included), agent instructions, `.github/`, `engine/` and `action.yml`,
+  even as Markdown, because a PR could weaken its own review through them.
+  Only tests and Markdown prose are exempt, so code and MDX under `docs/`
+  count. Paths are read NUL-delimited, so quoted names still match.
+- The floor wins over a consumer's docs-only paths: a PR or a push after a
+  pass that changes a floor file is neither skipped nor carried as docs-only.
+  Floor files stay eligible for focused workers and in the rules worker's
+  patch even when they are docs or tests.
 - `risk-triage.cjs` and its prompt are trusted runner files. A `risk` that is
   not exactly one of the strings is an invalid answer, which counts as high.
   Unreadable PR comments give a full review, never "no earlier settlement".

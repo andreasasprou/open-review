@@ -117,8 +117,10 @@ reasoning within 10 minutes (`OPEN_REVIEW_INCREMENTAL_REASONING`,
 files' whole PR patch. Anything else, including a retargeted PR or a force-push
 that changed the patch, gets a full review; `--full-review` asks for one. `--docs-only-paths '<globs>'` lets a PR
 that changes only those paths pass without a model; read the globs from a
-trusted ref, never from the PR head. Each such settlement keeps the exact-head
-marker and names the passed head and settlement it builds on.
+trusted ref, never from the PR head. Docs-only paths never cover a file on the
+review floor (code or MDX under `docs/`, review policy, prompts, rule packs or
+agent instructions). Each such settlement keeps the exact-head marker and names
+the passed head and settlement it builds on.
 
 `--model auto` (the default) sets the review level per PR with a GPT-6.1 Sol
 triage call; every PR gets a model review. Without `--provider-base-url` the

@@ -322,7 +322,7 @@ test('the hosted review level follows the PR paths and the triage, and reaches e
     writeFileSync(f.output, '');
     // No provider: the triage call fails and the PR gets the high level.
     const result = runShell(block('Resolve review level', 'run'), f.root, {
-      PARENT_MODEL: input, PR_TITLE: 'A view', HEAD_SHA: head, MERGE_BASE_SHA: f.base, RUNNER_TEMP: runnerTemp,
+      PARENT_MODEL: input, RULES_PATH: '.open-review/rules.md', PR_TITLE: 'A view', HEAD_SHA: head, MERGE_BASE_SHA: f.base, RUNNER_TEMP: runnerTemp,
       GITHUB_OUTPUT: f.output, PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '',
     });
     assert.equal(result.status, 0, result.stderr);

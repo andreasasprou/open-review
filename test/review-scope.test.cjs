@@ -203,6 +203,21 @@ test("docs-only PRs skip the model and docs-only pushes after a pass carry it", 
 	assert.equal(scope({ baseSha: base, headSha: run("rev-parse", "HEAD"), docsPaths: DOCS, latest: passed(code, base) }).reason, "docs_only_change");
 });
 
+test("the floor wins over docs-only paths: protected files never skip or carry without a model", (t) => {
+	const { commit, lines, base, scope } = repository(t);
+	const docsAll = parseDocsPaths("docs/**, config/**");
+	const code = commit({ "docs/auth/handler.ts": "export const ok = true;\n" });
+	assert.equal(scope({ baseSha: base, headSha: code, docsPaths: docsAll }).reason, "no_settled_review");
+	assert.equal(scope({ baseSha: base, headSha: code, docsPaths: docsAll, fullReview: true }).reason, "full_review_requested");
+	const reviewed = commit({ "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") });
+	const mdx = commit({ "docs/security/page.mdx": "<Policy />\n" });
+	assert.equal(scope({ baseSha: base, headSha: mdx, docsPaths: docsAll, latest: passed(reviewed, base) }).mode, "incremental");
+	const pack = commit({ "config/team-guide.md": "rule\n" });
+	assert.equal(scope({ baseSha: base, headSha: pack, docsPaths: docsAll, latest: passed(mdx, base), protectedFiles: ["config/team-guide.md"] }).mode,
+		"incremental", "the configured rule pack");
+	assert.equal(scope({ baseSha: base, headSha: pack, docsPaths: docsAll, latest: passed(mdx, base) }).reason, "docs_only_change");
+});
+
 test("docs-only paths match whole segments and refuse traversal", () => {
 	const paths = parseDocsPaths("docs/**  *.md,assets/*.png");
 	assert.equal(docsOnly(["docs/a/b/c.md", "README.md", "assets/logo.png"], paths), true);
@@ -347,7 +362,7 @@ test("the runner scopes a review of the PR's current head and base, even when a 
 		encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RUN_DIR: root,
 			SETUP_LOG: path.join(root, "setup.log"), PUBLISH_TRUSTED_ARTIFACTS: "true", REMOTE_HEAD_SHA: head, HEAD_SHA: head, BASE_SHA: base,
 			BASE_REF: "main", CURRENT_REPOSITORY: "example/repo", PR_NUMBER: "1", ENGINE_DIR: root, ROOT: root, SETTLEMENT_MARKER: MARKER,
-			DOCS_ONLY_PATHS: "", FULL_REVIEW: "false", ...extra },
+			DOCS_ONLY_PATHS: "", FULL_REVIEW: "false", RULES_PATH: ".open-review/rules.md", ...extra },
 	});
 	assert.equal(JSON.parse(scope({})).mode, "incremental", "current head and base, named or not");
 	assert.equal(JSON.parse(scope({ HEAD_SHA: "c".repeat(40) })).reason, "unscoped_run", "a historical head");

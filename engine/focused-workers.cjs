@@ -29,15 +29,17 @@ const SENSITIVE_PATHS = [
 ];
 // Review and merge machinery, prompts, rule packs and agent instructions: a PR
 // could weaken its own review through them, so they count even as Markdown or
-// tests (decision risk-triage).
+// tests (decision risk-triage). The configured rule pack is passed in.
 const POLICY_PATHS = [
   /^\.github\//,
+  /^engine\//,
+  /^action\.ya?ml$/,
   /(^|\/)(AGENTS|CLAUDE|GEMINI)\.md$/i,
   /(^|\/)SKILL\.md$/i,
   /(^|\/)\.(agents|claude|codex|cursor|open-review)\//i,
   /(^|\/)prompts?\//i,
   /prompt[^/]*\.(md|txt)$/i,
-  /(^|[/_.-])(code-review|codex-review|review-polic\w*|merge-(gate|queue)\w*|sign-?off\w*)([/_.-]|$)/i,
+  /(^|[/_.-])(code-review|codex-review|review-(polic\w*|rules?)|merge-(gate|queue)\w*|sign-?off\w*)([/_.-]|$)/i,
   /(^|\/)CODEOWNERS$/,
 ];
 const WORKER_MODEL = "gpt-6.1-sol";
@@ -94,34 +96,40 @@ function floorExempt(file) {
   return excluded(file) === "test" || /\.md$/i.test(file);
 }
 
-function sensitivePaths(files) {
-  return files.filter((file) => POLICY_PATHS.some((pattern) => pattern.test(file)) ||
+/** The floor: changed paths that get the full review. `protectedFiles` are exact consumer paths, such as the rule pack. */
+function sensitivePaths(files, protectedFiles = []) {
+  return files.filter((file) => protectedFiles.includes(file) || POLICY_PATHS.some((pattern) => pattern.test(file)) ||
     (!floorExempt(file) && SENSITIVE_PATHS.some((pattern) => pattern.test(file))));
 }
 
-function workerCount(value, patch) {
+// A worker reads production files, and every floor file even when it is docs or a test.
+function workerEligible(entry, headerForFile, protectedFiles) {
+  return !excluded(entry.file, entry.deleted ? "" : headerForFile(entry.file)) || sensitivePaths([entry.file], protectedFiles).length > 0;
+}
+
+function workerCount(value, patch, protectedFiles = []) {
   if (value === "auto") {
     const files = parseDiff(patch).flatMap((entry) => [entry.file, entry.previous].filter(Boolean));
-    return sensitivePaths(files).length > 0 ? AUTO_WORKERS : 0;
+    return sensitivePaths(files, protectedFiles).length > 0 ? AUTO_WORKERS : 0;
   }
   if (!/^[0-4]$/.test(String(value))) throw new Error("focused-workers must be auto or an integer from 0 to 4");
   return Number(value);
 }
 
-function selectSlices(patch, max, headerForFile = () => "") {
+function selectSlices(patch, max, headerForFile = () => "", protectedFiles = []) {
   if (!Number.isInteger(max) || max < 0 || max > MAX_WORKERS) throw new Error("focused-workers must be an integer from 0 to 4");
   // The pilot ranks deleted paths too; their old content remains available at BASE.
-  return parseDiff(patch).filter((entry) => !excluded(entry.file, entry.deleted ? "" : headerForFile(entry.file)))
+  return parseDiff(patch).filter((entry) => workerEligible(entry, headerForFile, protectedFiles))
     .sort((a, b) => (b.added + b.removed) - (a.added + a.removed) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
     .slice(0, max).map((entry, index) => ({ index, file: entry.file, hunks: entry.hunks }));
 }
 
 // The rules worker's input: the diff of production files only, the files a
 // slice worker may take (decision review-cost-trims).
-function productionPatch(patch, headerForFile = () => "") {
+function productionPatch(patch, headerForFile = () => "", protectedFiles = []) {
   return patch.split(/(?=^diff --git )/m).filter((chunk) => {
     const [entry] = chunk.startsWith("diff --git ") ? parseDiff(chunk) : [];
-    return entry && !excluded(entry.file, entry.deleted ? "" : headerForFile(entry.file));
+    return entry && workerEligible(entry, headerForFile, protectedFiles);
   }).join("");
 }
 
@@ -360,7 +368,8 @@ async function run(options) {
   }
   const resultPath = path.join(options.outputDir, 'focused-workers.json');
   const patch = fs.readFileSync(path.join(options.outputDir, 'pr-diff.patch'), 'utf8');
-  const max = workerCount(options.max, patch);
+  const protectedFiles = options.protectedFiles || [];
+  const max = workerCount(options.max, patch, protectedFiles);
   process.stderr.write(`focused workers: ${max} (requested ${options.max}); worker model ${workerModel} at ${workerReasoningEffort}\n`);
   const headerForFile = (file) => {
     let fd;
@@ -374,10 +383,10 @@ async function run(options) {
       return buffer.subarray(0, fs.readSync(fd, buffer, 0, 2000, 0)).toString('utf8');
     } catch { return ''; } finally { if (fd !== undefined) fs.closeSync(fd); }
   };
-  const slices = selectSlices(patch, max, headerForFile);
+  const slices = selectSlices(patch, max, headerForFile, protectedFiles);
   // The rules worker reads production hunks and the rule pack; a PR without a
   // production change gives it nothing to check.
-  const rulesPatch = options.rules ? productionPatch(patch, headerForFile) : '';
+  const rulesPatch = options.rules ? productionPatch(patch, headerForFile, protectedFiles) : '';
   const rulesPatchPath = path.join(options.outputDir, 'rules-worker.patch');
   fs.rmSync(rulesPatchPath, { force: true });
   if (rulesPatch) fs.writeFileSync(rulesPatchPath, rulesPatch);
@@ -425,7 +434,7 @@ function main(argv) {
   if (!['timeout', 'gtimeout'].includes(timeoutCommand)) throw new Error('unsupported timeout command');
   return run({ max, baseSha, homeRoot, authSource: authSource === '-' ? '' : authSource, outputDir, root, timeoutCommand,
     providerBaseUrl: process.env.PROVIDER_BASE_URL || '', providerEnvKey: process.env.PROVIDER_ENV_KEY || '',
-    rules: process.env.RULES_WORKER === 'true',
+    rules: process.env.RULES_WORKER === 'true', protectedFiles: process.env.RULES_PATH ? [process.env.RULES_PATH] : [],
     workerModel: process.env.WORKER_MODEL || '', workerReasoningEffort: process.env.WORKER_REASONING_EFFORT || '' });
 }
 

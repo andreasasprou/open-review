@@ -608,7 +608,7 @@ TRIAGE_NOTE="none"
 if [ "$CODEX_MODEL" = "auto" ]; then
   printf '%s\n' "$PR_BODY" > "$RUN_DIR/triage-body.txt"
   if ! LEVEL_JSON="$(PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
-    node "$ENGINE_DIR/risk-triage.cjs" level "$ROOT" "$MERGE_BASE_SHA" "$HEAD_SHA" "$PR_TITLE" "$RUN_DIR/triage-body.txt")"; then
+    node "$ENGINE_DIR/risk-triage.cjs" level "$ROOT" "$MERGE_BASE_SHA" "$HEAD_SHA" "$PR_TITLE" "$RUN_DIR/triage-body.txt" "$RULES_PATH")"; then
     echo "error: could not resolve the review level; see the message above" >&2
     exit 1
   fi
@@ -719,7 +719,7 @@ if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ "$HEAD_SHA" = "$REMOTE_HEAD_SH
     SCOPE_JSON='{"mode":"full","reason":"settlement_history_unreadable","files":[]}'
   else
     SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
-      "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
+      "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" "$RULES_PATH" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
   fi
   if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
   if [ -n "${SCOPE_OUTPUT:-}" ] && [ "$SCOPE_STATUS" -eq 0 ]; then
@@ -1129,7 +1129,7 @@ fi
 if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
    rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
    cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md"; then
-  (cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" \
+  (cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" RULES_PATH="$RULES_PATH" \
     WORKER_MODEL="${OPEN_REVIEW_WORKER_MODEL:-}" WORKER_REASONING_EFFORT="${OPEN_REVIEW_WORKER_REASONING_EFFORT:-}" \
     exec node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
       "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}") \

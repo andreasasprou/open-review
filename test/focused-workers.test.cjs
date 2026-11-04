@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { selectSlices, excluded, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
+const { selectSlices, productionPatch, excluded, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
 const { renderFocusedWorkerSection, readFocusedWorkers, loadPreviousState, postResults, MARKERS } = require('../engine/index.cjs');
 const { parseProjectionComment } = require('../engine/ledger/projection.cjs');
 const { createRecordingCaughtErrorDiagnosticRecorder } = require('./helpers/recording-recorder.cjs');
@@ -94,6 +94,24 @@ test('the floor keeps code and MDX under docs, and review policy, prompts, rule 
   assert.deepEqual(sensitivePaths(floor), floor);
   const prose = ['docs/security/policy.md', 'README.md', 'docs/guide.md', 'apps/web/src/prompt-input.tsx', 'src/auth/session.test.ts'];
   assert.deepEqual(sensitivePaths(prose), []);
+});
+
+test('the floor covers the engine, the action and the configured rule pack', () => {
+  const { sensitivePaths } = require('../engine/focused-workers.cjs');
+  assert.deepEqual(sensitivePaths(['engine/run-local.sh', 'engine/risk-triage.cjs', 'action.yml', 'config/review-rules.md']),
+    ['engine/run-local.sh', 'engine/risk-triage.cjs', 'action.yml', 'config/review-rules.md']);
+  assert.deepEqual(sensitivePaths(['config/team-guide.md']), [], 'an unconfigured Markdown file is prose');
+  assert.deepEqual(sensitivePaths(['config/team-guide.md'], ['config/team-guide.md']), ['config/team-guide.md'], 'the configured rule pack');
+});
+
+test('floor-protected files keep their focused workers and their rules-worker hunks', () => {
+  const diff = (file) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-a\n+b\n`;
+  const protectedFiles = ['docs/auth/handler.ts', 'docs/security/page.mdx', 'AGENTS.md', 'config/team-guide.md'];
+  const patch = [...protectedFiles, 'docs/guide.md'].map(diff).join('');
+  assert.deepEqual(selectSlices(patch, 4, () => '', ['config/team-guide.md']).map((slice) => slice.file).sort(), [...protectedFiles].sort());
+  const rules = productionPatch(patch, () => '', ['config/team-guide.md']);
+  for (const file of protectedFiles) assert.ok(rules.includes(`diff --git a/${file} `), file);
+  assert.ok(!rules.includes('docs/guide.md'), 'prose stays out');
 });
 
 test('generated header and exclusions are applied before churn order', () => {
@@ -728,7 +746,7 @@ function localWorkerStages() {
 
 function localWorkerEnv(root, worktree, extra = {}) {
   return { ...process.env, WORKTREE: worktree, REVIEW_PROMPTS_DIR: root, RUN_DIR: root,
-    PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', RULES_WORKER: 'true', ENGINE_DIR: root, FOCUSED_WORKERS: '0',
+    PROVIDER_BASE_URL: '', PROVIDER_ENV_KEY: '', RULES_WORKER: 'true', RULES_PATH: '.open-review/rules.md', ENGINE_DIR: root, FOCUSED_WORKERS: '0',
     DIFF_BASE_SHA: 'a'.repeat(40), ACTIVE_CODEX_HOME: root, TIMEOUT_CMD: 'timeout', ...extra };
 }
 

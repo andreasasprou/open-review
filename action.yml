@@ -681,6 +681,7 @@ runs:
       shell: bash
       env:
         PARENT_MODEL: ${{ inputs.parent-model }}
+        RULES_PATH: ${{ inputs.rules-path }}
         PR_TITLE: ${{ steps.pr.outputs.title }}
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         MERGE_BASE_SHA: ${{ steps.scope.outputs.merge_base_sha }}
@@ -698,7 +699,7 @@ runs:
           exit 0
         fi
         LEVEL_JSON="$(node "$RUNNER_TEMP/open-review/engine/risk-triage.cjs" level "$PWD" "$MERGE_BASE_SHA" "$HEAD_SHA" \
-          "$PR_TITLE" "$RUNNER_TEMP/open-review/pr-body.txt")"
+          "$PR_TITLE" "$RUNNER_TEMP/open-review/pr-body.txt" "$RULES_PATH")"
         {
           echo "level=$(jq -r '.level' <<<"$LEVEL_JSON")"
           echo "model=$(jq -r '.parentModel' <<<"$LEVEL_JSON")"
@@ -964,6 +965,7 @@ runs:
       env:
         FOCUSED_WORKERS: ${{ inputs.focused-workers }}
         RULES_WORKER: ${{ inputs.rules-worker }}
+        RULES_PATH: ${{ inputs.rules-path }}
         LEVEL_WORKERS: ${{ steps.parent.outputs.workers }}
         LEVEL_RULES_WORKER: ${{ steps.parent.outputs.rules_worker }}
         REVIEW_MODE: ${{ steps.scope.outputs.review_mode }}

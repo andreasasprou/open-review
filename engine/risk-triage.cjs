@@ -184,8 +184,8 @@ function changedPaths(root, mergeBase, head) {
 }
 
 /** The review level and what it runs; calls the triage model only when the paths do not decide. */
-async function reviewLevel({ root, mergeBase, head, title, body, baseUrl, apiKey, triageImpl = triage }) {
-  const floorPaths = sensitivePaths(changedPaths(root, mergeBase, head));
+async function reviewLevel({ root, mergeBase, head, title, body, baseUrl, apiKey, rulesPath = "", triageImpl = triage }) {
+  const floorPaths = sensitivePaths(changedPaths(root, mergeBase, head), rulesPath ? [rulesPath] : []);
   if (floorPaths.length > 0) return { level: "floor-high", floorPaths, ...LEVELS["floor-high"], triage: null };
   const patch = execFileSync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--no-renames", "--no-color", "--no-ext-diff", mergeBase, head],
     { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
@@ -200,12 +200,12 @@ async function reviewLevel({ root, mergeBase, head, title, body, baseUrl, apiKey
 }
 
 async function main(argv) {
-  const [command, root, mergeBase, head, title, bodyFile] = argv;
+  const [command, root, mergeBase, head, title, bodyFile, rulesPath = ""] = argv;
   if (command !== "level" || ![root, mergeBase, head, title, bodyFile].every((value) => typeof value === "string" && value !== "")) {
-    throw new Error("usage: risk-triage.cjs level <root> <merge-base> <head> <title> <body-file>");
+    throw new Error("usage: risk-triage.cjs level <root> <merge-base> <head> <title> <body-file> [<rules-path>]");
   }
   const keyName = process.env.PROVIDER_ENV_KEY || "";
-  const result = await reviewLevel({ root, mergeBase, head, title, body: fs.readFileSync(bodyFile, "utf8"),
+  const result = await reviewLevel({ root, mergeBase, head, title, body: fs.readFileSync(bodyFile, "utf8"), rulesPath,
     baseUrl: process.env.PROVIDER_BASE_URL || "", apiKey: keyName ? process.env[keyName] || "" : "" });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

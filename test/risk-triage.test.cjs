@@ -137,3 +137,13 @@ test("every engine file the local runner runs or reads is checked against the tr
   used.add("risk-triage-prompt.txt"); // read by risk-triage.cjs
   assert.deepEqual([...used].filter((file) => !trusted.includes(file)), []);
 });
+
+test("a change to the configured rule pack is floor-high", async (t) => {
+  const { reviewLevel } = require("../engine/risk-triage.cjs");
+  const { root, commit, base } = repository(t);
+  const head = commit({ "config/team-guide.md": "rule\n" });
+  const stub = async () => ({ result: answer("normal"), error: null, usage: null, ms: 1 });
+  const level = (rulesPath) => reviewLevel({ root, mergeBase: base, head, title: "t", body: "b", baseUrl: "http://pool", apiKey: "", triageImpl: stub, rulesPath });
+  assert.equal((await level("config/team-guide.md")).level, "floor-high");
+  assert.equal((await level("")).level, "normal");
+});
