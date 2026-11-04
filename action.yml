@@ -54,8 +54,17 @@ inputs:
     description: Default reasoning effort for child investigations.
     default: max
   focused-workers:
-    description: Maximum advisory focused file slices per review (0 disables them).
-    default: "4"
+    description: >-
+      Advisory focused file slices per review. "auto" runs 2 when the PR changes
+      a stored-data, security or infrastructure path outside tests and docs, and
+      none otherwise; an integer from 0 to 4 sets the maximum (0 disables them).
+    default: auto
+  worker-model:
+    description: Codex model for the focused and rules workers. Empty uses the engine default (gpt-6.1-sol).
+    default: ""
+  worker-reasoning-effort:
+    description: Reasoning effort for the focused and rules workers. Empty uses the engine default (medium).
+    default: ""
   rules-worker:
     description: Check every changed file against the repository's written rules (AGENTS.md and the guidance it points to) as an advisory summary section ("true" or "false").
     default: "true"
@@ -906,12 +915,14 @@ runs:
       env:
         FOCUSED_WORKERS: ${{ inputs.focused-workers }}
         RULES_WORKER: ${{ inputs.rules-worker }}
+        WORKER_MODEL: ${{ inputs.worker-model }}
+        WORKER_REASONING_EFFORT: ${{ inputs.worker-reasoning-effort }}
         DIFF_BASE_SHA: ${{ steps.scope.outputs.diff_base_sha }}
         PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
         PROVIDER_ENV_KEY: ${{ inputs.provider-env-key }}
       run: |
-        if ! [[ "$FOCUSED_WORKERS" =~ ^[0-4]$ ]]; then
-          echo "::warning::focused-workers must be an integer from 0 to 4" >&2
+        if ! [[ "$FOCUSED_WORKERS" =~ ^([0-4]|auto)$ ]]; then
+          echo "::warning::focused-workers must be auto or an integer from 0 to 4" >&2
           exit 1
         fi
         if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then

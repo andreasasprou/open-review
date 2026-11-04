@@ -22,7 +22,10 @@ Options:
                          Extra time before force-killing after timeout. Default: 60s.
   --model <model>        Codex model. Default: CODEX_MODEL or gpt-6-astra.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
-  --focused-workers <n> Maximum advisory focused file slices. Default: 4; 0 disables.
+  --focused-workers <auto|n>
+                         Advisory focused file slices. Default: auto (2 when the PR
+                         changes a stored-data, security or infrastructure path, else
+                         0); an integer from 0 to 4 sets the maximum; 0 disables.
   --rules-worker <true|false>
                          Advisory check against the repository's written rules. Default: true.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
@@ -50,7 +53,9 @@ Options:
 Logs are written under .agent-data/codex-review-local/.
 
 Environment: CODEX_MODEL, CODEX_REASONING, CODEX_SUBAGENT_MODEL,
-CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_SETTLEMENT_MARKER
+CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_WORKER_MODEL and
+OPEN_REVIEW_WORKER_REASONING_EFFORT (focused and rules workers; default
+gpt-6.1-sol at medium), OPEN_REVIEW_SETTLEMENT_MARKER
 (HTML-comment marker of the settlement comment; default
 open-review-local:settlement), and OPEN_REVIEW_ATTRIBUTION_HEADER (Markdown
 placed after the settlement marker and before the inline review body and each
@@ -76,7 +81,7 @@ export CODEX_REASONING="${CODEX_REASONING:-high}"
 export CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-gpt-6-luna}"
 export CODEX_SUBAGENT_REASONING="${CODEX_SUBAGENT_REASONING:-max}"
 CODEX_WEB_SEARCH_MODE="${CODEX_WEB_SEARCH_MODE:-disabled}"
-FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-4}"
+FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-auto}"
 RULES_WORKER="${OPEN_REVIEW_RULES_WORKER:-true}"
 PROVIDER_BASE_URL="${OPEN_REVIEW_PROVIDER_BASE_URL:-}"
 PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
@@ -190,8 +195,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if ! [[ "$FOCUSED_WORKERS" =~ ^[0-4]$ ]]; then
-  echo "error: --focused-workers must be an integer from 0 to 4" >&2
+if ! [[ "$FOCUSED_WORKERS" =~ ^([0-4]|auto)$ ]]; then
+  echo "error: --focused-workers must be auto or an integer from 0 to 4" >&2
   exit 1
 fi
 if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
@@ -864,6 +869,7 @@ if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
    rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
    cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md"; then
   (cd "$WORKTREE" && PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" RULES_WORKER="$RULES_WORKER" \
+    WORKER_MODEL="${OPEN_REVIEW_WORKER_MODEL:-}" WORKER_REASONING_EFFORT="${OPEN_REVIEW_WORKER_REASONING_EFFORT:-}" \
     exec node "$ENGINE_DIR/focused-workers.cjs" run "$FOCUSED_WORKERS" "$DIFF_BASE_SHA" \
       "$WORKER_HOME_ROOT" "$ACTIVE_CODEX_HOME/auth.json" ".codex-ci" "$PWD" "${TIMEOUT_CMD[0]:-timeout}") \
     </dev/null >"$RUN_DIR/focused-workers.log" 2>&1 &

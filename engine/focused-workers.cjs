@@ -15,6 +15,19 @@ const CANDIDATE_KEYS = ["title", "file", "line", "property", "property_source", 
 const RULES_KEYS = ["title", "file", "line", "severity", "rule_source", "change", "violation"];
 const RULES_FILE = "(repository rules)";
 const MAX_WORKERS = 4;
+// "auto" runs AUTO_WORKERS slices on a PR that changes a stored-data, security or
+// infrastructure path outside tests and docs, and none otherwise (decision
+// focused-workers-risk-gated).
+const AUTO_WORKERS = 2;
+const SENSITIVE_PATHS = [
+  /\.(sql|prisma|tf|tfvars)$/i,
+  /(^|[/_.-])(migrations?|db|database|prisma|drizzle|supabase|terraform|pulumi|helm|k8s|kubernetes)([/_.-]|$)/i,
+  /(^|[/_.-])(auth|authn|authz|authori[sz]\w*|authenticat\w*|oauth\w*|iam|rls|secrets?|security|permissions?|crypto)([/_.-]|$)/i,
+  /[a-z](Auth|OAuth|Iam|Permissions?|Secrets?|Security)([A-Z0-9/_.-]|$)/,
+  /(^|\/)infra\//i, /(^|\/)(Dockerfile|docker-compose)[^/]*$/i, /^\.github\/(workflows|actions)\//,
+];
+const WORKER_MODEL = "gpt-6.1-sol";
+const WORKER_REASONING_EFFORT = "medium";
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 const MAX_STDERR_BYTES = 1024 * 1024;
 const MAX_ANSWER_BYTES = 64 * 1024;
@@ -54,6 +67,16 @@ function parseDiff(patch) {
     return { file: pathname, deleted: newMatch?.[1]?.trim() === "/dev/null" || /^deleted file mode /m.test(chunk), added, removed,
       hunks: [...chunk.matchAll(/^@@ -\S+ \+\S+ @@/gm)].map((m) => m[0]) };
   }).filter(Boolean);
+}
+
+function sensitivePaths(files) {
+  return files.filter((file) => !excluded(file) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
+}
+
+function workerCount(value, patch) {
+  if (value === "auto") return sensitivePaths(parseDiff(patch).map((entry) => entry.file)).length > 0 ? AUTO_WORKERS : 0;
+  if (!/^[0-4]$/.test(String(value))) throw new Error("focused-workers must be auto or an integer from 0 to 4");
+  return Number(value);
 }
 
 function selectSlices(patch, max, headerForFile = () => "") {
@@ -146,7 +169,7 @@ async function runWorker(slice, options) {
         fs.chmodSync(path.join(home, "auth.json"), 0o600);
       }
       const args = ['--kill-after=30s', rules ? '12m' : '8m', 'codex', 'exec', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config',
-        '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort="high"', '-c', 'sandbox_mode="read-only"',
+        '--model', options.workerModel, '-c', `model_reasoning_effort="${options.workerReasoningEffort}"`, '-c', 'sandbox_mode="read-only"',
         '-c', 'allow_login_shell=false', '-c', 'web_search="disabled"',
         '-c', `shell_environment_policy.exclude=${JSON.stringify(["CODEX_HOME", "HOME", "RUNNER_TEMP", ...(options.providerEnvKey ? [options.providerEnvKey] : [])])}`,
         ...configArgs(options.providerBaseUrl, options.providerEnvKey), '--disable', 'plugins', '--json',
@@ -290,10 +313,16 @@ async function runWorker(slice, options) {
 }
 
 async function run(options) {
-  const max = Number(options.max);
-  if (!Number.isInteger(max) || max < 0 || max > MAX_WORKERS) throw new Error('focused-workers must be an integer from 0 to 4');
+  const workerModel = options.workerModel || WORKER_MODEL;
+  const workerReasoningEffort = options.workerReasoningEffort || WORKER_REASONING_EFFORT;
+  // Both values are interpolated into Codex arguments and a TOML string.
+  if (!/^[A-Za-z0-9._-]+$/.test(workerModel) || !/^[a-z]+$/.test(workerReasoningEffort)) {
+    throw new Error('worker model and reasoning effort must be plain identifiers');
+  }
   const resultPath = path.join(options.outputDir, 'focused-workers.json');
   const patch = fs.readFileSync(path.join(options.outputDir, 'pr-diff.patch'), 'utf8');
+  const max = workerCount(options.max, patch);
+  process.stderr.write(`focused workers: ${max} (requested ${options.max}); worker model ${workerModel} at ${workerReasoningEffort}\n`);
   const slices = selectSlices(patch, max, (file) => {
     let fd;
     try {
@@ -323,7 +352,7 @@ async function run(options) {
     await Promise.all(Array.from({ length: Math.min(MAX_WORKERS + 1, jobs.length) }, async () => {
       while (next < jobs.length) {
         const index = next++;
-        try { result[index] = await runWorker(jobs[index], { ...options, signal: controller.signal }); }
+        try { result[index] = await runWorker(jobs[index], { ...options, workerModel, workerReasoningEffort, signal: controller.signal }); }
         catch (error) {
           process.stderr.write(`focused worker ${index} failed open: ${error.message}\n`);
           result[index] = failed(jobs[index], 'setup_error');
@@ -343,14 +372,15 @@ async function run(options) {
 }
 
 function main(argv) {
-  if (argv[0] !== 'run') throw new Error('usage: focused-workers.cjs run <max> <base-sha> <home-root> <auth-source> <output-dir> <root> [timeout|gtimeout]');
+  if (argv[0] !== 'run') throw new Error('usage: focused-workers.cjs run <auto|max> <base-sha> <home-root> <auth-source> <output-dir> <root> [timeout|gtimeout]');
   const [, max, baseSha, homeRoot, authSource, outputDir, root, timeoutCommand = 'timeout'] = argv;
   if (!/^[0-9a-f]{40}$/.test(baseSha)) throw new Error('base SHA must be a full SHA');
   if (!['timeout', 'gtimeout'].includes(timeoutCommand)) throw new Error('unsupported timeout command');
   return run({ max, baseSha, homeRoot, authSource: authSource === '-' ? '' : authSource, outputDir, root, timeoutCommand,
     providerBaseUrl: process.env.PROVIDER_BASE_URL || '', providerEnvKey: process.env.PROVIDER_ENV_KEY || '',
-    rules: process.env.RULES_WORKER === 'true' });
+    rules: process.env.RULES_WORKER === 'true',
+    workerModel: process.env.WORKER_MODEL || '', workerReasoningEffort: process.env.WORKER_REASONING_EFFORT || '' });
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { excluded, parseDiff, selectSlices, validOutput, validRulesOutput, run, usageFromLog };
+module.exports = { excluded, parseDiff, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };

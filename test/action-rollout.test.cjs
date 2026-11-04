@@ -408,6 +408,9 @@ test('focused workers start before the parent, run beside it and are joined befo
   assert.match(startStep, /steps\.skip\.outputs\.skip != 'true'/);
   assert.match(startStep, /continue-on-error: true/);
   assert.match(startStep, /RULES_WORKER: \$\{\{ inputs\.rules-worker \}\}/);
+  assert.match(startStep, /WORKER_MODEL: \$\{\{ inputs\.worker-model \}\}/);
+  assert.match(startStep, /WORKER_REASONING_EFFORT: \$\{\{ inputs\.worker-reasoning-effort \}\}/);
+  assert.match(action, /\n  focused-workers:\n[\s\S]*?\n    default: auto\n/);
   assert.ok(action.indexOf('    - name: Start focused workers') < action.indexOf('    - name: Run Codex'));
   assert.match(waitStep, /steps\.start-workers\.outcome == 'success'/);
   assert.match(waitStep, /review_generated == 'true'/);
@@ -417,7 +420,7 @@ test('focused workers start before the parent, run beside it and are joined befo
   assert.ok(action.indexOf('    - name: Wait for focused workers') < action.indexOf('    - name: Post results'));
   const env = {
     PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root,
-    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: '4', RULES_WORKER: 'true',
+    CODEX_HOME: join(root, 'parent-home'), FOCUSED_WORKERS: 'auto', RULES_WORKER: 'true',
     DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: join(root, 'node-call'),
   };
   const notStarted = runShell(block('Wait for focused workers', 'run'), root, env);
@@ -432,7 +435,7 @@ test('focused workers start before the parent, run beside it and are joined befo
   assert.equal(existsSync(join(root, '.codex-ci/focused-workers.json')), false);
   assert.equal(readFileSync(join(root, '.codex-ci/rules.md'), 'utf8'), 'review rules\n');
   const call = readFileSync(join(root, 'node-call'), 'utf8');
-  assert.match(call, /focused-workers\.cjs run 4 a{40}/);
+  assert.match(call, /focused-workers\.cjs run auto a{40}/);
   assert.match(call, /\/tmp\/open-review-fw\.[A-Za-z0-9]+ - \.codex-ci /);
   const privateHomeRoot = call.match(/\/tmp\/open-review-fw\.[A-Za-z0-9]+/)?.[0];
   assert.ok(privateHomeRoot, 'worker home root must be outside the runner temp directory');
