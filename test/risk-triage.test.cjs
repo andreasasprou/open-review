@@ -49,3 +49,75 @@ test("triage returns a closed outcome for every response", async () => {
   assert.equal((await call(reply(200, "data: {}\n"))).error, "incomplete_response");
   assert.equal((await call(async () => { throw new Error("reset"); })).error, "request_error");
 });
+
+function repository(t) {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { execFileSync } = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-level-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const run = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  run("init", "-q", "-b", "main");
+  run("config", "user.name", "Test");
+  run("config", "user.email", "test@example.test");
+  const commit = (files) => {
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    }
+    run("add", "-A");
+    run("commit", "-qm", "change");
+    return run("rev-parse", "HEAD");
+  };
+  const lines = (prefix, count) => Array.from({ length: count }, (_, index) => `${prefix} ${index}`).join("\n") + "\n";
+  return { root, commit, lines, base: commit({ "src/a.ts": lines("a", 5) }) };
+}
+
+test("the review level asks the triage model only when the paths do not decide", async (t) => {
+  const { reviewLevel, parseTrivialLimit } = require("../engine/risk-triage.cjs");
+  const { root, commit, lines, base } = repository(t);
+  const calls = [];
+  const stub = (result, error = null) => async ({ input }) => { calls.push(input); return { result, error, usage: null, ms: 1 }; };
+  const level = (head, triageImpl, extra = {}) => reviewLevel({ root, mergeBase: base, head, title: "t", body: "b",
+    limit: parseTrivialLimit(), baseUrl: "http://pool", apiKey: "", triageImpl, ...extra });
+
+  const small = commit({ "src/a.ts": lines("a", 8) });
+  assert.deepEqual(await level(small, stub(answer("high"))),
+    { level: "trivial", rule: "trivial-v1", lines: 3, files: 1, floorPaths: [], parentModel: "gpt-6.1-sol", reasoning: "medium",
+      workers: 0, rulesWorker: false, helpers: false, triage: null });
+  assert.equal(calls.length, 0, "a trivial PR costs no model call");
+  assert.equal((await level(small, stub(answer("high")), { limit: null })).level, "model-high", "limit off: the model decides");
+
+  const large = commit({ "src/b.ts": lines("b", 80) });
+  const high = await level(large, stub(answer("high")));
+  assert.deepEqual([high.level, high.parentModel, high.workers, high.rulesWorker, high.helpers, high.triage.risk],
+    ["model-high", "gpt-6-astra", 0, true, true, "high"]);
+  const normal = await level(large, stub(answer("normal")));
+  assert.deepEqual([normal.level, normal.parentModel, normal.reasoning, normal.workers, normal.rulesWorker, normal.helpers],
+    ["normal", "gpt-6.1-sol", "medium", 0, false, false]);
+  assert.equal((await level(large, stub(answer("docs")))).level, "normal");
+  assert.deepEqual([(await level(large, stub(null, "timeout"))).level, (await level(large, stub(null, "timeout"))).triage.error],
+    ["model-high", "timeout"]);
+  const before = calls.length;
+  assert.equal((await level(large, stub(answer("normal")), { baseUrl: "" })).triage.error, "no_provider");
+  assert.equal(calls.length, before, "no provider, no call, high level");
+
+  const sensitive = commit({ "db/migrations/001_add.sql": "alter table t add c int;\n" });
+  const floor = await level(sensitive, stub(answer("normal")));
+  assert.deepEqual([floor.level, floor.parentModel, floor.workers, floor.floorPaths, floor.triage],
+    ["floor-high", "gpt-6-astra", "auto", ["db/migrations/001_add.sql"], null]);
+  assert.equal(calls.length, before, "the model never sees a floor-high PR");
+});
+
+test("the trivial command re-derives a trivial level without a model", (t) => {
+  const path = require("node:path");
+  const { execFileSync } = require("node:child_process");
+  const { root, commit, lines, base } = repository(t);
+  const head = commit({ "src/a.ts": lines("a", 8) });
+  const derive = (limit) => JSON.parse(execFileSync("node", [path.join(__dirname, "../engine/risk-triage.cjs"), "trivial", root, base, head, limit],
+    { encoding: "utf8", env: { ...process.env, PROVIDER_BASE_URL: "" } }));
+  assert.deepEqual(derive("50/3"), { level: "trivial", rule: "trivial-v1", lines: 3, files: 1, floorPaths: [], trivial: true });
+  assert.equal(derive("2/3").trivial, false);
+  assert.equal(derive("off").trivial, false);
+});

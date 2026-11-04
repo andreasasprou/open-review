@@ -24,7 +24,9 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `auto` (`gpt-6-astra` on sensitive paths, else `gpt-6.1-sol`) | [parent-model-risk-gated](#parent-model-risk-gated) |
+| `parent-model` | `auto`: review level (floor-high and model-high `gpt-6-astra`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage) |
+| Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
+| `--trivial-limit` (local) | `50/3`: pass without a model | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
 | `child-model` | `gpt-6-luna` | [gpt-6-children](#gpt-6-children) |
@@ -33,9 +35,9 @@ decision entry behind it.
 | `contract-investigator-reasoning-effort` | `high` | [finder-models](#finder-models) |
 | `worker-model` | `gpt-6.1-sol` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
 | `worker-reasoning-effort` | `medium` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
-| `focused-workers` | `auto` (2 on sensitive paths, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope) |
+| `focused-workers` | `auto` (2 at floor-high, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope), [risk-triage](#risk-triage) |
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
-| `rules-worker` | `true`; skipped on incremental reviews and on PRs without a production change | [rules-worker](#rules-worker), [review-scope](#review-scope), [review-cost-trims](#review-cost-trims) |
+| `rules-worker` | `true`; skipped on incremental reviews, at the normal level and on PRs without a production change | [rules-worker](#rules-worker), [review-scope](#review-scope), [review-cost-trims](#review-cost-trims), [risk-triage](#risk-triage) |
 | Rules worker input | production-file hunks and the rule pack | [review-cost-trims](#review-cost-trims) |
 | Codex skill list (parent, children, workers) | off (`skills.include_instructions=false`) | [review-cost-trims](#review-cost-trims) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
@@ -56,8 +58,9 @@ what would reopen it.
 
 **2026-11-04.** Owner idea: set each PR's review level with a deterministic
 check and a quick model triage instead of the path rule alone, and pass
-trivial PRs without a model review. Calibrated here; not yet wired into
-routing. It is integrated after [review-scope](#review-scope) lands.
+trivial PRs without a model review. The levels below were calibrated as
+first proposed; the owner's decision after the calibration sets the routing
+(the "Decision" item).
 
 - Levels, decided in this order from base-owned code:
   - **high**, without a model call: the PR changes a path of the
@@ -147,14 +150,34 @@ routing. It is integrated after [review-scope](#review-scope) lands.
   tokens, plus 0.17 for the triage call; high 141 to 165 with 2 GPT-6.1 Sol
   workers. With the v2 shares (75% high, 17% normal, 8% trivial) a week costs
   65% to 76% of today, before the savings of [review-scope](#review-scope).
-- Decision: not adopted for routing. `risk-triage-v2` is the calibrated
-  candidate: full recall, and it separates docs, agent instructions and
-  low-risk PRs. On this consumer the owner must choose between about 75% of
-  PRs at the high level and a cheaper high review, because a 40–50% share
-  costs blocking-defect recall. The trivial level and the error rule stand
-  without a model.
-- Reopen when the owner accepts a high share above 55%, when the high-level
-  review changes cost, or when another consumer's set is calibrated.
+- The share rule failed in both runs. A 40–50% high share would cost
+  blocking-defect recall on this consumer, so the owner chose a cheaper
+  review for PRs that only the model marks high.
+- Decision (owner, 2026-11-04): `parent-model: auto` routes by review level,
+  with `risk-triage-v2` as the triage prompt (`engine/risk-triage.cjs`
+  `LEVELS`):
+  - floor-high, the path rule: GPT-6 Astra, 2 focused workers, the rules
+    worker;
+  - model-high, a high, failed or missing triage answer: GPT-6 Astra with its
+    child threads and the rules worker, no focused workers;
+  - normal: one GPT-6.1 Sol pass at `medium`, without child threads, focused
+    workers or the rules worker;
+  - trivial: no sensitive path, at most 50 changed lines in at most 3 files,
+    and the latest review did not block. The local runner passes it without a
+    model and names the level, rule and counts in the settlement;
+    `risk-triage.cjs trivial` re-derives it for a merge gate. A consumer
+    turns it off with `--trivial-limit off`. The hosted action has no
+    model-free pass yet, so there the triage decides these PRs.
+  - An explicit `parent-model` keeps the configured model, workers and effort.
+    An explicit `focused-workers` count overrides the level's.
+- Measured shares at that consumer: about 42% floor-high, 32% model-high,
+  17% normal and 8% trivial of merged PRs (the trivial share is for 20 lines;
+  50 lines gives 11%).
+- The normal-level reviewer comparison above (GPT-6.1 Terra against GPT-6.1
+  Sol) runs when pool capacity allows.
+- Reopen when a review blocks on a P0 or P1 finding in a PR the triage marked
+  normal, when the normal-level comparison favours another model, or when the
+  calibration drifts (see the [evaluation protocol](evaluation-protocol.md#risk-triage-calibration)).
 
 ### review-cost-trims
 

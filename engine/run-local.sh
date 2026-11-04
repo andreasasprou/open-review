@@ -21,9 +21,12 @@ Options:
                          (10m for an incremental review).
   --kill-after <duration>
                          Extra time before force-killing after timeout. Default: 60s.
-  --model <model|auto>   Parent model. auto: gpt-6-astra when the PR changes a stored-data,
-                         security or infrastructure path outside tests and docs, else
-                         gpt-6.1-sol. Default: CODEX_MODEL or auto.
+  --model <model|auto>   Parent model. auto sets the review level (engine/risk-triage.cjs):
+                         a stored-data, security or infrastructure path outside tests and
+                         docs gets gpt-6-astra with focused workers; otherwise a GPT-6.1
+                         Sol triage call picks gpt-6-astra without focused workers, or one
+                         gpt-6.1-sol medium pass without helpers or workers.
+                         Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
   --focused-workers <auto|n>
                          Advisory focused file slices. Default: auto (2 when the PR
@@ -36,6 +39,10 @@ Options:
                          review (`**` crosses directories). A PR changing only these
                          passes without a model. Default: OPEN_REVIEW_DOCS_ONLY_PATHS, or
                          none. Pass them from a trusted ref, never from the PR head.
+  --trivial-limit <lines/files|off>
+                         A PR without a sensitive path that changes at most this many lines
+                         in at most this many files passes without a model, unless its
+                         latest review blocked. Default: OPEN_REVIEW_TRIVIAL_LIMIT or 50/3.
   --full-review          Review the whole PR even after a passed review.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
   --use-user-codex-home  Use the current CODEX_HOME/~/.codex instead of a clean temp home.
@@ -101,6 +108,7 @@ CODEX_WEB_SEARCH_MODE="${CODEX_WEB_SEARCH_MODE:-disabled}"
 FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-auto}"
 RULES_WORKER="${OPEN_REVIEW_RULES_WORKER:-true}"
 DOCS_ONLY_PATHS="${OPEN_REVIEW_DOCS_ONLY_PATHS:-}"
+TRIVIAL_LIMIT="${OPEN_REVIEW_TRIVIAL_LIMIT:-50/3}"
 FULL_REVIEW="${OPEN_REVIEW_FULL_REVIEW:-false}"
 INCREMENTAL_REASONING="${OPEN_REVIEW_INCREMENTAL_REASONING:-high}"
 INCREMENTAL_TIMEOUT="${OPEN_REVIEW_INCREMENTAL_TIMEOUT:-10m}"
@@ -163,6 +171,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --docs-only-paths)
       DOCS_ONLY_PATHS="${2:-}"
+      shift 2
+      ;;
+    --trivial-limit)
+      TRIVIAL_LIMIT="${2:-}"
       shift 2
       ;;
     --full-review)
@@ -232,6 +244,10 @@ if ! [[ "$FOCUSED_WORKERS" =~ ^([0-4]|auto)$ ]]; then
 fi
 if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
   echo "error: --rules-worker must be true or false" >&2
+  exit 1
+fi
+if ! [[ "$TRIVIAL_LIMIT" =~ ^(off|[0-9]{1,4}/[0-9]{1,3})$ ]]; then
+  echo "error: --trivial-limit must be <lines>/<files> or off" >&2
   exit 1
 fi
 if ! [[ "$FULL_REVIEW" =~ ^(true|false)$ ]]; then
@@ -592,14 +608,40 @@ if ! git -C "$ROOT" cat-file -e "$PR_START_BASE_SHA^{commit}" 2>/dev/null &&
   exit 1
 fi
 PR_START_MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$PR_START_BASE_SHA" "$HEAD_SHA")"
-# The parent model follows the same risk rule as the focused workers, over the
-# whole PR's paths (rename sources included), so every round uses one model.
-if ! CODEX_MODEL="$(git -C "$ROOT" diff --name-only -z --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
-  node "$ENGINE_DIR/focused-workers.cjs" parent-model "$CODEX_MODEL")"; then
-  echo "error: could not resolve the parent model; see the message above" >&2
+# The review level, over the whole PR (rename sources included), so the paths
+# decide every round alike; only PRs outside the sensitive paths and the trivial
+# limit get a triage call (decision risk-triage). An explicit model keeps the
+# configured workers and reasoning.
+REVIEW_LEVEL="configured"
+REVIEW_HELPERS="true"
+TRIAGE_NOTE="none"
+if [ "$CODEX_MODEL" = "auto" ]; then
+  printf '%s\n' "$PR_BODY" > "$RUN_DIR/triage-body.txt"
+  if ! LEVEL_JSON="$(PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
+    node "$ENGINE_DIR/risk-triage.cjs" level "$ROOT" "$MERGE_BASE_SHA" "$HEAD_SHA" "$PR_TITLE" "$RUN_DIR/triage-body.txt" "$TRIVIAL_LIMIT")"; then
+    echo "error: could not resolve the review level; see the message above" >&2
+    exit 1
+  fi
+  printf '%s\n' "$LEVEL_JSON" > "$RUN_DIR/review-level.json"
+  REVIEW_LEVEL="$(jq -r '.level' <<<"$LEVEL_JSON")"
+  CODEX_MODEL="$(jq -r '.parentModel' <<<"$LEVEL_JSON")"
+  REVIEW_HELPERS="$(jq -r '.helpers' <<<"$LEVEL_JSON")"
+  LEVEL_REASONING="$(jq -r '.reasoning // ""' <<<"$LEVEL_JSON")"
+  if [ -n "$LEVEL_REASONING" ]; then
+    CODEX_REASONING="$LEVEL_REASONING"
+    INCREMENTAL_REASONING="$LEVEL_REASONING"
+  fi
+  if [ "$FOCUSED_WORKERS" = "auto" ]; then FOCUSED_WORKERS="$(jq -r '.workers' <<<"$LEVEL_JSON")"; fi
+  if [ "$(jq -r '.rulesWorker' <<<"$LEVEL_JSON")" = "false" ]; then RULES_WORKER=false; fi
+  TRIAGE_NOTE="$(jq -r 'if .triage == null then "none" else "\(.triage.version):\(.triage.risk // .triage.error)" end' <<<"$LEVEL_JSON")"
+  if [ "$(jq -r '.triage.error // ""' <<<"$LEVEL_JSON")" != "" ]; then
+    echo "warning: risk triage failed ($(jq -r '.triage.error' <<<"$LEVEL_JSON")); the PR gets the high level" >&2
+  fi
+elif ! [[ "$CODEX_MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: --model must be auto or a plain model identifier" >&2
   exit 1
 fi
-echo "Parent model: $CODEX_MODEL" | tee -a "$RUN_DIR/summary.txt"
+echo "Review level: $REVIEW_LEVEL (triage $TRIAGE_NOTE); parent model $CODEX_MODEL, reasoning $CODEX_REASONING, focused workers $FOCUSED_WORKERS, rules worker $RULES_WORKER, helpers $REVIEW_HELPERS" | tee -a "$RUN_DIR/summary.txt"
 "$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble \
   --rules "$REVIEW_PROMPTS_DIR/rules.md" \
   --parent-model "$CODEX_MODEL" \
@@ -686,7 +728,7 @@ if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ "$HEAD_SHA" = "$REMOTE_HEAD_SH
   fi
   SCOPE_STATUS=0
   SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
-    "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
+    "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" "$TRIVIAL_LIMIT" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
   if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
   if [ "$SCOPE_STATUS" -eq 0 ]; then
     SCOPE_JSON="$SCOPE_OUTPUT"
@@ -703,6 +745,7 @@ SCOPE_FILE_COUNT="$(jq -r '.files | length' <<<"$SCOPE_JSON")"
 # Recorded in every settlement; a later run scopes from it only on the same base.
 SCOPE_BASE_LINE="Review base: \`$BASE_REF\` at $MERGE_BASE_SHA."
 case "$SCOPE_MODE:$SCOPE_REASON" in
+  skip:trivial) SCOPE_LINE="Review level: trivial ($(jq -r '.rule' <<<"$SCOPE_JSON"): $(jq -r '.lines' <<<"$SCOPE_JSON") changed lines in $SCOPE_FILE_COUNT files; no sensitive path); no model review required." ;;
   skip:*) SCOPE_LINE="Review scope: skipped, docs only. All $SCOPE_FILE_COUNT changed files match the docs-only paths, so no model reviewed this PR." ;;
   carry:same_head) SCOPE_LINE="Review scope: carried. This head already passed: $SCOPE_SETTLEMENT" ;;
   carry:same_patch) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). This head's patch is the same file for file." ;;
@@ -731,7 +774,8 @@ const scope = JSON.parse(scopeText);
 const mergeGate = deriveMergeGate({ open_findings: [] });
 const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
 const mergeGateLine = mergeGateSummary.split('\n', 1)[0];
-const reason = scope.mode === 'skip' ? 'skipped, docs only' : `carried from ${scope.from.slice(0, 8)}`;
+const reason = scope.mode !== 'skip' ? `carried from ${scope.from.slice(0, 8)}`
+  : scope.reason === 'trivial' ? 'trivial, no model review' : 'skipped, docs only';
 fs.writeFileSync(file, `${JSON.stringify({
   reviewScope: scope, reviewMarkdown: '', verdict, mergeGate, mergeGateSummary, mergeGateLine,
   statusState: 'success', statusDescription: truncateStatusDescription(`${plainMergeGateLine(mergeGateLine).split(' — ')[0]} — ${reason}`),
@@ -1124,7 +1168,7 @@ if [ "$STREAM_RAW" = "true" ]; then
         -c 'allow_login_shell=false' \
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
-        -c 'features.multi_agent_v2.enabled=true' \
+        -c "features.multi_agent_v2.enabled=$REVIEW_HELPERS" \
         -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
@@ -1153,7 +1197,7 @@ else
         -c 'allow_login_shell=false' \
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
-        -c 'features.multi_agent_v2.enabled=true' \
+        -c "features.multi_agent_v2.enabled=$REVIEW_HELPERS" \
         -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
@@ -1326,8 +1370,8 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
         cat "$RUN_DIR/focused-worker-section.md"
         printf '\n\n'
       fi
-      printf 'Local Code Review settlement: head=%s; runner=trusted-local; codex_cli=%s; sandbox_backend=%s; model_provider=%s; %s.\n' \
-        "$HEAD_SHA" "$REQUIRED_CODEX_CLI_VERSION" "$SANDBOX_BACKEND" "$MODEL_PROVIDER" "$EXECUTION_EVIDENCE_OUTPUT"
+      printf 'Local Code Review settlement: head=%s; runner=trusted-local; review_level=%s; triage=%s; model=%s; codex_cli=%s; sandbox_backend=%s; model_provider=%s; %s.\n' \
+        "$HEAD_SHA" "$REVIEW_LEVEL" "$TRIAGE_NOTE" "$CODEX_MODEL" "$REQUIRED_CODEX_CLI_VERSION" "$SANDBOX_BACKEND" "$MODEL_PROVIDER" "$EXECUTION_EVIDENCE_OUTPUT"
     } > "$SETTLEMENT_BODY"
   }
 

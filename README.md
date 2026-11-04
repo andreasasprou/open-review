@@ -26,7 +26,7 @@ structured output, not the model's verdict word.
 | Input | Default | Purpose |
 |---|---|---|
 | `rules-path` | (required) | Rule pack path. It is read from the default branch. |
-| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` uses `gpt-6-astra` when the PR changes a stored-data, security or infrastructure path outside tests and docs, and `gpt-6.1-sol` otherwise; a model name always uses that model |
+| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` sets the review level: a PR that changes a stored-data, security or infrastructure path outside tests and docs gets `gpt-6-astra` with 2 focused workers; otherwise a GPT-6.1 Sol triage call through `provider-base-url` gives `gpt-6-astra` without focused workers, or one `gpt-6.1-sol` `medium` pass without child threads or workers. A failed triage call counts as high. A model name always uses that model with the configured workers and effort |
 | `child-model` / `child-reasoning-effort` | `gpt-6-luna` / `max` | Default for child agents |
 | `codex-cli-version` | `0.157.1` | Exact `@openai/codex` version |
 | `provider-base-url` / `provider-env-key` | (required) / empty | The Responses-API model provider, with an optional variable that holds a Bearer key |
@@ -119,6 +119,15 @@ that changed the patch, gets a full review; `--full-review` asks for one. `--doc
 that changes only those paths pass without a model; read the globs from a
 trusted ref, never from the PR head. Each such settlement keeps the exact-head
 marker and names the passed head and settlement it builds on.
+
+A PR without a stored-data, security or infrastructure path that changes at
+most 50 lines in at most 3 files passes without a model, unless its latest
+review blocked; its settlement names the level, the rule and the counts.
+`--trivial-limit <lines>/<files>` changes the limit and `off` disables it. A
+merge gate re-derives the level with `node engine/risk-triage.cjs trivial
+<root> <merge-base> <head> <limit>` from base-owned engine code. Without
+`--provider-base-url`, the triage call cannot run and every PR outside the
+sensitive paths gets the high level.
 
 `eval/run-recall.sh --manifest <cases.json> --rules <path> --arm a=<ref> ...`
 reviews known pre-fix PR heads and scores how many known defects each rule-pack

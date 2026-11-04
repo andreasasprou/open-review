@@ -4,7 +4,9 @@
 // the PR's own settlement comments; never runs a model. A carried or incremental
 // pass is used only when it is provably equivalent; anything else is full.
 //
-// - skip: every path the PR changes matches the consumer's docs-only paths.
+// - skip: every path the PR changes matches the consumer's docs-only paths, or
+//   the PR is trivial (risk-triage.cjs: no sensitive path, within the trivial
+//   limit) and its latest trusted review did not block.
 // - carry: the latest trusted settlement passed on the same base branch, and
 //   every file of the PR has the same base and result blobs as at the passed
 //   head (a rerun, or a rebase or merge that left the PR's files alone), or
@@ -18,6 +20,7 @@
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const { deterministicLevel, parseNumstat, parseTrivialLimit } = require("./risk-triage.cjs");
 const { recordCaughtError, runReviewCli } = require("./diagnostics-runtime.cjs");
 
 const WRITE_PERMISSIONS = new Set(["write", "maintain", "admin"]);
@@ -152,13 +155,18 @@ function isAncestor(git, ancestor, head) {
  * already be fetched. `settlementsVerified` is false when the settlements'
  * authors could not be checked. A full review names its reason.
  */
-function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false }) {
+function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false, trivialLimit = null }) {
 	const full = (reason) => ({ mode: "full", reason, files: [] });
 	const mergeBase = git(["merge-base", baseSha, headSha]).trim();
 	const files = changedPaths(git, mergeBase, headSha);
 	if (docsOnly(files, docsPaths)) return { mode: "skip", reason: "docs_only", files };
 	if (fullReview) return full("full_review_requested");
 	if (!settlementsVerified) return full("settlement_author_unverified");
+	// A trivial pass never covers an open block: after a BLOCK the model reviews.
+	if (trivialLimit && (latest === null || latest.gate === "PASS")) {
+		const level = deterministicLevel(parseNumstat(git(["diff", "--numstat", "--no-renames", mergeBase, headSha])), trivialLimit);
+		if (level.level === "trivial") return { mode: "skip", reason: "trivial", files, lines: level.lines, rule: level.rule };
+	}
 	if (latest === null) return full("no_settled_review");
 	if (latest.gate !== "PASS") return full("last_review_not_passed");
 	if (latest.base === null) return full("passed_base_unrecorded");
@@ -200,8 +208,8 @@ function githubPermission(recorder, repository, login) {
 
 function main(recorder, argv) {
 	const [command, ...args] = argv;
-	if (command !== "classify") throw new Error("usage: review-scope.cjs classify <root> <repository> <base-ref> <base-sha> <head-sha> <comments.json> <marker> <docs-paths> <full-review>");
-	const [root, repository, baseRef, baseSha, headSha, commentsFile, marker, docsPathsText, fullReview] = args;
+	if (command !== "classify") throw new Error("usage: review-scope.cjs classify <root> <repository> <base-ref> <base-sha> <head-sha> <comments.json> <marker> <docs-paths> <full-review> [<trivial-limit>]");
+	const [root, repository, baseRef, baseSha, headSha, commentsFile, marker, docsPathsText, fullReview, trivialLimitText] = args;
 	const git = gitRunner(root);
 	const settlements = parseSettlements(readComments(commentsFile),
 		{ marker, attributionHeader: process.env.OPEN_REVIEW_ATTRIBUTION_HEADER || "" });
@@ -223,7 +231,7 @@ function main(recorder, argv) {
 		}
 	}
 	process.stdout.write(`${JSON.stringify(classify({ git, baseRef, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
-		latest, settlementsVerified, fullReview: fullReview === "true" }))}\n`);
+		latest, settlementsVerified, fullReview: fullReview === "true", trivialLimit: parseTrivialLimit(trivialLimitText) }))}\n`);
 }
 
 if (require.main === module) runReviewCli((recorder) => main(recorder, process.argv.slice(2)));

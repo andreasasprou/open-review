@@ -29,6 +29,7 @@ function settlementBody(t, header) {
   const env = (root) => ({ SETTLEMENT_BODY: path.join(root, 'comment.md'), SETTLEMENT_MARKER: 'marker',
     MERGE_GATE_SUMMARY: 'Merge gate: PASS', RULES_CHANGED: 'false', REVIEW_MARKDOWN: '### Findings\n\n- None.',
     REQUIRED_CODEX_CLI_VERSION: '0.157.1', SANDBOX_BACKEND: 'read-only', MODEL_PROVIDER: 'chatgpt',
+    REVIEW_LEVEL: 'model-high', TRIAGE_NOTE: 'risk-triage-v2:high', CODEX_MODEL: 'gpt-6-astra',
     EXECUTION_EVIDENCE_OUTPUT: 'commands=1' });
   const root = run(t, settlementFunction, 'write_settlement_body false', env, header);
   return fs.readFileSync(path.join(root, 'comment.md'), 'utf8');

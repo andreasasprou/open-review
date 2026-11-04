@@ -203,6 +203,21 @@ test("docs-only PRs skip the model and docs-only pushes after a pass carry it", 
 	assert.equal(scope({ baseSha: base, headSha: run("rev-parse", "HEAD"), docsPaths: DOCS, latest: passed(code, base) }).reason, "docs_only_change");
 });
 
+test("a trivial PR skips the model unless it touches a sensitive path or its latest review blocked", (t) => {
+	const { commit, lines, base, scope } = repository(t);
+	const limit = { lines: 50, files: 3 };
+	const small = commit({ "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") });
+	assert.deepEqual(scope({ baseSha: base, headSha: small, trivialLimit: limit }),
+		{ mode: "skip", reason: "trivial", files: ["src/a.ts"], lines: 2, rule: "trivial-v1" });
+	assert.equal(scope({ baseSha: base, headSha: small }).reason, "no_settled_review", "no limit, no skip");
+	assert.equal(scope({ baseSha: base, headSha: small, trivialLimit: { lines: 1, files: 3 } }).mode, "full", "over the line limit");
+	assert.equal(scope({ baseSha: base, headSha: small, trivialLimit: limit, latest: passed(base, base, { gate: "BLOCK" }) }).reason,
+		"last_review_not_passed");
+	assert.equal(scope({ baseSha: base, headSha: small, trivialLimit: limit, fullReview: true }).reason, "full_review_requested");
+	const sensitive = commit({ "db/migrations/001_add.sql": "alter table t add c int;\n" });
+	assert.equal(scope({ baseSha: base, headSha: sensitive, trivialLimit: limit }).mode, "full");
+});
+
 test("docs-only paths match whole segments and refuse traversal", () => {
 	const paths = parseDocsPaths("docs/**  *.md,assets/*.png");
 	assert.equal(docsOnly(["docs/a/b/c.md", "README.md", "assets/logo.png"], paths), true);
@@ -256,12 +271,14 @@ test("the classify command reads the PR's comments and the author's permission",
 	fs.writeFileSync(comments, JSON.stringify([[{ id: 9, user: { login: "maintainer" }, html_url: "u9",
 		body: `<!-- ${MARKER} head=${reviewed} -->\n\nMerge gate: **PASS** — 0 open findings.\nModel verdict (display only): \`pass\`\n\n` +
 			`Review scope: full (no_settled_review).\nReview base: \`main\` at ${base}.\n\n### Review` }]]));
-	const classifyCommand = (docs, full) => JSON.parse(execFileSync("node", [path.join(__dirname, "../engine/review-scope.cjs"),
-		"classify", root, "example/repo", "main", base, head, comments, MARKER, docs, full],
+	const classifyCommand = (docs, full, limit = "off") => JSON.parse(execFileSync("node", [path.join(__dirname, "../engine/review-scope.cjs"),
+		"classify", root, "example/repo", "main", base, head, comments, MARKER, docs, full, limit],
 	{ encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }));
 	assert.deepEqual(classifyCommand("docs/**", "false"),
 		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"] });
 	assert.equal(classifyCommand("", "true").reason, "full_review_requested");
+	assert.deepEqual(classifyCommand("", "false", "50/3"),
+		{ mode: "skip", reason: "trivial", files: ["src/a.ts", "src/b.ts"], lines: 4, rule: "trivial-v1" });
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.equal(classifyCommand("", "false").reason, "settlement_author_unverified");
 });
@@ -347,7 +364,7 @@ test("the runner scopes a review of the PR's current head and base, even when a 
 		encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RUN_DIR: root,
 			SETUP_LOG: path.join(root, "setup.log"), PUBLISH_TRUSTED_ARTIFACTS: "true", REMOTE_HEAD_SHA: head, HEAD_SHA: head, BASE_SHA: base,
 			BASE_REF: "main", CURRENT_REPOSITORY: "example/repo", PR_NUMBER: "1", ENGINE_DIR: root, ROOT: root, SETTLEMENT_MARKER: MARKER,
-			DOCS_ONLY_PATHS: "", FULL_REVIEW: "false", ...extra },
+			DOCS_ONLY_PATHS: "", FULL_REVIEW: "false", TRIVIAL_LIMIT: "50/3", ...extra },
 	});
 	assert.equal(JSON.parse(scope({})).mode, "incremental", "current head and base, named or not");
 	assert.equal(JSON.parse(scope({ HEAD_SHA: "c".repeat(40) })).reason, "unscoped_run", "a historical head");
