@@ -37,7 +37,7 @@ decision entry behind it.
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
 | `rules-worker` | `true`; skipped on incremental reviews and on PRs without a production change | [rules-worker](#rules-worker), [review-scope](#review-scope), [review-cost-trims](#review-cost-trims) |
 | Rules worker input | production-file hunks and the rule pack | [review-cost-trims](#review-cost-trims) |
-| Codex skill list and sleep tool (parent, children, workers) | off (`skills.include_instructions=false`, `features.sleep_tool=false`) | [review-cost-trims](#review-cost-trims) |
+| Codex skill list (parent, children, workers) | off (`skills.include_instructions=false`) | [review-cost-trims](#review-cost-trims) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
 | `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
@@ -73,13 +73,15 @@ average, each re-sending a context that grows from about 35k to 126k tokens.
     input tokens per review and 13% of the pool.
 - Decision:
   - Parent, child and worker sessions run with
-    `skills.include_instructions=false` and `features.sleep_tool=false`.
-    Children share the parent session's configuration. The prompt says
-    repository skill files are not review guidance.
-  - The Delegation rules ask for one spawn per child with its full brief, no
-    follow-up unless the child asks, `fork_turns: "none"` on every spawn, no
-    `list_agents`, `sleep` or user-input calls, and one blocking wait after
-    the parent's own reads.
+    `skills.include_instructions=false`. Children share the parent session's
+    configuration. The prompt says repository skill files are not review
+    guidance.
+  - The Delegation rules ask for `fork_turns: "none"` on every spawn.
+  - Not adopted after the proof run: coordination rules (one spawn per child
+    with its full brief, no follow-ups, no `list_agents`, `sleep` or
+    user-input calls, one blocking wait) and `features.sleep_tool=false`. In
+    the proof run they doubled coordination-only parent requests (4 to 8) and
+    wall time (4m44s to 10m48s); see Proof below.
   - The local runner warns, without changing the gate, when a child ran on the
     parent model although its spawn did not ask for it.
   - The rules worker reads the production-file hunks of the diff (the files a
@@ -109,8 +111,9 @@ average, each re-sending a context that grows from about 35k to 126k tokens.
   | Parent first request | 34.6k tokens | 28.3k tokens |
   | Wall time | 4m44s | 10m48s |
 
-  - Codex 0.157.1 accepted both keys under `--strict-config` and rejects
-    unknown ones. No thread of the after-run received the skill list
+  - The proof run included the dropped coordination rules and sleep-tool
+    flag; the shipped change has neither. Codex 0.157.1 accepted both keys
+    under `--strict-config` and rejects unknown ones. No thread of the after-run received the skill list
     (children's first requests fell from about 22k to 16k tokens). A probe
     against a local stub provider showed both keys remove the skill block and
     the `sleep` and `clock` tools from the first request.
@@ -128,8 +131,9 @@ average, each re-sending a context that grows from about 35k to 126k tokens.
   - Confounders: one sample per arm; the PR's discussion context had grown
     since the earlier run; upstream load was not controlled.
 - Reopen when a recall evaluation shows these rules losing known defects, or
-  when a pinned Codex version changes skill injection, `fork_turns` defaults
-  or the sleep tool.
+  when a pinned Codex version changes skill injection or `fork_turns`
+  defaults. Retry coordination rules only with a measurement that shows fewer
+  requests and no slower reviews.
 
 ### parent-model-risk-gated
 

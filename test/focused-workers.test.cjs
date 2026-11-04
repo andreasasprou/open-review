@@ -307,8 +307,8 @@ fi
   }
   assert.doesNotMatch(calls, /multi_agent/);
   assert.equal(calls.match(/ --model gpt-6\.1-sol -c model_reasoning_effort="medium" /g)?.length, 4);
-  // Workers see no repository skill list and no sleep tool.
-  assert.equal(calls.match(/ -c skills\.include_instructions=false -c features\.sleep_tool=false /g)?.length, 4);
+  // Workers see no repository skill list.
+  assert.equal(calls.match(/ -c skills\.include_instructions=false /g)?.length, 4);
   assert.deepEqual(fs.readdirSync(homeRoot), []);
   fs.writeFileSync(path.join(bin, 'gtimeout'), `#!/usr/bin/env bash\necho invoked > "${path.join(root, 'gtimeout-called')}"\nexec "${path.join(bin, 'timeout')}" "$@"\n`, { mode: 0o755 });
   fs.rmSync(path.join(root, 'calls'));

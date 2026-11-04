@@ -202,7 +202,7 @@ async function runWorker(slice, options) {
       const args = ['--kill-after=30s', rules ? '12m' : '8m', 'codex', 'exec', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config',
         '--model', options.workerModel, '-c', `model_reasoning_effort="${options.workerReasoningEffort}"`, '-c', 'sandbox_mode="read-only"',
         '-c', 'allow_login_shell=false', '-c', 'web_search="disabled"',
-        '-c', 'skills.include_instructions=false', '-c', 'features.sleep_tool=false',
+        '-c', 'skills.include_instructions=false',
         '-c', `shell_environment_policy.exclude=${JSON.stringify(["CODEX_HOME", "HOME", "RUNNER_TEMP", ...(options.providerEnvKey ? [options.providerEnvKey] : [])])}`,
         ...configArgs(options.providerBaseUrl, options.providerEnvKey), '--disable', 'plugins', '--json',
         '--output-schema', path.join(__dirname, rules ? 'rules-worker-schema.json' : 'focused-worker-schema.json'), '-o', output, '-'];

@@ -1067,7 +1067,6 @@ runs:
             -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
             -c "agents.default_subagent_reasoning_effort=\"$CODEX_SUBAGENT_REASONING\"" \
             -c 'skills.include_instructions=false' \
-            -c 'features.sleep_tool=false' \
             -c 'allow_login_shell=false' \
             -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
             -c "model_reasoning_effort=\"$CODEX_REASONING\"" \

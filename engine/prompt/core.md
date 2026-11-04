@@ -263,23 +263,10 @@ Children independently inspect evidence and challenge assumptions; do not ask
 them to endorse a parent conclusion. Verify every child conclusion against the
 sources it cites before relying on it.
 
-Each coordination call re-sends the whole review context, so coordinate in as
-few calls as possible:
-
-- Spawn each child once, with its complete brief in the spawn message: the
-  items, starting paths, established facts with source references and the
-  output it must return. Do not send a follow-up message unless the child
-  asks a question; then answer only that question.
-- Always pass `fork_turns: "none"`. Omitting `fork_turns` forks the child,
-  and a forked child (`fork_turns` of `"all"` or a number, or
-  `fork_context`) runs on the parent's model whatever model the spawn names.
-- Never call `list_agents`, `sleep`, `request_user_input` or
-  `request_user_input_async`. This review runs without a user, and the spawn
-  result already names each child.
-- Spawn the children as soon as their briefs are ready, then do your own
-  reads. When those are done, wait for the children with one blocking
-  `wait_agent` call with a timeout of at least 300000 ms; call it again only
-  while a child is still running. Do not poll with short timeouts.
+Always pass `fork_turns: "none"` when you spawn a child. Omitting
+`fork_turns` forks the child, and a forked child (`fork_turns` of `"all"` or a
+number, or `fork_context`) runs on the parent's model whatever model the spawn
+names.
 
 Before delegating, list the **changed contracts**: every exported function,
 hook, type, union member, constant, route, or event the diff adds, removes,

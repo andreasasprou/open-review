@@ -144,7 +144,7 @@ class AssemblyContractTest(unittest.TestCase):
         self.assertIn("result: compatible | counterexample | unresolved", prompt)
         self.assertIn("`unresolved` row under \"Risks Not Raised\"", prompt)
 
-    def test_prompt_rules_out_skill_files_and_costly_coordination(self):
+    def test_prompt_rules_out_skill_files_and_forked_children(self):
         result = assemble_cli(EXAMPLE_RULES)
         self.assertEqual(result.returncode, 0, result.stderr)
         prompt = " ".join(result.stdout.split())
@@ -154,16 +154,15 @@ class AssemblyContractTest(unittest.TestCase):
             prompt,
         )
         delegation = prompt.split("### Delegation", 1)[1].split("Before delegating, list the", 1)[0]
-        for rule in (
-            "Spawn each child once, with its complete brief in the spawn message",
-            "Do not send a follow-up message unless the child asks a question",
-            "Always pass `fork_turns: \"none\"`. Omitting `fork_turns` forks the child, and a forked child "
-            "(`fork_turns` of `\"all\"` or a number, or `fork_context`) runs on the parent's model whatever model the spawn names.",
-            "Never call `list_agents`, `sleep`, `request_user_input` or `request_user_input_async`.",
-            "wait for the children with one blocking `wait_agent` call with a timeout of at least 300000 ms",
-            "Do not poll with short timeouts.",
-        ):
-            self.assertIn(rule, delegation)
+        self.assertIn(
+            "Always pass `fork_turns: \"none\"` when you spawn a child. Omitting `fork_turns` forks the child, and a "
+            "forked child (`fork_turns` of `\"all\"` or a number, or `fork_context`) runs on the parent's model whatever "
+            "model the spawn names.",
+            delegation,
+        )
+        # The coordination discipline was dropped: it doubled coordination requests and wall time.
+        self.assertNotIn("wait_agent", delegation)
+        self.assertNotIn("follow-up message", delegation)
 
 
 if __name__ == "__main__":

@@ -1131,7 +1131,6 @@ if [ "$STREAM_RAW" = "true" ]; then
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
         -c "agents.default_subagent_reasoning_effort=\"$CODEX_SUBAGENT_REASONING\"" \
         -c 'skills.include_instructions=false' \
-        -c 'features.sleep_tool=false' \
         -c "shell_environment_policy.exclude=$SHELL_ENV_EXCLUDE" \
         --disable plugins \
         --json \
@@ -1161,7 +1160,6 @@ else
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
         -c "agents.default_subagent_reasoning_effort=\"$CODEX_SUBAGENT_REASONING\"" \
         -c 'skills.include_instructions=false' \
-        -c 'features.sleep_tool=false' \
         -c "shell_environment_policy.exclude=$SHELL_ENV_EXCLUDE" \
         --disable plugins \
         --json \

@@ -348,7 +348,7 @@ test('the parent opens at most two child threads, hosted and local', () => {
   }
 });
 
-test('every parent Codex invocation drops the skill list and the sleep tool, hosted and local', () => {
+test('every parent Codex invocation drops the skill list, hosted and local', () => {
   const local = readFileSync(resolve(__dirname, '../engine/run-local.sh'), 'utf8');
   // From the Codex command to its prompt on stdin; children share this session's config.
   const invocations = (text, start) => text.split(start).slice(1).map((rest) => rest.split('- < .codex-ci/review-prompt.md')[0]);
@@ -360,7 +360,7 @@ test('every parent Codex invocation drops the skill list and the sleep tool, hos
   for (const block of blocks) {
     assert.match(block, /--strict-config/);
     assert.match(block, /-c 'skills\.include_instructions=false' \\\n/);
-    assert.match(block, /-c 'features\.sleep_tool=false' \\\n/);
+    assert.doesNotMatch(block, /sleep_tool/);
   }
 });
 
