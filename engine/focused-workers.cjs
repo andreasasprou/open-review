@@ -431,4 +431,4 @@ function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { excluded, parentModel, parseDiff, productionPatch, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };
+module.exports = { excluded, parentModel, parseDiff, productionPatch, selectSlices, sensitivePaths, workerCount, validOutput, validRulesOutput, run, usageFromLog };

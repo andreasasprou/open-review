@@ -52,6 +52,66 @@ decision entry behind it.
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
 
+### risk-triage
+
+**2026-11-04.** Owner idea: set each PR's review level with a deterministic
+check and a quick model triage instead of the path rule alone, and pass
+trivial PRs without a model review. Calibrated here; not yet wired into
+routing. It is integrated after [review-scope](#review-scope) lands.
+
+- Levels, decided in this order from base-owned code:
+  - **high**, without a model call: the PR changes a path of the
+    [focused-workers-risk-gated](#focused-workers-risk-gated) rule. The GPT-6
+    Astra parent and 2 workers review it. PR text is attacker-controlled, so
+    no model answer can lower this floor.
+  - **trivial**, without a model call: no such path, and either every path is
+    a docs-only path (agent instructions and review rules excluded) or the PR
+    changes at most 20 lines in at most 3 files. Only mechanical checks run.
+  - otherwise the triage model decides. GPT-6.1 Sol at `medium` effort reads
+    the title and description (capped, marked untrusted), the changed files
+    with sizes and test, doc or generated tags, and changed-line excerpts
+    capped at 9,000 characters (`engine/risk-triage.cjs`,
+    `engine/risk-triage-prompt.txt`). It answers strict JSON
+    `{risk: high|normal|docs, reasons, confidence}`. A high answer gets the
+    full review. A normal or docs answer gets one single-pass review by a
+    cheaper model, without children or workers, in about 5 minutes. A request
+    error, a timeout or an invalid answer counts as high. The model can only
+    raise a level: "docs" on a PR that changes code is normal.
+- Calibration set: a manifest in one consumer repository
+  (`.open-review/calibration/risk-triage.json`) of 187 of its 924 PRs merged
+  in 9 days. It holds 49 PRs whose review blocked on a P0 or P1 finding that
+  the next passing push fixed (required high), 14 blocked and cleared without
+  a change to the named file, 28 low-risk, 17 docs, 10 agent-instruction, and
+  a seeded random sample of 80 reviewed PRs for the high share. The path rule
+  alone marks 37 of the 49 required PRs high, 37 of the 80 sampled PRs (46%),
+  and 42% of all 924 merged PRs.
+- Rule for prompt `risk-triage-v1`, declared before the run:
+  1. the final level is high on all 49 required PRs;
+  2. the final high share on the sample is at most 55% (owner target
+     40–50%);
+  3. no agent-instruction PR ends as docs;
+  4. at most 2% of calls fail;
+  5. the 90th-percentile latency is at most 30 s.
+  Pool capacity allows two runs: v1 and, if v1 fails, one revised prompt. A
+  revised prompt is tuned on this set, so its result is optimistic.
+- Trivial threshold, measured without a model on the 924 merged PRs and on
+  the 63 blocked PRs at the head the block was raised on: no blocked PR is
+  trivial at any threshold up to 100 lines in 5 files. The smallest blocked
+  PR outside the path rule changed 135 lines in 7 files; three smaller
+  blocked PRs (4 to 44 lines) are high through the path rule. At 20 lines and
+  3 files, 8% of merged PRs are trivial. Their reviews raised no P0 or P1
+  finding, 2 parent P2 findings (both on documentation text), 7 focused-worker
+  P2 findings and 91 repository-rule P2 findings. At 100 lines and 5 files, a
+  PR with a P1 finding (a CI script outside the workflow directory) would be
+  trivial. Keep the threshold at or below 50 lines in 3 files (11%).
+- Normal-level reviewer, not yet run because of pool capacity: GPT-6.1 Terra
+  at `low` and at `medium` against GPT-6.1 Sol at `medium`, each a single
+  pass without children or workers, on the development set's PRs outside the
+  path rule. Rule, declared now: adopt the cheapest arm that finds at least as
+  many known defects as GPT-6.1 Sol `medium` with no more invalid blocking
+  findings; screen with 1 sample, and use 3 when the screen is within 1
+  defect.
+- Result: pending.
 ### review-cost-trims
 
 **2026-11-04.** Owner decision on cost, without a recall evaluation. Can a
