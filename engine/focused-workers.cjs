@@ -25,7 +25,12 @@ const SENSITIVE_PATHS = [
   /(^|[/_.-])(auth|authn|authz|authori[sz]\w*|authenticat\w*|oauth\w*|iam|rls|secrets?|security|permissions?|crypto)([/_.-]|$)/i,
   /[a-z](Auth|OAuth|Iam|Permissions?|Secrets?|Security)([A-Z0-9/_.-]|$)/,
   /(^|\/)infra\//i, /(^|\/)(Dockerfile|docker-compose)[^/]*$/i, /^\.github\/(workflows|actions)\//,
+  /(^|[/_.-])schemas?([/_.-]|$)/i,
 ];
+// "auto" parent model: GPT-6 Astra on a PR that changes one of those paths,
+// GPT-6.1 Sol otherwise (decision parent-model-risk-gated).
+const RISK_PARENT_MODEL = "gpt-6-astra";
+const STANDARD_PARENT_MODEL = "gpt-6.1-sol";
 const WORKER_MODEL = "gpt-6.1-sol";
 const WORKER_REASONING_EFFORT = "medium";
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
@@ -64,17 +69,34 @@ function parseDiff(patch) {
       if (line.startsWith("+") && !line.startsWith("+++")) added++;
       else if (line.startsWith("-") && !line.startsWith("---")) removed++;
     }
-    return { file: pathname, deleted: newMatch?.[1]?.trim() === "/dev/null" || /^deleted file mode /m.test(chunk), added, removed,
+    // A renamed or copied file's source path, which risk routing also reads.
+    const renameFrom = chunk.match(/^(?:rename|copy) from (.+)$/m)?.[1];
+    const previous = gitPath(oldMatch?.[1], "a") || (renameFrom ? unquoteGitPath(renameFrom) : "");
+    return { file: pathname, previous: previous !== pathname ? previous : "",
+      deleted: newMatch?.[1]?.trim() === "/dev/null" || /^deleted file mode /m.test(chunk), added, removed,
       hunks: [...chunk.matchAll(/^@@ -\S+ \+\S+ @@/gm)].map((m) => m[0]) };
   }).filter(Boolean);
 }
 
+// Risk routing ignores only tests and docs. Generated, fixture or lockfile
+// paths are skipped as worker slices, but a generated migration still counts.
 function sensitivePaths(files) {
-  return files.filter((file) => !excluded(file) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
+  return files.filter((file) => !["test", "doc"].includes(excluded(file)) && SENSITIVE_PATHS.some((pattern) => pattern.test(file)));
+}
+
+/** The parent reviewer's model for `auto` or an explicit model, from the PR's changed paths. */
+function parentModel(value, files) {
+  if (value === "auto") return sensitivePaths(files).length > 0 ? RISK_PARENT_MODEL : STANDARD_PARENT_MODEL;
+  // The model is interpolated into Codex arguments and the prompt.
+  if (!/^[A-Za-z0-9._-]+$/.test(String(value))) throw new Error("parent model must be auto or a plain model identifier");
+  return value;
 }
 
 function workerCount(value, patch) {
-  if (value === "auto") return sensitivePaths(parseDiff(patch).map((entry) => entry.file)).length > 0 ? AUTO_WORKERS : 0;
+  if (value === "auto") {
+    const files = parseDiff(patch).flatMap((entry) => [entry.file, entry.previous].filter(Boolean));
+    return sensitivePaths(files).length > 0 ? AUTO_WORKERS : 0;
+  }
   if (!/^[0-4]$/.test(String(value))) throw new Error("focused-workers must be auto or an integer from 0 to 4");
   return Number(value);
 }
@@ -372,6 +394,14 @@ async function run(options) {
 }
 
 function main(argv) {
+  if (argv[0] === 'parent-model') {
+    // Changed paths, NUL-separated (`git diff --name-only -z`), on stdin, so
+    // quoting never hides a path; rename sources included.
+    return Promise.resolve().then(() => {
+      const files = fs.readFileSync(0, 'utf8').split('\0').filter(Boolean);
+      process.stdout.write(`${parentModel(argv[1], files)}\n`);
+    });
+  }
   if (argv[0] !== 'run') throw new Error('usage: focused-workers.cjs run <auto|max> <base-sha> <home-root> <auth-source> <output-dir> <root> [timeout|gtimeout]');
   const [, max, baseSha, homeRoot, authSource, outputDir, root, timeoutCommand = 'timeout'] = argv;
   if (!/^[0-9a-f]{40}$/.test(baseSha)) throw new Error('base SHA must be a full SHA');
@@ -383,4 +413,4 @@ function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { excluded, parseDiff, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };
+module.exports = { excluded, parentModel, parseDiff, selectSlices, workerCount, validOutput, validRulesOutput, run, usageFromLog };

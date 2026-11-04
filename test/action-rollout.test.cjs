@@ -278,6 +278,76 @@ test('a merge from the base branch after the last pass makes a full review', (t)
   assert.match(scope(merged), /review_mode=full\n[^]*review_scope_reason=merge_base_moved/);
 });
 
+test('incremental reviews start no focused or rules workers', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'open-review-action-incremental-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, '.codex-ci'));
+  mkdirSync(join(root, 'open-review'));
+  writeFileSync(join(root, 'open-review/rules.md'), 'review rules\n');
+  mkdirSync(join(root, 'bin'));
+  writeFileSync(join(root, 'bin/node'), '#!/usr/bin/env bash\nprintf "%s rules=%s\\n" "$*" "$RULES_WORKER" > "$NODE_RECORD.tmp"\nmv "$NODE_RECORD.tmp" "$NODE_RECORD"\n', { mode: 0o755 });
+  const record = join(root, 'node-call');
+  const env = { PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: root, FOCUSED_WORKERS: 'auto',
+    RULES_WORKER: 'true', DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: record };
+  for (const [mode, expected] of [
+    ['incremental', /focused-workers\.cjs run 0 a{40} .* rules=false\n$/],
+    ['full', /focused-workers\.cjs run auto a{40} .* rules=true\n$/],
+  ]) {
+    rmSync(record, { force: true });
+    for (const name of ['exit', 'started', 'pid', 'log']) rmSync(join(root, `open-review/focused-workers.${name}`), { force: true });
+    assert.equal(runShell(block('Start focused workers', 'run'), root, { ...env, REVIEW_MODE: mode }).status, 0);
+    const began = Date.now();
+    while (!existsSync(record) && Date.now() - began < 5000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    assert.match(readFileSync(record, 'utf8'), expected);
+  }
+});
+
+test('the hosted parent model follows the PR risk rule and reaches every model consumer', (t) => {
+  const f = fixture(t, false, false);
+  const runnerTemp = mkdtempSync(join(tmpdir(), 'open-review-parent-temp-'));
+  t.after(() => rmSync(runnerTemp, { recursive: true, force: true }));
+  cpSync(resolve(__dirname, '../engine'), join(runnerTemp, 'open-review/engine'), { recursive: true });
+  git(f.root, 'checkout', '-qb', 'pr', f.base);
+  writeFileSync(join(f.root, 'view.tsx'), 'view\n');
+  git(f.root, 'add', 'view.tsx');
+  git(f.root, 'commit', '-qm', 'ui');
+  const standard = git(f.root, 'rev-parse', 'HEAD');
+  mkdirSync(join(f.root, 'db/migrations'), { recursive: true });
+  writeFileSync(join(f.root, 'db/migrations/0002.sql'), 'select 1;\n');
+  git(f.root, 'add', 'db');
+  git(f.root, 'commit', '-qm', 'migration');
+  const risky = git(f.root, 'rev-parse', 'HEAD');
+  const model = (head, input) => {
+    writeFileSync(f.output, '');
+    const result = runShell(block('Resolve parent model', 'run'), f.root, {
+      PARENT_MODEL: input, HEAD_SHA: head, MERGE_BASE_SHA: f.base, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: f.output,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return readFileSync(f.output, 'utf8');
+  };
+  assert.equal(model(standard, 'auto'), 'model=gpt-6.1-sol\n');
+  assert.equal(model(risky, 'auto'), 'model=gpt-6-astra\n');
+  assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\n');
+  // A non-ASCII path, which git quotes in line output, still routes as risky (review round 2).
+  git(f.root, 'checkout', '-qb', 'workflow', standard);
+  mkdirSync(join(f.root, '.github/workflows'), { recursive: true });
+  writeFileSync(join(f.root, '.github/workflows/déploy.yml'), 'on: push\n');
+  git(f.root, 'add', '.github');
+  git(f.root, 'commit', '-qm', 'workflow');
+  assert.equal(model(git(f.root, 'rev-parse', 'HEAD'), 'auto'), 'model=gpt-6-astra\n');
+  assert.match(action, /\n  parent-model:\n[\s\S]*?\n    default: auto\n/);
+  assert.equal(action.match(/steps\.parent\.outputs\.model/g).length, 3);
+  assert.ok(action.indexOf('    - name: Resolve parent model') < action.indexOf('    - name: Restore prior review session'));
+});
+
+test('the parent opens at most two child threads, hosted and local', () => {
+  const local = readFileSync(resolve(__dirname, '../engine/run-local.sh'), 'utf8');
+  for (const text of [action, local]) {
+    assert.doesNotMatch(text, /max_concurrent_threads_per_session=(?!2')/);
+    assert.match(text, /max_concurrent_threads_per_session=2'/);
+  }
+});
+
 test('hosted prompt handles a multibyte character across the 4000-byte limit', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'open-review-body-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

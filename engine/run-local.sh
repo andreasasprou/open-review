@@ -17,10 +17,13 @@ Options:
   --rules <path>         Repository-relative rule pack path. Default: OPEN_REVIEW_RULES_PATH.
   --head-sha <sha>       Review a specific PR head SHA instead of the current PR tip.
   --base-sha <sha>       Diff against a specific base SHA instead of the current PR base.
-  --timeout <duration>   Codex timeout duration. Default: 20m.
+  --timeout <duration>   Codex timeout duration, incremental reviews included. Default: 20m
+                         (10m for an incremental review).
   --kill-after <duration>
                          Extra time before force-killing after timeout. Default: 60s.
-  --model <model>        Codex model. Default: CODEX_MODEL or gpt-6-astra.
+  --model <model|auto>   Parent model. auto: gpt-6-astra when the PR changes a stored-data,
+                         security or infrastructure path outside tests and docs, else
+                         gpt-6.1-sol. Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
   --focused-workers <auto|n>
                          Advisory focused file slices. Default: auto (2 when the PR
@@ -28,6 +31,12 @@ Options:
                          0); an integer from 0 to 4 sets the maximum; 0 disables.
   --rules-worker <true|false>
                          Advisory check against the repository's written rules. Default: true.
+  --docs-only-paths <globs>
+                         Paths, separated by spaces or commas, whose changes need no model
+                         review (`**` crosses directories). A PR changing only these
+                         passes without a model. Default: OPEN_REVIEW_DOCS_ONLY_PATHS, or
+                         none. Pass them from a trusted ref, never from the PR head.
+  --full-review          Review the whole PR even after a passed review.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
   --use-user-codex-home  Use the current CODEX_HOME/~/.codex instead of a clean temp home.
   --provider-base-url <url>
@@ -52,10 +61,18 @@ Options:
 
 Logs are written under .agent-data/codex-review-local/.
 
+Review scope: when the latest settlement on the PR passed on the same base
+branch, a published run carries that pass if every PR file has the same base
+and result blobs (rerun, or a rebase or merge that left the PR's files alone)
+or only docs-only paths changed. Otherwise, if the passed head is an ancestor
+of this head, it reviews only the files that changed: the parent alone, at
+OPEN_REVIEW_INCREMENTAL_REASONING (default high) within
+OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 10m). Every other run is a full review.
+
 Environment: CODEX_MODEL, CODEX_REASONING, CODEX_SUBAGENT_MODEL,
 CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_WORKER_MODEL and
 OPEN_REVIEW_WORKER_REASONING_EFFORT (focused and rules workers; default
-gpt-6.1-sol at medium), OPEN_REVIEW_SETTLEMENT_MARKER
+gpt-6.1-sol at medium), OPEN_REVIEW_FULL_REVIEW, OPEN_REVIEW_SETTLEMENT_MARKER
 (HTML-comment marker of the settlement comment; default
 open-review-local:settlement), and OPEN_REVIEW_ATTRIBUTION_HEADER (Markdown
 placed after the settlement marker and before the inline review body and each
@@ -76,13 +93,17 @@ BASE_SHA_OVERRIDE=""
 CODEX_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-20m}"
 KILL_AFTER="${CODEX_REVIEW_KILL_AFTER:-60s}"
 REQUIRED_CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.157.1}"
-export CODEX_MODEL="${CODEX_MODEL:-gpt-6-astra}"
+export CODEX_MODEL="${CODEX_MODEL:-auto}"
 export CODEX_REASONING="${CODEX_REASONING:-high}"
 export CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-gpt-6-luna}"
 export CODEX_SUBAGENT_REASONING="${CODEX_SUBAGENT_REASONING:-max}"
 CODEX_WEB_SEARCH_MODE="${CODEX_WEB_SEARCH_MODE:-disabled}"
 FOCUSED_WORKERS="${OPEN_REVIEW_FOCUSED_WORKERS:-auto}"
 RULES_WORKER="${OPEN_REVIEW_RULES_WORKER:-true}"
+DOCS_ONLY_PATHS="${OPEN_REVIEW_DOCS_ONLY_PATHS:-}"
+FULL_REVIEW="${OPEN_REVIEW_FULL_REVIEW:-false}"
+INCREMENTAL_REASONING="${OPEN_REVIEW_INCREMENTAL_REASONING:-high}"
+INCREMENTAL_TIMEOUT="${OPEN_REVIEW_INCREMENTAL_TIMEOUT:-10m}"
 PROVIDER_BASE_URL="${OPEN_REVIEW_PROVIDER_BASE_URL:-}"
 PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
 RULES_PATH="${OPEN_REVIEW_RULES_PATH:-}"
@@ -116,6 +137,8 @@ while [ "$#" -gt 0 ]; do
       ;;
     --timeout)
       CODEX_TIMEOUT="${2:-}"
+      # An explicit limit also bounds an incremental review.
+      INCREMENTAL_TIMEOUT="$CODEX_TIMEOUT"
       shift 2
       ;;
     --kill-after)
@@ -137,6 +160,14 @@ while [ "$#" -gt 0 ]; do
     --rules-worker)
       RULES_WORKER="${2:-}"
       shift 2
+      ;;
+    --docs-only-paths)
+      DOCS_ONLY_PATHS="${2:-}"
+      shift 2
+      ;;
+    --full-review)
+      FULL_REVIEW="true"
+      shift
       ;;
     --stream-raw)
       STREAM_RAW="true"
@@ -201,6 +232,10 @@ if ! [[ "$FOCUSED_WORKERS" =~ ^([0-4]|auto)$ ]]; then
 fi
 if ! [[ "$RULES_WORKER" =~ ^(true|false)$ ]]; then
   echo "error: --rules-worker must be true or false" >&2
+  exit 1
+fi
+if ! [[ "$FULL_REVIEW" =~ ^(true|false)$ ]]; then
+  echo "error: OPEN_REVIEW_FULL_REVIEW must be true or false" >&2
   exit 1
 fi
 
@@ -271,6 +306,7 @@ TRUSTED_RUNNER_FILES=(
   "ledger/publisher.cjs"
   "ledger/evidence.cjs"
   "change-impact.cjs"
+  "review-scope.cjs"
 )
 
 # A consumer may pin the engine to the same commit as its hosted action.
@@ -546,6 +582,24 @@ git -C "$ROOT" show "$RULES_SOURCE:$RULES_PATH" > "$REVIEW_PROMPTS_DIR/rules.md"
   echo "error: failed to stage rule pack $RULES_SOURCE:$RULES_PATH; see $SETUP_LOG" >&2
   exit 1
 }
+MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$BASE_SHA" "$HEAD_SHA")"
+# The merge base against the PR's own base branch at start; publication refuses
+# a settlement once that changes (a retargeted PR is another review target).
+PR_START_BASE_SHA="$(jq -r '.baseRefOid' "$RUN_DIR/pr.json")"
+if ! git -C "$ROOT" cat-file -e "$PR_START_BASE_SHA^{commit}" 2>/dev/null &&
+   ! git -C "$ROOT" fetch --quiet --no-tags origin "$PR_START_BASE_SHA" >>"$SETUP_LOG" 2>&1; then
+  echo "error: failed to fetch the PR's current base $PR_START_BASE_SHA; see $SETUP_LOG" >&2
+  exit 1
+fi
+PR_START_MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$PR_START_BASE_SHA" "$HEAD_SHA")"
+# The parent model follows the same risk rule as the focused workers, over the
+# whole PR's paths (rename sources included), so every round uses one model.
+if ! CODEX_MODEL="$(git -C "$ROOT" diff --name-only -z --no-renames "$MERGE_BASE_SHA" "$HEAD_SHA" |
+  node "$ENGINE_DIR/focused-workers.cjs" parent-model "$CODEX_MODEL")"; then
+  echo "error: could not resolve the parent model; see the message above" >&2
+  exit 1
+fi
+echo "Parent model: $CODEX_MODEL" | tee -a "$RUN_DIR/summary.txt"
 "$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble \
   --rules "$REVIEW_PROMPTS_DIR/rules.md" \
   --parent-model "$CODEX_MODEL" \
@@ -559,13 +613,165 @@ git -C "$ROOT" show "$RULES_SOURCE:$RULES_PATH" > "$REVIEW_PROMPTS_DIR/rules.md"
 PROMPT_BLOB="$(git hash-object "$REVIEW_PROMPTS_DIR/review-template.md")"
 echo "Rule pack ref: $RULES_SOURCE (source=$RULES_SOURCE_KIND); prompt $PROMPT_BLOB" | tee -a "$RUN_DIR/summary.txt"
 
+# Refuse to settle when the PR's head, base branch or merge base changed since
+# this run started: the settlement would describe another review target.
+# Compares with the tip observed at start: a --head-sha review of an older
+# commit is deliberate and must not be refused because the PR has since moved.
+verify_review_target_unchanged() {
+  local current current_base
+  current="$(gh pr view "$PR_NUMBER" --json headRefOid,baseRefName,baseRefOid)"
+  if [ "$(jq -r '.headRefOid' <<<"$current")" != "$REMOTE_HEAD_SHA" ]; then
+    echo "error: PR head changed during local review; refusing settlement expected=$REMOTE_HEAD_SHA current=$(jq -r '.headRefOid' <<<"$current")" >&2
+    return 1
+  fi
+  if [ "$(jq -r '.baseRefName' <<<"$current")" != "$BASE_REF" ]; then
+    echo "error: PR base branch changed during local review; refusing settlement expected=$BASE_REF current=$(jq -r '.baseRefName' <<<"$current")" >&2
+    return 1
+  fi
+  current_base="$(jq -r '.baseRefOid' <<<"$current")"
+  if ! git -C "$ROOT" cat-file -e "$current_base^{commit}" 2>/dev/null &&
+     ! git -C "$ROOT" fetch --quiet --no-tags origin "$current_base" >>"$SETUP_LOG" 2>&1; then
+    echo "error: could not fetch the PR's current base $current_base; refusing settlement" >&2
+    return 1
+  fi
+  if [ "$(git -C "$ROOT" merge-base "$current_base" "$HEAD_SHA")" != "$PR_START_MERGE_BASE_SHA" ]; then
+    echo "error: PR merge base changed during local review; refusing settlement" >&2
+    return 1
+  fi
+}
+
+# Post the settlement comment, then the commit status that links it, for
+# HEAD_SHA. Reads SETTLEMENT_BODY, STATUS_STATE and STATUS_DESCRIPTION; sets
+# SETTLEMENT_COMMENT_URL.
+publish_settlement() {
+  verify_trusted_runner_files_unchanged
+  SETTLEMENT_COMMENT_URL="$(
+    jq -n --rawfile body "$SETTLEMENT_BODY" '{ body: $body }' |
+      gh api \
+        --method POST \
+        "repos/$CURRENT_REPOSITORY/issues/$PR_NUMBER/comments" \
+        --input - \
+        --jq '.html_url'
+  )"
+  echo "Local review settlement published for head $HEAD_SHA: $SETTLEMENT_COMMENT_URL"
+  echo "Settlement comment: $SETTLEMENT_COMMENT_URL" >> "$RUN_DIR/summary.txt"
+
+  verify_trusted_runner_files_unchanged
+  if gh api \
+    --method POST \
+    "repos/$CURRENT_REPOSITORY/statuses/$HEAD_SHA" \
+    -f "state=$STATUS_STATE" \
+    -f "context=$CHECK_NAME" \
+    -f "description=$STATUS_DESCRIPTION" \
+    -f "target_url=$SETTLEMENT_COMMENT_URL" \
+    >/dev/null; then
+    echo "Commit status published: $CHECK_NAME ($STATUS_STATE)"
+    echo "Commit status: $CHECK_NAME ($STATUS_STATE)" >> "$RUN_DIR/summary.txt"
+  else
+    echo "warning: failed to publish $CHECK_NAME commit status for head $HEAD_SHA; settlement remains published at $SETTLEMENT_COMMENT_URL" >&2
+    echo "Commit status: $CHECK_NAME (publication failed)" >> "$RUN_DIR/summary.txt"
+  fi
+}
+
+# Review scope, from git and the PR's settlement comments alone (review-scope.cjs).
+# Runs that cannot publish, and reviews of another head or base than the PR's
+# current ones, stay full. A wrapper may pass the current ones explicitly.
+SCOPE_JSON='{"mode":"full","reason":"unscoped_run","files":[]}'
+if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ] && [ "$HEAD_SHA" = "$REMOTE_HEAD_SHA" ] &&
+   [ "$BASE_SHA" = "$(jq -r '.baseRefOid' "$RUN_DIR/pr.json")" ]; then
+  if ! gh api --paginate --slurp "repos/$CURRENT_REPOSITORY/issues/$PR_NUMBER/comments" \
+    > "$RUN_DIR/pr-comments.json" 2>>"$SETUP_LOG"; then
+    echo "warning: PR comments are unreadable, so no earlier pass can scope this review; see $SETUP_LOG" >&2
+    printf '[]\n' > "$RUN_DIR/pr-comments.json"
+  fi
+  SCOPE_STATUS=0
+  SCOPE_OUTPUT="$(node "$ENGINE_DIR/review-scope.cjs" classify "$ROOT" "$CURRENT_REPOSITORY" "$BASE_REF" "$BASE_SHA" "$HEAD_SHA" \
+    "$RUN_DIR/pr-comments.json" "$SETTLEMENT_MARKER" "$DOCS_ONLY_PATHS" "$FULL_REVIEW" 2>>"$SETUP_LOG")" || SCOPE_STATUS=$?
+  if [ "$SCOPE_STATUS" -eq 78 ]; then exit 78; fi
+  if [ "$SCOPE_STATUS" -eq 0 ]; then
+    SCOPE_JSON="$SCOPE_OUTPUT"
+  else
+    echo "warning: review scope is unavailable; reviewing the whole PR. See $SETUP_LOG" >&2
+    SCOPE_JSON='{"mode":"full","reason":"scope_unavailable","files":[]}'
+  fi
+fi
+SCOPE_MODE="$(jq -r '.mode' <<<"$SCOPE_JSON")"
+SCOPE_REASON="$(jq -r '.reason' <<<"$SCOPE_JSON")"
+SCOPE_FROM="$(jq -r '.from // ""' <<<"$SCOPE_JSON")"
+SCOPE_SETTLEMENT="$(jq -r '.settlement // ""' <<<"$SCOPE_JSON")"
+SCOPE_FILE_COUNT="$(jq -r '.files | length' <<<"$SCOPE_JSON")"
+# Recorded in every settlement; a later run scopes from it only on the same base.
+SCOPE_BASE_LINE="Review base: \`$BASE_REF\` at $MERGE_BASE_SHA."
+case "$SCOPE_MODE:$SCOPE_REASON" in
+  skip:*) SCOPE_LINE="Review scope: skipped, docs only. All $SCOPE_FILE_COUNT changed files match the docs-only paths, so no model reviewed this PR." ;;
+  carry:same_head) SCOPE_LINE="Review scope: carried. This head already passed: $SCOPE_SETTLEMENT" ;;
+  carry:same_patch) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). This head's patch is the same file for file." ;;
+  carry:*) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). Only $SCOPE_FILE_COUNT docs-only files changed since." ;;
+  incremental:since_passed_review) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT), an ancestor of this head. The parent reviewed the $SCOPE_FILE_COUNT files whose patch changed since." ;;
+  incremental:*) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT), an ancestor of this head. The base moved since, so the parent reviewed the whole PR patch of the $SCOPE_FILE_COUNT files that changed." ;;
+  *) SCOPE_LINE="Review scope: full ($SCOPE_REASON)." ;;
+esac
+echo "Review mode: $SCOPE_MODE ($SCOPE_REASON)" | tee -a "$RUN_DIR/summary.txt"
+
+if [ "$SCOPE_MODE" = "skip" ] || [ "$SCOPE_MODE" = "carry" ]; then
+  printf '%s\n%s\n' "$SCOPE_LINE" "$SCOPE_BASE_LINE" | tee -a "$RUN_DIR/summary.txt"
+  if [ "$PREPARE_ONLY" = "true" ]; then
+    echo "Prepared local reproduction: no model review is needed for this head."
+    exit 0
+  fi
+  SCOPE_VERDICT="carried"
+  if [ "$SCOPE_MODE" = "skip" ]; then SCOPE_VERDICT="skipped"; fi
+  # The same settlement shape as a model review with no open findings.
+  node - "$ENGINE_DIR/local-settlement.cjs" "$ENGINE_DIR/index.cjs" "$SETTLEMENT_JSON" "$HEAD_SHA" "$BASE_SHA" "$SCOPE_VERDICT" "$SCOPE_JSON" <<'NODE'
+const fs = require('node:fs');
+const { plainMergeGateLine, truncateStatusDescription } = require(process.argv[2]);
+const { deriveMergeGate, formatMergeGateSummary } = require(process.argv[3]);
+const [file, headSha, baseSha, verdict, scopeText] = process.argv.slice(4);
+const scope = JSON.parse(scopeText);
+const mergeGate = deriveMergeGate({ open_findings: [] });
+const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
+const mergeGateLine = mergeGateSummary.split('\n', 1)[0];
+const reason = scope.mode === 'skip' ? 'skipped, docs only' : `carried from ${scope.from.slice(0, 8)}`;
+fs.writeFileSync(file, `${JSON.stringify({
+  reviewScope: scope, reviewMarkdown: '', verdict, mergeGate, mergeGateSummary, mergeGateLine,
+  statusState: 'success', statusDescription: truncateStatusDescription(`${plainMergeGateLine(mergeGateLine).split(' — ')[0]} — ${reason}`),
+  inline: { candidateCount: 0, validatedCount: 0, warnings: [], comments: [] },
+  ledger: { review_target: { head_sha: headSha, base_sha: baseSha }, open_findings: [], closed_findings: [], prior_issue_evaluations: [] },
+})}\n`);
+NODE
+  MERGE_GATE_SUMMARY="$(jq -r '.mergeGateSummary' "$SETTLEMENT_JSON")"
+  STATUS_STATE="$(jq -r '.statusState' "$SETTLEMENT_JSON")"
+  STATUS_DESCRIPTION="$(jq -r '.statusDescription' "$SETTLEMENT_JSON")"
+  {
+    printf '<!-- %s head=%s -->\n\n' "$SETTLEMENT_MARKER" "$HEAD_SHA"
+    if [ -n "${ATTRIBUTION_HEADER:-}" ]; then
+      printf '%s\n\n' "$ATTRIBUTION_HEADER"
+    fi
+    printf '%s\n\n%s\n%s\n\n' "$MERGE_GATE_SUMMARY" "$SCOPE_LINE" "$SCOPE_BASE_LINE"
+    printf 'Local Code Review settlement: head=%s; runner=trusted-local; review_scope=%s; scope_base=%s; model=none.\n' \
+      "$HEAD_SHA" "$SCOPE_MODE" "${SCOPE_FROM:-none}"
+  } > "$SETTLEMENT_BODY"
+  printf '%s\n' "$MERGE_GATE_SUMMARY" | tee -a "$RUN_DIR/summary.txt"
+  verify_review_target_unchanged || exit 1
+  publish_settlement
+  exit 0
+fi
+if [ "$SCOPE_MODE" = "incremental" ]; then
+  # The parent alone reviews the change since the passed head.
+  CODEX_REASONING="$INCREMENTAL_REASONING"
+  CODEX_TIMEOUT="$INCREMENTAL_TIMEOUT"
+  if [ "$PREPARE_ONLY" != "true" ] && [ "${#TIMEOUT_CMD[@]}" -gt 0 ]; then
+    TIMEOUT_CMD=("${TIMEOUT_CMD[0]}" --kill-after="$KILL_AFTER" "$CODEX_TIMEOUT")
+  fi
+  echo "Incremental review: reasoning $CODEX_REASONING; time limit $CODEX_TIMEOUT; no workers" | tee -a "$RUN_DIR/summary.txt"
+fi
+
 echo "Creating detached worktree..."
 git worktree add --detach "$WORKTREE" "$HEAD_SHA" >>"$SETUP_LOG" 2>&1 || {
   echo "error: failed to create worktree; see $SETUP_LOG" >&2
   exit 1
 }
 
-MERGE_BASE_SHA="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
 RULES_CHANGED="false"
 if ! git diff --quiet "$MERGE_BASE_SHA" "$HEAD_SHA" -- "$RULES_PATH"; then
   RULES_CHANGED="true"
@@ -575,11 +781,17 @@ RESUME_SELECTION="$RUN_DIR/resume-selection.json"
 RESUME_SESSION_ID=""
 DIFF_BASE_SHA="$MERGE_BASE_SHA"
 REVIEW_MODE="full"
+if [ "$SCOPE_MODE" = "incremental" ]; then
+  DIFF_BASE_SHA="$(jq -r '.diffBase' <<<"$SCOPE_JSON")"
+  REVIEW_MODE="incremental"
+  REVIEW_SCOPE_REASON="$SCOPE_REASON"
 # Resume stays off with a custom provider, as in the hosted action: a pooling
 # proxy may inject its own session anchors (refused previous_response_id) and
 # use the session id as its sticky key, so a resumed round would reconstruct
-# the failed state.
-if [ -n "$PROVIDER_BASE_URL" ]; then
+# the failed state. An explicit full review never resumes.
+elif [ "$SCOPE_REASON" = "full_review_requested" ]; then
+  REVIEW_SCOPE_REASON="$SCOPE_REASON"
+elif [ -n "$PROVIDER_BASE_URL" ]; then
   REVIEW_SCOPE_REASON="custom_provider_no_resume"
 elif [ "$PREPARE_ONLY" != "true" ] && [ "$USE_CLEAN_CODEX_HOME" = "true" ] && [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ]; then
   node "$ENGINE_DIR/local-resume.cjs" select \
@@ -643,6 +855,9 @@ else
 fi
 
 fi
+if [ "$REVIEW_MODE" = "incremental" ] && [ "$SCOPE_MODE" != "incremental" ]; then
+  SCOPE_LINE="Review scope: incremental since $DIFF_BASE_SHA (resumed review session)."
+fi
 echo "Session: ${RESUME_SESSION_ID:-fresh} ($REVIEW_SCOPE_REASON)" | tee -a "$RUN_DIR/summary.txt"
 
 (
@@ -682,8 +897,15 @@ NODE
 
   git diff "$MERGE_BASE_SHA" "$HEAD_SHA" > .codex-ci/pr-diff-full.patch
   git diff --name-only "$MERGE_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files-full.txt
-  git diff "$DIFF_BASE_SHA" "$HEAD_SHA" > .codex-ci/pr-diff.patch
-  git diff --name-only "$DIFF_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files.txt
+  if [ "$SCOPE_MODE" = "incremental" ]; then
+    SCOPE_FILES=()
+    while IFS= read -r SCOPE_FILE; do SCOPE_FILES+=("$SCOPE_FILE"); done < <(jq -r '.files[]' <<<"$SCOPE_JSON")
+    git --literal-pathspecs diff "$DIFF_BASE_SHA" "$HEAD_SHA" -- "${SCOPE_FILES[@]}" > .codex-ci/pr-diff.patch
+    printf '%s\n' "${SCOPE_FILES[@]}" > .codex-ci/changed-files.txt
+  else
+    git diff "$DIFF_BASE_SHA" "$HEAD_SHA" > .codex-ci/pr-diff.patch
+    git diff --name-only "$DIFF_BASE_SHA" "$HEAD_SHA" > .codex-ci/changed-files.txt
+  fi
   git log --oneline "$DIFF_BASE_SHA".."$HEAD_SHA" > .codex-ci/review-commits.txt
   node "$ENGINE_DIR/inventory-diff.cjs" .codex-ci/pr-diff.patch > .codex-ci/review-inventory.md
   if ! timeout -k 5s 120s node "$ENGINE_DIR/change-impact.cjs" .codex-ci/pr-diff.patch "$PWD"; then
@@ -864,7 +1086,12 @@ drain_progress_pipe() {
 }
 
 # The workers read only the diff and the checkout, never the parent's output, so
-# they run beside the parent; the settlement step joins them.
+# they run beside the parent; the settlement step joins them. Incremental
+# reviews run the parent alone.
+if [ "${REVIEW_MODE:-}" = "incremental" ]; then
+  FOCUSED_WORKERS=0
+  RULES_WORKER=false
+fi
 if WORKER_HOME_ROOT="$(mktemp -d /tmp/open-review-fw.XXXXXX)" &&
    rm -f "$WORKTREE/.codex-ci/focused-workers.json" &&
    cp "$REVIEW_PROMPTS_DIR/rules.md" "$WORKTREE/.codex-ci/rules.md"; then
@@ -898,7 +1125,7 @@ if [ "$STREAM_RAW" = "true" ]; then
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
         -c 'features.multi_agent_v2.enabled=true' \
-        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=3' \
+        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
@@ -926,7 +1153,7 @@ else
         -c "web_search=\"$CODEX_WEB_SEARCH_MODE\"" \
         -c "model_reasoning_effort=\"$CODEX_REASONING\"" \
         -c 'features.multi_agent_v2.enabled=true' \
-        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=3' \
+        -c 'features.multi_agent_v2.max_concurrent_threads_per_session=2' \
         -c 'features.multi_agent_v2.tool_namespace="agents"' \
         -c 'features.multi_agent_v2.expose_spawn_agent_model_overrides=true' \
         -c "agents.default_subagent_model=\"$CODEX_SUBAGENT_MODEL\"" \
@@ -1059,13 +1286,8 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
     if rm -rf -- "$WORKER_HOME_ROOT"; then WORKER_HOME_ROOT="";
     else echo "warning: private worker homes could not be removed yet" >&2; fi
   fi
-  # Compare against the tip observed at start: a --head-sha review of an older
-  # commit is deliberate and must not be refused because the PR has since moved.
-  FINAL_REMOTE_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
-  if [ "$FINAL_REMOTE_HEAD" != "$REMOTE_HEAD_SHA" ]; then
-    echo "error: PR head changed during local review; refusing settlement expected=$REMOTE_HEAD_SHA current=$FINAL_REMOTE_HEAD" >&2
-    exit 1
-  fi
+  # Compare against the tip observed at start: also its base branch and merge base.
+  verify_review_target_unchanged || exit 1
 
   node "$ENGINE_DIR/local-settlement.cjs" \
     "$OUTPUT_JSON" \
@@ -1084,6 +1306,9 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
         printf '%s\n\n' "$ATTRIBUTION_HEADER"
       fi
       printf '%s\n\n' "$MERGE_GATE_SUMMARY"
+      if [ -n "${SCOPE_LINE:-}" ]; then
+        printf '%s\n%s\n\n' "$SCOPE_LINE" "$SCOPE_BASE_LINE"
+      fi
       if [ "$RULES_CHANGED" = "true" ]; then
         printf '> **Rule pack changed:** this PR modifies the review rule pack (`%s`). This review used %s; the PR'"'"'s version applies after merge.\n\n' "$RULES_PATH" "$RULES_SOURCE"
       fi
@@ -1125,33 +1350,7 @@ NODE
   } | tee -a "$RUN_DIR/summary.txt"
 
   if [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ]; then
-    verify_trusted_runner_files_unchanged
-    SETTLEMENT_COMMENT_URL="$(
-      jq -n --rawfile body "$SETTLEMENT_BODY" '{ body: $body }' |
-        gh api \
-          --method POST \
-          "repos/$CURRENT_REPOSITORY/issues/$PR_NUMBER/comments" \
-          --input - \
-          --jq '.html_url'
-    )"
-    echo "Local review settlement published for head $HEAD_SHA: $SETTLEMENT_COMMENT_URL"
-    echo "Settlement comment: $SETTLEMENT_COMMENT_URL" >> "$RUN_DIR/summary.txt"
-
-    verify_trusted_runner_files_unchanged
-    if gh api \
-      --method POST \
-      "repos/$CURRENT_REPOSITORY/statuses/$HEAD_SHA" \
-      -f "state=$STATUS_STATE" \
-      -f "context=$CHECK_NAME" \
-      -f "description=$STATUS_DESCRIPTION" \
-      -f "target_url=$SETTLEMENT_COMMENT_URL" \
-      >/dev/null; then
-      echo "Commit status published: $CHECK_NAME ($STATUS_STATE)"
-      echo "Commit status: $CHECK_NAME ($STATUS_STATE)" >> "$RUN_DIR/summary.txt"
-    else
-      echo "warning: failed to publish $CHECK_NAME commit status for head $HEAD_SHA; settlement remains published at $SETTLEMENT_COMMENT_URL" >&2
-      echo "Commit status: $CHECK_NAME (publication failed)" >> "$RUN_DIR/summary.txt"
-    fi
+    publish_settlement
 
     while IFS= read -r INLINE_WARNING; do
       if [ -n "$INLINE_WARNING" ]; then

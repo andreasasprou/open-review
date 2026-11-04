@@ -24,26 +24,125 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `gpt-6-astra` | [parent-model](#parent-model) |
-| `parent-reasoning-effort` | `high` | [parent-model](#parent-model) |
+| `parent-model` | `auto` (`gpt-6-astra` on sensitive paths, else `gpt-6.1-sol`) | [parent-model-risk-gated](#parent-model-risk-gated) |
+| `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
+| Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
 | `child-model` | `gpt-6-luna` | [gpt-6-children](#gpt-6-children) |
 | `child-reasoning-effort` | `max` | [gpt-6-children](#gpt-6-children) |
 | `contract-investigator-model` | `gpt-6-sol` | [finder-models](#finder-models) |
 | `contract-investigator-reasoning-effort` | `high` | [finder-models](#finder-models) |
 | `worker-model` | `gpt-6.1-sol` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
 | `worker-reasoning-effort` | `medium` | [focused-workers-risk-gated](#focused-workers-risk-gated) |
-| `focused-workers` | `auto` (2 on sensitive paths, else 0) | [focused-workers-risk-gated](#focused-workers-risk-gated) |
+| `focused-workers` | `auto` (2 on sensitive paths, else 0); none on incremental reviews | [focused-workers-risk-gated](#focused-workers-risk-gated), [review-scope](#review-scope) |
 | `focused-worker-limit` | `8m` | [focused-workers](#focused-workers) |
-| `rules-worker` | `true` | [rules-worker](#rules-worker) |
+| `rules-worker` | `true`; skipped on incremental reviews | [rules-worker](#rules-worker), [review-scope](#review-scope) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
 | `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
 | `review-budget-minutes` | `20` | [review-budget](#review-budget) |
+| Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
+| `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
+| `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `10m` | [review-scope](#review-scope) |
+| `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
 
 ## Decisions
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### parent-model-risk-gated
+
+**2026-11-04.** Owner decision on cost, without an evaluation run. In one
+consumer pool, the GPT-6 Astra parent was 46% of model usage, its child
+threads 13% and the focused workers 20%.
+
+- Decision: `parent-model` defaults to `auto`. GPT-6 Astra reviews a PR that
+  changes a stored-data, security or infrastructure path outside tests and
+  docs (the path rule of
+  [focused-workers-risk-gated](#focused-workers-risk-gated)); GPT-6.1 Sol
+  reviews every other PR. The rule reads every path of the PR, rename sources
+  included, so all rounds of a PR use one model. A consumer with its own risk
+  tiers passes the model for each tier.
+- Effort: `parent-reasoning-effort` stays `high` for both models. That is the
+  setting under which GPT-6.1 Sol was measured as a parent
+  ([parent-model](#parent-model)); no other effort was measured.
+- Accepted loss: on PRs outside the sensitive paths, a weaker parent. On the
+  development set GPT-6.1 Sol found 6 of 33 known defects (+3 partial)
+  against Astra's 9, with 4 of its 18 findings invalid, at about a quarter of
+  Astra's cost. Blocking findings on those PRs now come from it.
+- The path rule matched 40% of one consumer's last 1,195 merged PRs.
+- `eval/run-recall.sh` inherits `CODEX_MODEL`. An evaluation that measures
+  the parent sets it to one model, as worker evaluations pass an explicit
+  count.
+- The confound in [worker-model](#worker-model) holds: Codex 0.157.1 runs
+  `gpt-6.1-sol` with fallback model metadata.
+- Reopen when an evaluation shows GPT-6.1 Sol missing blocking defects that
+  Astra finds outside the sensitive paths, or when the pool has capacity for
+  Astra on every PR.
+
+### child-thread-cap
+
+**2026-11-04.** Owner decision on cost. The parent may keep at most 2 child
+threads open, down from 3. Codex 0.157.1 has no limit on total child threads,
+but parents keep their children open, so this limit acts as one: in 739
+recent runs on one consumer no review opened more than 3.
+
+- Children per review in those runs: none in 5%, one in 19%, two in 69%,
+  three in 7%; none nested. The first child is usually the dependency map and
+  the second the contract investigator ([recall-mode](#recall-mode)); a third
+  was an ad hoc probe of failure paths, state precedence or contracts.
+- Saving: about 3% of child-thread tokens, under 0.5% of that pool.
+- Accepted loss: not measured; it affects the 7% of reviews that opened a
+  third child. A limit of 1 would save about 39% of child-thread tokens but
+  drop the contract investigator from about 70% of reviews. Not adopted.
+- Reopen when an evaluation shows a third child finding known defects that
+  the first two miss.
+
+### review-scope
+
+**2026-11-04.** Owner decision on cost, from an offline replay without a
+model run. On one consumer, 48% of review tokens over 9 days went to full
+re-reviews of PRs whose previous head had passed. The median push after a pass
+changed 19 lines, about 5% of the PR.
+
+- Decision: a publishing local run first classifies the head without a model
+  (`engine/review-scope.cjs`), from git and the PR's settlement comments by
+  repository writers:
+  - every changed path matches the consumer's `--docs-only-paths` (none by
+    default): PASS without a model;
+  - the latest settlement passed on the same base branch, and every file of
+    the PR has the same base and result blobs as at the passed head (a rerun,
+    or a rebase or merge that left the PR's files alone), or now differs only
+    in docs-only paths: the pass is carried;
+  - the latest settlement passed on the same base branch at an ancestor of
+    this head: an incremental review of the files whose blobs changed, by the
+    parent alone at `high` reasoning within 10 minutes. The diff starts at
+    the passed head, or at the current merge base when the base moved in
+    between, so a base-branch change the PR dropped stays visible;
+  - anything else, including a latest BLOCK, a retargeted PR, a passed head
+    that was force-rewritten, a settlement without a recorded base, a changed
+    path with a newline in its name, or `--full-review`: a full review.
+- File identity is exact (modes and blob ids at the merge base and the
+  head). Hunk text is not: an edit moved between two identical regions would
+  match. A rebase over base-branch changes to the PR's own files therefore
+  loses its carried pass.
+- Every settlement uses the exact-head marker and records its base branch and
+  merge base (`Review base:`); a carried or incremental one names the passed
+  head and settlement it builds on. Publication refuses a settlement when
+  the PR's head, base branch or merge base changed during the run.
+- Incremental reviews, hosted and local, run no focused or rules workers.
+  After a merge from the base branch, a hosted review stays full.
+- Replay of the 9 days through these rules, with the focused-worker cut:
+  45–53% of the earlier review tokens. It lost 0 of 21 acted-on blocking
+  findings and about 10% of acted-on advisory findings after adjusting for
+  chance, 14% counting repository-convention findings. Most lost findings
+  were older problems that a later full re-review spotted on unchanged code.
+- Evaluation rule, declared before the run: replay 30 PRs with 2 or more
+  reviewed heads. The incremental review must find every blocking finding
+  inside the new change and lose no more than 10% of acted-on P2 findings.
+  Not yet run.
+- Reopen when that evaluation fails, or when blocking findings per 100 PRs
+  (13 in the baseline) or fix-up PRs after merge rise.
 
 ### focused-workers-risk-gated
 

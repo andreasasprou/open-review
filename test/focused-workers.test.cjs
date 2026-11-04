@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { selectSlices, excluded, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
+const { selectSlices, excluded, parentModel, workerCount, validOutput, validRulesOutput, run } = require('../engine/focused-workers.cjs');
 const { renderFocusedWorkerSection, readFocusedWorkers, loadPreviousState, postResults, MARKERS } = require('../engine/index.cjs');
 const { parseProjectionComment } = require('../engine/ledger/projection.cjs');
 const { createRecordingCaughtErrorDiagnosticRecorder } = require('./helpers/recording-recorder.cjs');
@@ -71,9 +71,37 @@ test('auto runs two workers only when a PR changes a stored-data, security or in
     ['src/auth/session.test.ts', 'db/__tests__/migrate.ts'], ['src/infrastructure/adapter.ts']]) {
     assert.equal(auto(...files), 0, files.join(' '));
   }
+  // Generated production files and schema files still route as risky; only tests and docs do not.
+  for (const file of ['db/migrations/0002.generated.sql', 'infra/generated/policy.tf', 'src/schema.ts', 'schemas/customer.ts']) {
+    assert.equal(auto('src/view.tsx', file), 2, file);
+    assert.equal(parentModel('auto', [file]), 'gpt-6-astra', file);
+  }
+  // Moving security code out of a sensitive path still counts its source.
+  const renamed = 'diff --git a/src/auth/session.ts b/src/session.ts\nsimilarity index 90%\nrename from src/auth/session.ts\n' +
+    'rename to src/session.ts\n--- a/src/auth/session.ts\n+++ b/src/session.ts\n' + hunk(1, 1);
+  assert.equal(workerCount('auto', renamed), 2, 'rename with an edit');
+  assert.equal(workerCount('auto', 'diff --git a/src/auth/old.ts b/src/old.ts\nsimilarity index 100%\nrename from src/auth/old.ts\nrename to src/old.ts\n'), 2, 'pure rename');
   assert.equal(workerCount('4', fileDiff('src/view.tsx', 1)), 4);
   assert.equal(workerCount(0, fileDiff('infra/main.tf', 1)), 0);
   assert.throws(() => workerCount('5', ''), /auto or an integer from 0 to 4/);
+});
+
+test('auto parent model is GPT-6 Astra only on a risky PR and GPT-6.1 Sol otherwise', () => {
+  for (const file of ['db/migrations/0001_init.sql', 'src/auth/session.ts', 'src/lib/requireAuth.ts', 'infra/main.tf',
+    '.github/workflows/release.yml']) {
+    assert.equal(parentModel('auto', ['src/view.tsx', file]), 'gpt-6-astra', file);
+  }
+  for (const files of [['src/view.tsx', 'src/author.ts'], ['docs/security/policy.md'], ['src/auth/session.test.ts'], []]) {
+    assert.equal(parentModel('auto', files), 'gpt-6.1-sol', files.join(' '));
+  }
+  // A consumer with its own tiers names the model; that choice is kept either way.
+  assert.equal(parentModel('gpt-6-astra', ['src/view.tsx']), 'gpt-6-astra');
+  assert.equal(parentModel('gpt-6.1-sol', ['infra/main.tf']), 'gpt-6.1-sol');
+  assert.throws(() => parentModel('gpt-6" -c x', []), /plain model identifier/);
+  const command = (value, files) => execFileSync('node', [path.join(__dirname, '../engine/focused-workers.cjs'), 'parent-model', value],
+    { input: files.join('\0'), encoding: 'utf8' });
+  assert.equal(command('auto', ['src/view.tsx', 'db/old-name.sql']), 'gpt-6-astra\n');
+  assert.equal(command('auto', ['src/view.tsx']), 'gpt-6.1-sol\n');
 });
 
 test('generated header and exclusions are applied before churn order', () => {
