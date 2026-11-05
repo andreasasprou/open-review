@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const {
-	classify, docsOnly, latestTrustedSettlement, parseDocsPaths, parseSettlements,
+	classify, docsOnly, latestTrustedSettlement, modelRounds, parseDocsPaths, parseSettlements, patchIdentity,
 } = require("../engine/review-scope.cjs");
 
 const MARKER = "example-local-review:settlement";
@@ -156,6 +156,65 @@ test("an edit moved between identical regions of a file is a different patch", (
 		{ mode: "full", reason: "passed_head_rewritten", files: [] });
 });
 
+test("a first review carries another PR's pass when the patch is the same file for file", (t) => {
+	const { run, commit, lines, base, scope } = repository(t);
+	const edit = { "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") };
+	const landed = commit(edit);
+	const other = (head, extra = {}) => ({ ...passed(head, base), url: "https://example.test/pull/2#issuecomment-20", ...extra });
+	// A re-land after other base-branch work, on a new branch.
+	run("checkout", "-q", "main");
+	const main = commit({ "src/b.ts": lines("b").replace("b 30\n", "b 30 on main\n") }, "main moves");
+	run("checkout", "-qb", "reland", main);
+	const reland = commit(edit);
+	assert.deepEqual(scope({ baseSha: main, headSha: reland, passedElsewhere: [other(landed)] }),
+		{ mode: "carry", reason: "same_patch_other_pr", from: landed, settlement: "https://example.test/pull/2#issuecomment-20", files: [] });
+	const reason = (input) => scope({ baseSha: main, headSha: reland, ...input }).reason;
+	assert.equal(reason({ passedElsewhere: [] }), "no_settled_review", "nothing found, or the lookup failed");
+	assert.equal(reason({ passedElsewhere: [other(landed, { gate: "BLOCK" })] }), "no_settled_review");
+	assert.equal(reason({ passedElsewhere: [other(landed, { base: { baseRef: "release", mergeBase: base } })] }), "no_settled_review");
+	assert.equal(reason({ passedElsewhere: [other(landed, { base: null })] }), "no_settled_review");
+	assert.equal(reason({ passedElsewhere: [other("f".repeat(40))] }), "no_settled_review");
+	assert.equal(reason({ passedElsewhere: [other(landed)], fullReview: true }), "full_review_requested");
+	// This PR's own settlement decides once it has one.
+	assert.equal(reason({ passedElsewhere: [other(landed)], latest: passed(reland, main, { gate: "BLOCK" }) }), "last_review_not_passed");
+	// One more line is another patch.
+	const more = commit({ "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n").replace("a 9\n", "a 9 too\n") });
+	assert.equal(scope({ baseSha: main, headSha: more, passedElsewhere: [other(landed)] }).reason, "no_settled_review");
+});
+
+test("another PR's pass is not carried when the base changed a file of the patch", (t) => {
+	const { run, commit, lines, base, git, scope } = repository(t);
+	const edit = { "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") };
+	const landed = commit(edit);
+	run("checkout", "-q", "main");
+	const main = commit({ "src/a.ts": lines("a").replace("a 35\n", "a 35 on main\n") }, "main changes the same file");
+	run("checkout", "-qb", "reland", main);
+	const reland = commit({ "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n").replace("a 35\n", "a 35 on main\n") });
+	// The hunk text is the same, so a git patch-id matches; the file's blobs do not.
+	const patchId = (from, to) => execFileSync("git", ["patch-id", "--stable"], { input: git(["diff", from, to]), encoding: "utf8" }).split(" ")[0];
+	assert.equal(patchId(main, reland), patchId(base, landed));
+	assert.notEqual(patchIdentity(git, main, reland), patchIdentity(git, base, landed));
+	assert.equal(scope({ baseSha: main, headSha: reland, passedElsewhere: [passed(landed, base)] }).reason, "no_settled_review");
+});
+
+test("model rounds count writers' settlements by the model the runner recorded", () => {
+	const head = "a".repeat(40);
+	const trailer = (model) => `Local Code Review settlement: head=${head}; runner=trusted-local; review_level=floor-high; triage=none; model=${model}; codex_cli=0.157.1; sandbox_backend=bwrap.\n`;
+	const body = (text) => `<!-- ${MARKER} head=${head} -->\n\nMerge gate: **PASS** — 0 open findings.\n${text}`;
+	const comments = [
+		{ id: 1, user: { login: "maintainer" }, body: body(trailer("gpt-6-astra")) },
+		{ id: 2, user: { login: "maintainer" }, body: body(`### Review\n${trailer("gpt-6-luna")}\n${trailer("gpt-6-astra")}`) },
+		{ id: 3, user: { login: "maintainer" }, body: body(`${trailer("gpt-6-astra")}### Review\n${trailer("gpt-6.1-sol")}`) },
+		{ id: 4, user: { login: "maintainer" }, body: body(`Local Code Review settlement: head=${head}; runner=trusted-local; review_scope=carry; scope_base=${head}; model=none.\n`) },
+		{ id: 5, user: { login: "visitor" }, body: body(trailer("gpt-6-astra")) },
+		{ id: 6, user: { login: "unknown" }, body: body(trailer("gpt-6-astra")) },
+	];
+	const settlements = parseSettlements(comments, { marker: MARKER });
+	assert.deepEqual(settlements.map((entry) => entry.model), ["gpt-6-astra", "gpt-6-astra", "gpt-6.1-sol", null, "gpt-6-astra", "gpt-6-astra"]);
+	const permission = (login) => ({ maintainer: "admin", visitor: "read" })[login] ?? null;
+	assert.deepEqual(modelRounds(settlements, permission), { "gpt-6-astra": 2, "gpt-6.1-sol": 1 });
+});
+
 // Review P1 (round 2): a path with a newline split into two pathspecs and left its change unreviewed.
 test("a changed path the runner cannot pass line by line gets a full review", (t) => {
 	const { commit, lines, base, scope } = repository(t);
@@ -246,7 +305,7 @@ test("only a writer's settlement for the marker scopes a review, with the base t
 	assert.deepEqual(settlements.map((entry) => entry.id), [1, 2, 3]);
 	const permission = (login) => (login === "maintainer" ? "write" : "read");
 	assert.deepEqual(latestTrustedSettlement(settlements, permission),
-		{ id: 2, head, gate: "BLOCK", author: "maintainer", url: "u2", base: { baseRef: "main", mergeBase } });
+		{ id: 2, head, gate: "BLOCK", author: "maintainer", url: "u2", base: { baseRef: "main", mergeBase }, model: null });
 	assert.equal(latestTrustedSettlement(settlements, () => "read"), null);
 	// An unreadable permission must not skip a newer writer's BLOCK for an older PASS.
 	assert.throws(() => latestTrustedSettlement(settlements, (login) => (login === "maintainer" ? null : "read")), /unreadable/);
@@ -274,11 +333,48 @@ test("the classify command reads the PR's comments and the author's permission",
 	const classifyCommand = (docs, full) => JSON.parse(execFileSync("node", [path.join(__dirname, "../engine/review-scope.cjs"),
 		"classify", root, "example/repo", "main", base, head, comments, MARKER, docs, full],
 	{ encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }));
-	assert.deepEqual(classifyCommand("docs/**", "false"),
+	const { patch, modelRounds: rounds, ...scoped } = classifyCommand("docs/**", "false");
+	assert.deepEqual(scoped,
 		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"] });
+	assert.match(patch, /^[0-9a-f]{64}$/);
+	assert.deepEqual(rounds, {});
 	assert.equal(classifyCommand("", "true").reason, "full_review_requested");
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.equal(classifyCommand("", "false").reason, "settlement_author_unverified");
+});
+
+test("the classify command finds another PR's pass by its recorded patch, and reviews in full when the lookup fails", (t) => {
+	const { run, commit, lines, base, root, git } = repository(t);
+	const edit = { "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") };
+	const landed = commit(edit);
+	run("checkout", "-q", "main");
+	const main = commit({ "src/b.ts": lines("b").replace("b 30\n", "b 30 on main\n") }, "main moves");
+	run("checkout", "-qb", "reland", main);
+	const reland = commit(edit);
+	const patch = patchIdentity(git, base, landed);
+	assert.equal(patchIdentity(git, main, reland), patch);
+	const settled = [[{ id: 20, user: { login: "maintainer" }, html_url: "u20",
+		body: `<!-- ${MARKER} head=${landed} -->\n\nMerge gate: **PASS** — 0 open findings.\nModel verdict (display only): \`pass\`\n\n` +
+			`Review scope: full (no_settled_review).\nReview base: \`main\` at ${base}.\nReview patch: \`${patch}\`.\n\n### Review` }]];
+	const bin = path.join(root, ".bin");
+	fs.mkdirSync(bin);
+	fs.writeFileSync(path.join(root, ".other.json"), JSON.stringify(settled));
+	const gh = (search) => fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\ncase "$*" in\n` +
+		`  *collaborators/maintainer/permission*) echo '{"permission":"write"}' ;;\n` +
+		`  *search/issues*"in:comments ${patch}"*) ${search} ;;\n` +
+		`  *repos/example/repo/issues/2/comments*) cat '${path.join(root, ".other.json")}' ;;\n  *) exit 1 ;;\nesac\n`, { mode: 0o755 });
+	const comments = path.join(root, ".comments.json");
+	fs.writeFileSync(comments, "[[]]");
+	const classifyCommand = (full = "false") => JSON.parse(execFileSync("node", [path.join(__dirname, "../engine/review-scope.cjs"),
+		"classify", root, "example/repo", "main", main, reland, comments, MARKER, "", full],
+	{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }));
+	gh(`echo '{"items":[{"number":2}]}'`);
+	assert.deepEqual(classifyCommand(), { mode: "carry", reason: "same_patch_other_pr", from: landed, settlement: "u20", files: [], patch, modelRounds: {} });
+	assert.equal(classifyCommand("true").reason, "full_review_requested");
+	gh("exit 1");
+	assert.equal(classifyCommand().reason, "no_settled_review", "an unavailable search never carries");
+	gh(`echo '{"items":[{"number":3}]}'`);
+	assert.equal(classifyCommand().reason, "no_settled_review", "an unreadable PR never carries");
 });
 
 // The runner's revalidation function and its carry/skip settlement block, with git real and GitHub stubbed.
@@ -329,6 +425,14 @@ test("the local runner settles a carried or skipped head without a model, under 
 	const [parsed] = parseSettlements([{ id: 1, user: { login: "maintainer" }, body: carried.read("posted.md") }], { marker: MARKER });
 	assert.deepEqual([parsed.gate, parsed.base], ["PASS", { baseRef: "main", mergeBase: base }]);
 
+	// A carried pass from another PR records the patch identity too, so later re-lands find it.
+	const patch = "e".repeat(64);
+	const relanded = settle({ mode: "carry", reason: "same_patch_other_pr", settlement: "https://example.test/pull/2#c", files: [], patch });
+	assert.match(relanded.read("posted.md"), new RegExp(`\\n\\nReview scope: carried from ${passedHead} \\(passed settlement https://example\\.test/pull/2#c on another PR\\)\\. ` +
+		`This PR's patch is the same file for file\\.\\nReview base: \`main\` at ${base}\\.\\nReview patch: \`${patch}\`\\.\\n\\n`));
+	const [reparsed] = parseSettlements([{ id: 1, user: { login: "maintainer" }, body: relanded.read("posted.md") }], { marker: MARKER });
+	assert.deepEqual([reparsed.gate, reparsed.base, reparsed.model], ["PASS", { baseRef: "main", mergeBase: base }, null]);
+
 	const skipped = settle({ mode: "skip", reason: "docs_only", files: ["docs/a.md", "docs/b.md"] });
 	assert.match(skipped.read("posted.md"), /`skipped`\n\nReview scope: skipped, docs only\. All 2 changed files match the docs-only paths, so no model reviewed this PR\.\n/);
 	assert.equal(skipped.read("status"), "success|Merge gate: PASS — skipped, docs only");
@@ -371,4 +475,22 @@ test("the runner scopes a review of the PR's current head and base, even when a 
 	// Unreadable PR comments could hide a BLOCK: never "no previous settlement".
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.deepEqual(JSON.parse(scope({})), { mode: "full", reason: "settlement_history_unreadable", files: [] });
+});
+
+test("after the level's round cap, the runner reviews with the cap's model and effort", (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-round-cap-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const script = fs.readFileSync(path.join(__dirname, "../engine/run-local.sh"), "utf8");
+	const start = script.indexOf("if [ \"$ROUND_CAP_JSON\" != \"null\" ]; then");
+	const block = script.slice(start, script.indexOf('"$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble', start));
+	const cap = JSON.stringify({ rounds: 2, parentModel: "gpt-6.1-sol", reasoning: "high" });
+	const parent = (rounds, roundCap = cap, model = "gpt-6-astra") => execFileSync("bash", ["-euo", "pipefail", "-c",
+		`${block}\nprintf '%s %s %s' "$CODEX_MODEL" "$CODEX_REASONING" "$INCREMENTAL_REASONING"`], {
+		encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, RUN_DIR: root, ROUND_CAP_JSON: roundCap,
+			CODEX_MODEL: model, CODEX_REASONING: "xhigh", INCREMENTAL_REASONING: "xhigh", SCOPE_JSON: JSON.stringify({ modelRounds: rounds }) },
+	}).split("\n").at(-1);
+	assert.equal(parent({ "gpt-6-astra": 1, "gpt-6.1-sol": 4 }), "gpt-6-astra xhigh xhigh");
+	assert.equal(parent({ "gpt-6-astra": 2 }), "gpt-6.1-sol high high");
+	assert.equal(parent(undefined), "gpt-6-astra xhigh xhigh", "a scope without rounds keeps the level's model");
+	assert.equal(parent({ "gpt-6-astra": 5 }, "null"), "gpt-6-astra xhigh xhigh", "a configured model has no cap");
 });

@@ -26,7 +26,7 @@ structured output, not the model's verdict word.
 | Input | Default | Purpose |
 |---|---|---|
 | `rules-path` | (required) | Rule pack path. It is read from the default branch. |
-| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` sets the review level: a PR that changes a stored-data, security or infrastructure path outside tests and Markdown, or a review, merge-gate, prompt, rule-pack or agent-instruction path, gets `gpt-6-astra` with 2 focused workers; otherwise a GPT-6.1 Sol triage call through `provider-base-url` gives `gpt-6-astra` without focused workers, or one `gpt-6.1-sol` `medium` pass without child threads or workers. A failed triage call counts as high. A model name always uses that model with the configured workers and effort |
+| `parent-model` / `parent-reasoning-effort` | `auto` / `high` | Parent reviewer. `auto` sets the review level: a PR that changes a stored-data, security or infrastructure path outside tests and Markdown, or a review, merge-gate, prompt, rule-pack or agent-instruction path, gets `gpt-6-astra` with 2 focused workers; otherwise a GPT-6.1 Sol triage call through `provider-base-url` gives `gpt-6.1-sol` at `high` without focused workers, or one `gpt-6.1-sol` `medium` pass without child threads or workers. A failed triage call counts as high. A model name always uses that model with the configured workers and effort |
 | `child-model` / `child-reasoning-effort` | `gpt-6-luna` / `max` | Default for child agents |
 | `codex-cli-version` | `0.157.1` | Exact `@openai/codex` version |
 | `provider-base-url` / `provider-env-key` | (required) / empty | The Responses-API model provider, with an optional variable that holds a Bearer key |
@@ -121,6 +121,17 @@ trusted ref, never from the PR head. Docs-only paths never cover a file on the
 review floor (code or MDX under `docs/`, review policy, prompts, rule packs or
 agent instructions). Each such settlement keeps the exact-head marker and names
 the passed head and settlement it builds on.
+
+Every settlement records its patch identity (`Review patch:`, a digest of each
+changed file's base and result blobs). A PR's first publishing run searches the
+repository's PR comments for it; when another PR's latest settlement passed on
+the same base branch with exactly that patch (a re-land, or a revert of a
+revert), the run carries that pass without a model. A failed search or comment
+read gives a full review, and GitHub's search index can take some minutes to
+include a new comment.
+
+A PR at the sensitive-path level gets `gpt-6-astra` for at most 2 settled
+rounds; later local rounds use `gpt-6.1-sol` at `high`.
 
 `--model auto` (the default) sets the review level per PR with a GPT-6.1 Sol
 triage call; every PR gets a model review. Without `--provider-base-url` the

@@ -24,7 +24,7 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `auto`: review level (floor-high and model-high `gpt-6-astra`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage) |
+| `parent-model` | `auto`: review level (floor-high `gpt-6-astra`, locally for at most 2 settled rounds and then `gpt-6.1-sol` at `high`; model-high `gpt-6.1-sol` at `high`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap) |
 | Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
@@ -44,6 +44,7 @@ decision entry behind it.
 | `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
 | `review-budget-minutes` | `20` | [review-budget](#review-budget) |
 | Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
+| Local first review | carry another PR's pass with the same patch identity on the same base branch; a failed lookup reviews | [patch-carry](#patch-carry) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `10m` | [review-scope](#review-scope) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
@@ -52,6 +53,71 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### patch-carry
+
+**2026-11-05.** Owner decision on cost, without a model run. Review state
+belongs to one PR, so a byte-identical re-land of a change that already
+passed (a revert of a revert) got a fresh full review.
+
+- Decision: every local settlement records its patch identity
+  (`Review patch:`), a SHA-256 digest of each changed file's modes and blob
+  ids at the merge base and the head (`patchIdentity` in
+  `engine/review-scope.cjs`). A PR's first publishing run, without
+  `--full-review`, searches the repository's PR comments for its identity.
+  When another PR's latest settlement by a repository writer passed on the
+  same base branch, and its recorded merge base and head give exactly this
+  PR's file states, the run carries that pass without a model and names it.
+- Identity is the exact file states that [review-scope](#review-scope) uses,
+  not a git patch-id: a patch-id ignores line numbers, so an edit moved
+  between two identical regions, or a hunk re-applied over a base-branch
+  change to the same file, would match. A re-land after the base changed one
+  of its files gets a review.
+- Fails closed: an unavailable search, an unreadable PR, an unreadable
+  permission or a failed fetch gives the full review. GitHub's search index
+  can take some minutes to include a new comment, so a re-land right after
+  its original may still get a review. Settlements published before this
+  change carry no identity and are never found.
+- Each first review spends one search request and, on a hit, one comment read
+  per matching PR (at most 5).
+- Accepted loss: a pass carried to a re-land keeps whatever the first review
+  missed, including the defect that caused the revert. `--full-review`
+  re-reviews.
+- Reopen when a carried re-land ships a defect that a fresh review would have
+  found, or when the search proves unreliable.
+
+### astra-round-cap
+
+**2026-11-05.** Owner decision on cost, without an evaluation run. GPT-6 Astra
+was about 80% of one consumer pool's review credits. In 20 local GPT-6 Astra
+review runs over the last hours of that consumer's retained run logs, 17 were
+at the model-high level, and one small stored-data fix took 3 GPT-6 Astra
+rounds.
+
+- Decision: GPT-6 Astra reviews only the floor (stored data, security,
+  infrastructure, CI, review policy and the engine;
+  [risk-triage](#risk-triage)). A model-high PR, a high, failed or missing
+  triage answer, gets GPT-6.1 Sol at `high` with its child threads and the
+  rules worker, without focused workers (`LEVELS` in
+  `engine/risk-triage.cjs`). Hosted and local.
+- Round cap, local runs: once a floor-high PR has 2 settlements by writers
+  whose recorded parent model is GPT-6 Astra, later rounds (usually
+  incremental) use GPT-6.1 Sol at `high`. Carried and skipped settlements are
+  not rounds. The hosted action keeps no per-PR round count and is not
+  capped.
+- Saving, estimated: GPT-6.1 Sol at `high` cost about a quarter of GPT-6
+  Astra as a parent ([parent-model-risk-gated](#parent-model-risk-gated)), so
+  moving the model-high share saves roughly 40–50% of review credits at the
+  measured mix. The cap affects only floor-high PRs with 3 or more rounds.
+- Accepted loss: a weaker parent on model-high PRs. On the development set
+  GPT-6.1 Sol found 6 of 33 known defects (+3 partial) against GPT-6 Astra's
+  9. In the [risk-triage](#risk-triage) calibration, 10 of the 49 PRs whose
+  review blocked were outside the floor, so model-high; those now get GPT-6.1
+  Sol. A third or later round on a floor-high PR loses GPT-6 Astra.
+- An explicit `parent-model` keeps its model and effort, without a cap.
+- Reopen when a model-high PR or a capped round ships a blocking defect that
+  GPT-6 Astra would have found, or when the pool has capacity for GPT-6 Astra
+  again.
 
 ### risk-triage
 
