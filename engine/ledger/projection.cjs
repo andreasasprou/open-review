@@ -775,6 +775,9 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     fail("too_many_findings", `Review output exceeds ${MAX_NEW_FINDINGS} new findings`);
 
   const decisions = normalizeHumanDecisions(evidence?.human_decisions || []);
+  const decisionsByIssue = new Map();
+  for (const decision of decisions)
+    decisionsByIssue.set(decision.stable_id, decision);
   const reviewPriorProjection = prepareReviewPriorProjection({
     priorProjection,
     priorProjections: evidence?.prior_projections || [],
@@ -810,6 +813,13 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       for (const key of ["evidence", "challenge_ref", "decision_ref"])
         if (evaluation[key] === null || (key === "evidence" && evaluation.result === "still_open"))
           delete evaluation[key];
+      if (priorById.has(evaluation.stable_id) &&
+          ["still_open", "resolved_on_target"].includes(evaluation.result) &&
+          Object.hasOwn(evaluation, "decision_ref")) {
+        const decision = decisionsByIssue.get(evaluation.stable_id);
+        if (decision && evaluation.decision_ref === decisionRef(decision))
+          delete evaluation.decision_ref;
+      }
     }
     if (!isObject(evaluation)) {
       warnings.push("Unknown prior evaluation was dropped: evaluation is not an object");
@@ -1028,6 +1038,9 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       (latestDecision?.kind === "DEFER_FOLLOW_UP" &&
         (priorProjection?.open_findings || []).some((finding) => finding.stable_id === priorFinding.stable_id && finding.decision_ref === decisionRef(latestDecision)))
       ? latestDecision : null;
+    if (["still_open", "resolved_on_target"].includes(evaluation.result) &&
+        Object.hasOwn(evaluation, "decision_ref"))
+      fail("decision_ref_mismatch", "Evaluation must reference its controlling human decision");
     const pendingChallenge =
       pendingChallengesByIssue.get(priorFinding.stable_id) || null;
     const normalizeEvaluatedFinding = () => {
