@@ -44,7 +44,6 @@ decision entry behind it.
 | `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
 | `review-budget-minutes` | `20` | [review-budget](#review-budget) |
 | Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
-| Local first review | carry another PR's pass with the same patch identity on the same base branch; a failed lookup reviews | [patch-carry](#patch-carry) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `10m` | [review-scope](#review-scope) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
@@ -53,38 +52,6 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
-
-### patch-carry
-
-**2026-11-05.** Owner decision on cost, without a model run. Review state
-belongs to one PR, so a byte-identical re-land of a change that already
-passed (a revert of a revert) got a fresh full review.
-
-- Decision: every local settlement records its patch identity
-  (`Review patch:`), a SHA-256 digest of each changed file's modes and blob
-  ids at the merge base and the head (`patchIdentity` in
-  `engine/review-scope.cjs`). A PR's first publishing run, without
-  `--full-review`, searches the repository's PR comments for its identity.
-  When another PR's latest settlement by a repository writer passed on the
-  same base branch, and its recorded merge base and head give exactly this
-  PR's file states, the run carries that pass without a model and names it.
-- Identity is the exact file states that [review-scope](#review-scope) uses,
-  not a git patch-id: a patch-id ignores line numbers, so an edit moved
-  between two identical regions, or a hunk re-applied over a base-branch
-  change to the same file, would match. A re-land after the base changed one
-  of its files gets a review.
-- Fails closed: an unavailable search, an unreadable PR, an unreadable
-  permission or a failed fetch gives the full review. GitHub's search index
-  can take some minutes to include a new comment, so a re-land right after
-  its original may still get a review. Settlements published before this
-  change carry no identity and are never found.
-- Each first review spends one search request and, on a hit, one comment read
-  per matching PR (at most 5).
-- Accepted loss: a pass carried to a re-land keeps whatever the first review
-  missed, including the defect that caused the revert. `--full-review`
-  re-reviews.
-- Reopen when a carried re-land ships a defect that a fresh review would have
-  found, or when the search proves unreliable.
 
 ### astra-round-cap
 
@@ -115,6 +82,10 @@ rounds.
   review blocked were outside the floor, so model-high; those now get GPT-6.1
   Sol. A third or later round on a floor-high PR loses GPT-6 Astra.
 - An explicit `parent-model` keeps its model and effort, without a cap.
+- Considered and rejected for now: carrying another PR's pass to a re-land
+  with the same patch. It saves about one review per rare re-land but adds a
+  GitHub search dependency, an indexing race and a question of whose
+  settlement may be reused.
 - Reopen when a model-high PR or a capped round ships a blocking defect that
   GPT-6 Astra would have found, or when the pool has capacity for GPT-6 Astra
   again.

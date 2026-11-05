@@ -122,14 +122,6 @@ review floor (code or MDX under `docs/`, review policy, prompts, rule packs or
 agent instructions). Each such settlement keeps the exact-head marker and names
 the passed head and settlement it builds on.
 
-Every settlement records its patch identity (`Review patch:`, a digest of each
-changed file's base and result blobs). A PR's first publishing run searches the
-repository's PR comments for it; when another PR's latest settlement passed on
-the same base branch with exactly that patch (a re-land, or a revert of a
-revert), the run carries that pass without a model. A failed search or comment
-read gives a full review, and GitHub's search index can take some minutes to
-include a new comment.
-
 A PR at the sensitive-path level gets `gpt-6-astra` for at most 2 settled
 rounds; later local rounds use `gpt-6.1-sol` at `high`.
 

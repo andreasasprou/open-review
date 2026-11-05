@@ -72,9 +72,7 @@ and result blobs (rerun, or a rebase or merge that left the PR's files alone)
 or only docs-only paths changed. Otherwise, if the passed head is an ancestor
 of this head, it reviews only the files that changed: the parent alone, at
 OPEN_REVIEW_INCREMENTAL_REASONING (default high) within
-OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 10m). A PR's first run carries the
-pass of another PR with the same patch identity on the same base branch (a
-re-land); a failed lookup reviews it. Every other run is a full review.
+OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 10m). Every other run is a full review.
 
 Environment: CODEX_MODEL, CODEX_REASONING, CODEX_SUBAGENT_MODEL,
 CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_WORKER_MODEL and
@@ -728,15 +726,11 @@ SCOPE_FROM="$(jq -r '.from // ""' <<<"$SCOPE_JSON")"
 SCOPE_SETTLEMENT="$(jq -r '.settlement // ""' <<<"$SCOPE_JSON")"
 SCOPE_FILE_COUNT="$(jq -r '.files | length' <<<"$SCOPE_JSON")"
 # Recorded in every settlement; a later run scopes from it only on the same base.
-# The patch identity lets a later PR with the same patch find this settlement.
 SCOPE_BASE_LINE="Review base: \`$BASE_REF\` at $MERGE_BASE_SHA."
-SCOPE_PATCH="$(jq -r '.patch // ""' <<<"$SCOPE_JSON")"
-if [ -n "$SCOPE_PATCH" ]; then SCOPE_BASE_LINE+=$'\n'"Review patch: \`$SCOPE_PATCH\`."; fi
 case "$SCOPE_MODE:$SCOPE_REASON" in
   skip:*) SCOPE_LINE="Review scope: skipped, docs only. All $SCOPE_FILE_COUNT changed files match the docs-only paths, so no model reviewed this PR." ;;
   carry:same_head) SCOPE_LINE="Review scope: carried. This head already passed: $SCOPE_SETTLEMENT" ;;
   carry:same_patch) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). This head's patch is the same file for file." ;;
-  carry:same_patch_other_pr) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT on another PR). This PR's patch is the same file for file." ;;
   carry:*) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). Only $SCOPE_FILE_COUNT docs-only files changed since." ;;
   incremental:since_passed_review) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT), an ancestor of this head. The parent reviewed the $SCOPE_FILE_COUNT files whose patch changed since." ;;
   incremental:*) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT), an ancestor of this head. The base moved since, so the parent reviewed the whole PR patch of the $SCOPE_FILE_COUNT files that changed." ;;

@@ -14,16 +14,10 @@
 //   at an ancestor of this head; only the files whose blobs changed are
 //   reviewed, from the passed head, or from the current merge base when the
 //   base moved in between (so a dropped base-branch change shows).
-// - carry from another PR: this PR has no settlement yet, and another PR of the
-//   repository passed with the same patch identity on the same base branch (a
-//   re-land or a revert of a revert). The lookup searches for the identity that
-//   every settlement records; any lookup failure gives a full review (decision
-//   patch-carry).
 // - full: anything else, including a retargeted PR, a passed head that was
 //   force-rewritten, or a settlement that does not record its base.
 
 const { execFileSync } = require("node:child_process");
-const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const { sensitivePaths } = require("./focused-workers.cjs");
 const { recordCaughtError, runReviewCli } = require("./diagnostics-runtime.cjs");
@@ -84,17 +78,6 @@ function fileStates(git, from, to) {
 		states.set(fields[index + 1], fields[index]);
 	}
 	return states;
-}
-
-/**
- * A digest of every changed file's exact identity (fileStates), recorded in each
- * settlement so another PR with the same patch can find it. A git patch-id is
- * not an identity: it ignores line numbers, so an edit moved between identical
- * regions would match.
- */
-function patchIdentity(git, mergeBase, head) {
-	const states = [...fileStates(git, mergeBase, head)].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-	return createHash("sha256").update(JSON.stringify(states)).digest("hex");
 }
 
 /** Files whose base or result differs between two versions of a PR. */
@@ -189,12 +172,9 @@ function isAncestor(git, ancestor, head) {
  * Review scope for `headSha` on `baseRef` at `baseSha`. `latest` is the latest
  * trusted settlement on the PR or null; its head and recorded merge base must
  * already be fetched. `settlementsVerified` is false when the settlements'
- * authors could not be checked. `passedElsewhere` are the latest trusted
- * settlements of other PRs that may share this patch, fetched likewise; each is
- * re-checked here. A full review names its reason.
+ * authors could not be checked. A full review names its reason.
  */
-function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false,
-	protectedFiles = [], passedElsewhere = [] }) {
+function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false, protectedFiles = [] }) {
 	const full = (reason) => ({ mode: "full", reason, files: [] });
 	const mergeBase = git(["merge-base", baseSha, headSha]).trim();
 	const files = changedPaths(git, mergeBase, headSha);
@@ -203,13 +183,7 @@ function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = nul
 	if (docsOnlyUnprotected(files)) return { mode: "skip", reason: "docs_only", files };
 	if (fullReview) return full("full_review_requested");
 	if (!settlementsVerified) return full("settlement_author_unverified");
-	if (latest === null) {
-		const after = { mergeBase, head: headSha };
-		const same = passedElsewhere.find((other) => other.gate === "PASS" && other.base !== null && other.base.baseRef === baseRef &&
-			commitExists(git, other.head) && commitExists(git, other.base.mergeBase) &&
-			patchDelta(git, { before: { mergeBase: other.base.mergeBase, head: other.head }, after }).length === 0);
-		return same ? { mode: "carry", reason: "same_patch_other_pr", from: same.head, settlement: same.url, files: [] } : full("no_settled_review");
-	}
+	if (latest === null) return full("no_settled_review");
 	if (latest.gate !== "PASS") return full("last_review_not_passed");
 	if (latest.base === null) return full("passed_base_unrecorded");
 	if (latest.base.baseRef !== baseRef) return full("base_retargeted");
@@ -237,34 +211,6 @@ function readComments(file) {
 	return Array.isArray(pages) ? pages.flat() : [];
 }
 
-function readGithub(args) {
-	return JSON.parse(execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }));
-}
-
-// Search results read before a PR's first review.
-const PATCH_LOOKUP_RESULTS = 5;
-
-/**
- * The latest trusted settlement of each other PR whose comments name `patch`,
- * with its head and merge base fetched. Throws when the search or a PR's
- * comments are unreadable: the caller then reviews in full.
- */
-function settlementsWithPatch({ git, repository, patch, marker, attributionHeader, permissionOf }) {
-	const search = readGithub(["api", "-X", "GET", "search/issues", "-f", `q=repo:${repository} is:pr in:comments ${patch}`,
-		"-f", `per_page=${PATCH_LOOKUP_RESULTS}`]);
-	const found = [];
-	for (const item of (search.items ?? []).slice(0, PATCH_LOOKUP_RESULTS)) {
-		if (!Number.isSafeInteger(item?.number)) continue;
-		const comments = readGithub(["api", "--paginate", "--slurp", `repos/${repository}/issues/${item.number}/comments`]).flat();
-		const latest = latestTrustedSettlement(parseSettlements(comments, { marker, attributionHeader }), permissionOf);
-		if (latest?.gate !== "PASS" || latest.base === null) continue;
-		const missing = [latest.head, latest.base.mergeBase].filter((sha) => !commitExists(git, sha));
-		if (missing.length > 0) git(["fetch", "--quiet", "--no-tags", "origin", ...missing]);
-		found.push(latest);
-	}
-	return found;
-}
-
 function githubPermission(recorder, repository, login) {
 	try {
 		return JSON.parse(execFileSync("gh", ["api", `repos/${repository}/collaborators/${login}/permission`],
@@ -281,8 +227,8 @@ function main(recorder, argv) {
 	if (command !== "classify") throw new Error("usage: review-scope.cjs classify <root> <repository> <base-ref> <base-sha> <head-sha> <comments.json> <marker> <docs-paths> <full-review> [<rules-path>]");
 	const [root, repository, baseRef, baseSha, headSha, commentsFile, marker, docsPathsText, fullReview, rulesPath = ""] = args;
 	const git = gitRunner(root);
-	const attributionHeader = process.env.OPEN_REVIEW_ATTRIBUTION_HEADER || "";
-	const settlements = parseSettlements(readComments(commentsFile), { marker, attributionHeader });
+	const settlements = parseSettlements(readComments(commentsFile),
+		{ marker, attributionHeader: process.env.OPEN_REVIEW_ATTRIBUTION_HEADER || "" });
 	const permissions = new Map();
 	const permissionOf = (login) => {
 		if (!permissions.has(login)) permissions.set(login, githubPermission(recorder, repository, login));
@@ -305,24 +251,13 @@ function main(recorder, argv) {
 			recordCaughtError({ recorder, error, operation: "review.scope", stage: "fetch_passed_head", disposition: "recover", context: {} });
 		}
 	}
-	const patch = patchIdentity(git, git(["merge-base", baseSha, headSha]).trim(), headSha);
-	let passedElsewhere = [];
-	if (latest === null && settlementsVerified && fullReview !== "true") {
-		try {
-			passedElsewhere = settlementsWithPatch({ git, repository, patch, marker, attributionHeader, permissionOf });
-		} catch (error) {
-			// Fail closed: without a complete lookup the first review is full.
-			recordCaughtError({ recorder, error, operation: "review.scope", stage: "patch_lookup", disposition: "recover", context: {} });
-			passedElsewhere = [];
-		}
-	}
 	const scope = classify({ git, baseRef, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
 		latest, settlementsVerified, fullReview: fullReview === "true",
-		protectedFiles: rulesPath ? [rulesPath] : [], passedElsewhere });
-	process.stdout.write(`${JSON.stringify({ ...scope, patch, modelRounds: modelRounds(settlements, permissionOf) })}\n`);
+		protectedFiles: rulesPath ? [rulesPath] : [] });
+	process.stdout.write(`${JSON.stringify({ ...scope, modelRounds: modelRounds(settlements, permissionOf) })}\n`);
 }
 
 if (require.main === module) runReviewCli((recorder) => main(recorder, process.argv.slice(2)));
 
 module.exports = { classify, docsOnly, fileStates, latestTrustedSettlement, modelRounds, parseDocsPaths, parseSettlements, patchDelta,
-	patchIdentity, recordedBase };
+	recordedBase };
