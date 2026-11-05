@@ -22,11 +22,14 @@ const REASONING_EFFORT = "medium";
 const PROMPT_VERSION = "risk-triage-v2";
 const PROMPT = fs.readFileSync(path.join(__dirname, "risk-triage-prompt.txt"), "utf8");
 const TIMEOUT_MS = 60 * 1000;
-// What each level runs.
+// What each level runs. GPT-6 Astra reviews at most `roundCap.rounds` rounds
+// of one PR; the local runner gives later rounds the cap's model and effort
+// (decision astra-round-cap).
 const LEVELS = {
-  "floor-high": { parentModel: "gpt-6-astra", reasoning: null, workers: 2, rulesWorker: true, helpers: true },
-  "model-high": { parentModel: "gpt-6-astra", reasoning: null, workers: 0, rulesWorker: true, helpers: true },
-  normal: { parentModel: "gpt-6.1-sol", reasoning: "medium", workers: 0, rulesWorker: false, helpers: false },
+  "floor-high": { parentModel: "gpt-6-astra", reasoning: null, workers: 2, rulesWorker: true, helpers: true,
+    roundCap: { rounds: 2, parentModel: "gpt-6.1-sol", reasoning: "high" } },
+  "model-high": { parentModel: "gpt-6.1-sol", reasoning: "high", workers: 0, rulesWorker: true, helpers: true, roundCap: null },
+  normal: { parentModel: "gpt-6.1-sol", reasoning: "medium", workers: 0, rulesWorker: false, helpers: false, roundCap: null },
 };
 const RANK = { docs: 0, normal: 1, high: 2 };
 const LIMITS = { title: 300, body: 2500, files: 150, excerpts: 9000, perFile: 1500, line: 160 };

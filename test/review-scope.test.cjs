@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const {
-	classify, docsOnly, latestTrustedSettlement, parseDocsPaths, parseSettlements,
+	classify, docsOnly, latestTrustedSettlement, modelRounds, parseDocsPaths, parseSettlements,
 } = require("../engine/review-scope.cjs");
 
 const MARKER = "example-local-review:settlement";
@@ -156,6 +156,24 @@ test("an edit moved between identical regions of a file is a different patch", (
 		{ mode: "full", reason: "passed_head_rewritten", files: [] });
 });
 
+test("model rounds count writers' settlements by the model the runner recorded", () => {
+	const head = "a".repeat(40);
+	const trailer = (model) => `Local Code Review settlement: head=${head}; runner=trusted-local; review_level=floor-high; triage=none; model=${model}; codex_cli=0.157.1; sandbox_backend=bwrap.\n`;
+	const body = (text) => `<!-- ${MARKER} head=${head} -->\n\nMerge gate: **PASS** — 0 open findings.\n${text}`;
+	const comments = [
+		{ id: 1, user: { login: "maintainer" }, body: body(trailer("gpt-6-astra")) },
+		{ id: 2, user: { login: "maintainer" }, body: body(`### Review\n${trailer("gpt-6-luna")}\n${trailer("gpt-6-astra")}`) },
+		{ id: 3, user: { login: "maintainer" }, body: body(`${trailer("gpt-6-astra")}### Review\n${trailer("gpt-6.1-sol")}`) },
+		{ id: 4, user: { login: "maintainer" }, body: body(`Local Code Review settlement: head=${head}; runner=trusted-local; review_scope=carry; scope_base=${head}; model=none.\n`) },
+		{ id: 5, user: { login: "visitor" }, body: body(trailer("gpt-6-astra")) },
+		{ id: 6, user: { login: "unknown" }, body: body(trailer("gpt-6-astra")) },
+	];
+	const settlements = parseSettlements(comments, { marker: MARKER });
+	assert.deepEqual(settlements.map((entry) => entry.model), ["gpt-6-astra", "gpt-6-astra", "gpt-6.1-sol", null, "gpt-6-astra", "gpt-6-astra"]);
+	const permission = (login) => ({ maintainer: "admin", visitor: "read" })[login] ?? null;
+	assert.deepEqual(modelRounds(settlements, permission), { "gpt-6-astra": 2, "gpt-6.1-sol": 1 });
+});
+
 // Review P1 (round 2): a path with a newline split into two pathspecs and left its change unreviewed.
 test("a changed path the runner cannot pass line by line gets a full review", (t) => {
 	const { commit, lines, base, scope } = repository(t);
@@ -246,7 +264,7 @@ test("only a writer's settlement for the marker scopes a review, with the base t
 	assert.deepEqual(settlements.map((entry) => entry.id), [1, 2, 3]);
 	const permission = (login) => (login === "maintainer" ? "write" : "read");
 	assert.deepEqual(latestTrustedSettlement(settlements, permission),
-		{ id: 2, head, gate: "BLOCK", author: "maintainer", url: "u2", base: { baseRef: "main", mergeBase } });
+		{ id: 2, head, gate: "BLOCK", author: "maintainer", url: "u2", base: { baseRef: "main", mergeBase }, model: null });
 	assert.equal(latestTrustedSettlement(settlements, () => "read"), null);
 	// An unreadable permission must not skip a newer writer's BLOCK for an older PASS.
 	assert.throws(() => latestTrustedSettlement(settlements, (login) => (login === "maintainer" ? null : "read")), /unreadable/);
@@ -275,7 +293,7 @@ test("the classify command reads the PR's comments and the author's permission",
 		"classify", root, "example/repo", "main", base, head, comments, MARKER, docs, full],
 	{ encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }));
 	assert.deepEqual(classifyCommand("docs/**", "false"),
-		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"] });
+		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"], modelRounds: {} });
 	assert.equal(classifyCommand("", "true").reason, "full_review_requested");
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.equal(classifyCommand("", "false").reason, "settlement_author_unverified");
@@ -371,4 +389,22 @@ test("the runner scopes a review of the PR's current head and base, even when a 
 	// Unreadable PR comments could hide a BLOCK: never "no previous settlement".
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.deepEqual(JSON.parse(scope({})), { mode: "full", reason: "settlement_history_unreadable", files: [] });
+});
+
+test("after the level's round cap, the runner reviews with the cap's model and effort", (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-round-cap-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const script = fs.readFileSync(path.join(__dirname, "../engine/run-local.sh"), "utf8");
+	const start = script.indexOf("if [ \"$ROUND_CAP_JSON\" != \"null\" ]; then");
+	const block = script.slice(start, script.indexOf('"$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble', start));
+	const cap = JSON.stringify({ rounds: 2, parentModel: "gpt-6.1-sol", reasoning: "high" });
+	const parent = (rounds, roundCap = cap, model = "gpt-6-astra") => execFileSync("bash", ["-euo", "pipefail", "-c",
+		`${block}\nprintf '%s %s %s' "$CODEX_MODEL" "$CODEX_REASONING" "$INCREMENTAL_REASONING"`], {
+		encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, RUN_DIR: root, ROUND_CAP_JSON: roundCap,
+			CODEX_MODEL: model, CODEX_REASONING: "xhigh", INCREMENTAL_REASONING: "xhigh", SCOPE_JSON: JSON.stringify({ modelRounds: rounds }) },
+	}).split("\n").at(-1);
+	assert.equal(parent({ "gpt-6-astra": 1, "gpt-6.1-sol": 4 }), "gpt-6-astra xhigh xhigh");
+	assert.equal(parent({ "gpt-6-astra": 2 }), "gpt-6.1-sol high high");
+	assert.equal(parent(undefined), "gpt-6-astra xhigh xhigh", "a scope without rounds keeps the level's model");
+	assert.equal(parent({ "gpt-6-astra": 5 }, "null"), "gpt-6-astra xhigh xhigh", "a configured model has no cap");
 });

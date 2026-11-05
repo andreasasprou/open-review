@@ -24,9 +24,10 @@ Options:
   --model <model|auto>   Parent model. auto sets the review level (engine/risk-triage.cjs):
                          a stored-data, security or infrastructure path outside tests and
                          Markdown, or a review, merge-gate, prompt, rule-pack or agent-
-                         instruction path, gets gpt-6-astra with focused workers; otherwise a GPT-6.1
-                         Sol triage call picks gpt-6-astra without focused workers, or one
-                         gpt-6.1-sol medium pass without helpers or workers.
+                         instruction path, gets gpt-6-astra with focused workers for 2 rounds,
+                         then gpt-6.1-sol high; otherwise a GPT-6.1 Sol triage call picks
+                         gpt-6.1-sol high without focused workers, or one gpt-6.1-sol medium
+                         pass without helpers or workers.
                          Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
   --focused-workers <auto|n>
@@ -605,6 +606,7 @@ PR_START_MERGE_BASE_SHA="$(git -C "$ROOT" merge-base "$PR_START_BASE_SHA" "$HEAD
 REVIEW_LEVEL="configured"
 REVIEW_HELPERS="true"
 TRIAGE_NOTE="none"
+ROUND_CAP_JSON="null"
 if [ "$CODEX_MODEL" = "auto" ]; then
   printf '%s\n' "$PR_BODY" > "$RUN_DIR/triage-body.txt"
   if ! LEVEL_JSON="$(PROVIDER_BASE_URL="$PROVIDER_BASE_URL" PROVIDER_ENV_KEY="$PROVIDER_ENV_KEY" \
@@ -623,6 +625,7 @@ if [ "$CODEX_MODEL" = "auto" ]; then
   fi
   if [ "$FOCUSED_WORKERS" = "auto" ]; then FOCUSED_WORKERS="$(jq -r '.workers' <<<"$LEVEL_JSON")"; fi
   if [ "$(jq -r '.rulesWorker' <<<"$LEVEL_JSON")" = "false" ]; then RULES_WORKER=false; fi
+  ROUND_CAP_JSON="$(jq -c '.roundCap // null' <<<"$LEVEL_JSON")"
   TRIAGE_NOTE="$(jq -r 'if .triage == null then "none" else "\(.triage.version):\(.triage.risk // .triage.error)" end' <<<"$LEVEL_JSON")"
   if [ "$(jq -r '.triage.error // ""' <<<"$LEVEL_JSON")" != "" ]; then
     echo "warning: risk triage failed ($(jq -r '.triage.error' <<<"$LEVEL_JSON")); the PR gets the high level" >&2
@@ -632,18 +635,6 @@ elif ! [[ "$CODEX_MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 1
 fi
 echo "Review level: $REVIEW_LEVEL (triage $TRIAGE_NOTE); parent model $CODEX_MODEL, reasoning $CODEX_REASONING, focused workers $FOCUSED_WORKERS, rules worker $RULES_WORKER, helpers $REVIEW_HELPERS" | tee -a "$RUN_DIR/summary.txt"
-"$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble \
-  --rules "$REVIEW_PROMPTS_DIR/rules.md" \
-  --parent-model "$CODEX_MODEL" \
-  --child-model "$CODEX_SUBAGENT_MODEL" \
-  > "$REVIEW_PROMPTS_DIR/review-template.md" 2>>"$SETUP_LOG" || {
-  echo "error: failed to assemble the review prompt; see $SETUP_LOG" >&2
-  exit 1
-}
-# Identity of the prompt this run stages; a saved parent from a different
-# prompt is not resumed (local-resume.cjs: prompt_changed).
-PROMPT_BLOB="$(git hash-object "$REVIEW_PROMPTS_DIR/review-template.md")"
-echo "Rule pack ref: $RULES_SOURCE (source=$RULES_SOURCE_KIND); prompt $PROMPT_BLOB" | tee -a "$RUN_DIR/summary.txt"
 
 # Refuse to settle when the PR's head, base branch or merge base changed since
 # this run started: the settlement would describe another review target.
@@ -790,6 +781,29 @@ NODE
   publish_settlement
   exit 0
 fi
+# The level's round cap (decision astra-round-cap): once the PR has that many
+# settled rounds by the level's model, later rounds use the cap's model.
+if [ "$ROUND_CAP_JSON" != "null" ]; then
+  PRIOR_ROUNDS="$(jq -r --arg model "$CODEX_MODEL" '.modelRounds[$model] // 0' <<<"$SCOPE_JSON")"
+  if [ "$PRIOR_ROUNDS" -ge "$(jq -r '.rounds' <<<"$ROUND_CAP_JSON")" ]; then
+    echo "Round cap: $PRIOR_ROUNDS $CODEX_MODEL rounds already settled on this PR; parent model $(jq -r '.parentModel' <<<"$ROUND_CAP_JSON") at $(jq -r '.reasoning' <<<"$ROUND_CAP_JSON")" | tee -a "$RUN_DIR/summary.txt"
+    CODEX_MODEL="$(jq -r '.parentModel' <<<"$ROUND_CAP_JSON")"
+    CODEX_REASONING="$(jq -r '.reasoning' <<<"$ROUND_CAP_JSON")"
+    INCREMENTAL_REASONING="$CODEX_REASONING"
+  fi
+fi
+"$PYTHON_BIN" "$ENGINE_DIR/interpolate-code-review.py" assemble \
+  --rules "$REVIEW_PROMPTS_DIR/rules.md" \
+  --parent-model "$CODEX_MODEL" \
+  --child-model "$CODEX_SUBAGENT_MODEL" \
+  > "$REVIEW_PROMPTS_DIR/review-template.md" 2>>"$SETUP_LOG" || {
+  echo "error: failed to assemble the review prompt; see $SETUP_LOG" >&2
+  exit 1
+}
+# Identity of the prompt this run stages; a saved parent from a different
+# prompt is not resumed (local-resume.cjs: prompt_changed).
+PROMPT_BLOB="$(git hash-object "$REVIEW_PROMPTS_DIR/review-template.md")"
+echo "Rule pack ref: $RULES_SOURCE (source=$RULES_SOURCE_KIND); prompt $PROMPT_BLOB" | tee -a "$RUN_DIR/summary.txt"
 if [ "$SCOPE_MODE" = "incremental" ]; then
   # The parent alone reviews the change since the passed head.
   CODEX_REASONING="$INCREMENTAL_REASONING"

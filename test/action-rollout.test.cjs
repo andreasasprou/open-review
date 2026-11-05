@@ -329,7 +329,7 @@ test('the hosted review level follows the PR paths and the triage, and reaches e
     return readFileSync(f.output, 'utf8');
   };
   assert.equal(model(standard, 'auto'),
-    'level=model-high\nmodel=gpt-6-astra\nreasoning=\nworkers=0\nrules_worker=true\nhelpers=true\n');
+    'level=model-high\nmodel=gpt-6.1-sol\nreasoning=high\nworkers=0\nrules_worker=true\nhelpers=true\n');
   assert.equal(model(risky, 'auto'),
     'level=floor-high\nmodel=gpt-6-astra\nreasoning=\nworkers=2\nrules_worker=true\nhelpers=true\n');
   assert.equal(model(standard, 'gpt-6-astra'), 'model=gpt-6-astra\nlevel=configured\nhelpers=true\n');

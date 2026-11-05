@@ -100,7 +100,15 @@ function recordedBase(body) {
 	return match ? { baseRef: match[1], mergeBase: match[2] } : null;
 }
 
-/** Settlement comments the local runner publishes, in comment order, with their merge gate and base. */
+// The parent model of a settlement, from the runner's trailer: the last line
+// that names one, so a forged line in the review text above it cannot. A
+// settlement without a model review (carried or skipped) has none.
+function recordedModel(body, head) {
+	const matches = [...body.matchAll(new RegExp(`^Local Code Review settlement: head=${head}; runner=trusted-local; [^\\n]*?\\bmodel=([A-Za-z0-9._-]+);`, "gmu"))];
+	return matches.length > 0 ? matches[matches.length - 1][1] : null;
+}
+
+/** Settlement comments the local runner publishes, in comment order, with their merge gate, base and parent model. */
 function parseSettlements(comments, { marker, attributionHeader = "" }) {
 	const header = attributionHeader ? `${escapeExpression(attributionHeader)}\\n\\n` : "";
 	const pattern = new RegExp(`^<!-- ${escapeExpression(marker)} head=([0-9a-f]{40}) -->\\n\\n${header}Merge gate: \\*\\*(PASS|BLOCK|UNKNOWN)\\*\\*`, "u");
@@ -109,7 +117,8 @@ function parseSettlements(comments, { marker, attributionHeader = "" }) {
 		const match = pattern.exec(body);
 		const author = comment?.user?.login;
 		return match && Number.isSafeInteger(comment.id) && typeof author === "string" && author !== ""
-			? [{ id: comment.id, head: match[1], gate: match[2], author, url: String(comment.html_url ?? ""), base: recordedBase(body) }]
+			? [{ id: comment.id, head: match[1], gate: match[2], author, url: String(comment.html_url ?? ""), base: recordedBase(body),
+				model: recordedModel(body, match[1]) }]
 			: [];
 	}).sort((left, right) => left.id - right.id);
 }
@@ -128,6 +137,17 @@ function latestTrustedSettlement(settlements, permissionOf) {
 		if (WRITE_PERMISSIONS.has(permission)) return settlement;
 	}
 	return null;
+}
+
+/** Model review rounds per parent model, from writers' settlements only; an unreadable permission does not count. */
+function modelRounds(settlements, permissionOf) {
+	const rounds = {};
+	for (const settlement of settlements) {
+		if (settlement.model !== null && WRITE_PERMISSIONS.has(permissionOf(settlement.author))) {
+			rounds[settlement.model] = (rounds[settlement.model] ?? 0) + 1;
+		}
+	}
+	return rounds;
 }
 
 function commitExists(git, sha) {
@@ -209,10 +229,15 @@ function main(recorder, argv) {
 	const git = gitRunner(root);
 	const settlements = parseSettlements(readComments(commentsFile),
 		{ marker, attributionHeader: process.env.OPEN_REVIEW_ATTRIBUTION_HEADER || "" });
+	const permissions = new Map();
+	const permissionOf = (login) => {
+		if (!permissions.has(login)) permissions.set(login, githubPermission(recorder, repository, login));
+		return permissions.get(login);
+	};
 	let latest = null;
 	let settlementsVerified = true;
 	try {
-		latest = latestTrustedSettlement(settlements, (login) => githubPermission(recorder, repository, login));
+		latest = latestTrustedSettlement(settlements, permissionOf);
 	} catch (error) {
 		recordCaughtError({ recorder, error, operation: "review.scope", stage: "trusted_settlement", disposition: "recover", context: {} });
 		settlementsVerified = false;
@@ -226,11 +251,13 @@ function main(recorder, argv) {
 			recordCaughtError({ recorder, error, operation: "review.scope", stage: "fetch_passed_head", disposition: "recover", context: {} });
 		}
 	}
-	process.stdout.write(`${JSON.stringify(classify({ git, baseRef, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
+	const scope = classify({ git, baseRef, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
 		latest, settlementsVerified, fullReview: fullReview === "true",
-		protectedFiles: rulesPath ? [rulesPath] : [] }))}\n`);
+		protectedFiles: rulesPath ? [rulesPath] : [] });
+	process.stdout.write(`${JSON.stringify({ ...scope, modelRounds: modelRounds(settlements, permissionOf) })}\n`);
 }
 
 if (require.main === module) runReviewCli((recorder) => main(recorder, process.argv.slice(2)));
 
-module.exports = { classify, docsOnly, fileStates, latestTrustedSettlement, parseDocsPaths, parseSettlements, patchDelta, recordedBase };
+module.exports = { classify, docsOnly, fileStates, latestTrustedSettlement, modelRounds, parseDocsPaths, parseSettlements, patchDelta,
+	recordedBase };
