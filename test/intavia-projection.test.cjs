@@ -2069,6 +2069,64 @@ test("a supersession under a deferral is folded exactly like the same still_open
   assert.deepEqual(superseded.closed_findings, stillOpen.closed_findings);
 });
 
+const KEPT_OPEN_KINDS = ["REDESIGN_IN_PR", "NARROW_BEHAVIOR", "EVOLVE_FRAMEWORK", "DEFER_FOLLOW_UP"];
+
+function keptOpenDecision(kind, overrides = {}) {
+  const deferral = kind === "DEFER_FOLLOW_UP";
+  return { stable_id: "ISSUE-001", kind, invariant: "Keep the approved status update seam.",
+    scope: "Status update behavior only.", evidence: deferral ? "The PR does not rely on it." : null,
+    tracker: deferral ? "TEST-1" : null, owner_or_triage: deferral ? "Sample owner" : null,
+    decision_head_sha: SHA.head, comment_id: 500, actor_login: "sampleowner", ...overrides };
+}
+
+function stillOpenUnder({ decisions, decisionRef, reported = finding() }) {
+  return validateCandidate({
+    rawOutput: output({ prior_issue_evaluations: [{ stable_id: "ISSUE-001", result: "still_open",
+      evidence: "The owner decision keeps this scenario open.", challenge_ref: null,
+      ...(decisionRef === undefined ? {} : { decision_ref: decisionRef }), finding: reported }] }),
+    target: target(), priorProjection: firstProjection(), evidence: evidence({ humanDecisions: decisions }),
+  });
+}
+
+// The contract asks every evaluation for decision_ref, and these four kinds keep
+// the finding still_open, so naming the controlling decision is the natural output.
+test("a still_open evaluation may name the decision that keeps its finding open", () => {
+  for (const kind of KEPT_OPEN_KINDS) {
+    const decision = keptOpenDecision(kind);
+    const reported = kind === "DEFER_FOLLOW_UP"
+      ? finding({ disposition: "FOLLOW_UP", autonomous_eligibility: "NO" }) : finding();
+    const named = stillOpenUnder({ decisions: [decision], decisionRef: "github-comment:500", reported });
+    const plain = stillOpenUnder({ decisions: [decision], reported });
+    assert.deepEqual(named.open_findings, plain.open_findings, kind);
+    assert.deepEqual(named.closed_findings, plain.closed_findings, kind);
+    assert.equal(named.open_findings[0].decision_ref, "github-comment:500", kind);
+    assert.equal(named.open_findings[0].disposition, kind === "DEFER_FOLLOW_UP" ? "FOLLOW_UP" : "FIX_IN_PR", kind);
+    assert.match(named.warnings.join("\n"),
+      new RegExp(`ISSUE-001: still_open decision_ref names its ${kind} decision`), kind);
+  }
+});
+
+test("a still_open decision_ref that names no controlling open decision fails closed", () => {
+  const mismatch = (error) => error instanceof ContractError && error.code === "still_open_decision_ref_mismatch";
+  for (const kind of KEPT_OPEN_KINDS) {
+    // Another comment than the collected decision.
+    assert.throws(() => stillOpenUnder({ decisions: [keptOpenDecision(kind)], decisionRef: "github-comment:499" }),
+      mismatch, kind);
+    // The collected decision is for another finding.
+    assert.throws(() => stillOpenUnder({ decisions: [keptOpenDecision(kind, { stable_id: "ISSUE-002" })],
+      decisionRef: "github-comment:500" }), mismatch, kind);
+    // A later decision for this finding controls it, not the named earlier one.
+    assert.throws(() => stillOpenUnder({ decisions: [keptOpenDecision(kind),
+      keptOpenDecision(kind, { comment_id: 501 })], decisionRef: "github-comment:500" }), mismatch, kind);
+  }
+  // No collected decision at all.
+  assert.throws(() => stillOpenUnder({ decisions: [], decisionRef: "github-comment:500" }), mismatch);
+  // Kinds that settle a finding never keep it open under their reference.
+  for (const kind of ["APPROVE_BOUNDED_EXCEPTION", "REJECT_FINDING"])
+    assert.throws(() => stillOpenUnder({ decisions: [keptOpenDecision(kind, {
+      evidence: "The owner accepted this bounded risk." })], decisionRef: "github-comment:500" }), mismatch, kind);
+});
+
 test("a matching copy cannot hide a different new finding that reuses the same still_open ID", () => {
   const matching = finding();
   const different = finding({ title: "A different failure", failure_scenario: "A different failure reuses the open stable ID." });
