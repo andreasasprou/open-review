@@ -145,6 +145,12 @@ function decisionRef(decision) {
   return `github-comment:${decision.comment_id}`;
 }
 
+// A design or deferral decision keeps its finding still_open under the
+// decision's reference; only a bounded exception or rejection settles it.
+function decisionKeepsFindingOpen(decision) {
+  return DESIGN_DECISION_KINDS.has(decision.kind) || decision.kind === "DEFER_FOLLOW_UP";
+}
+
 function isProposedFollowUp(finding) {
   return finding.disposition === "FOLLOW_UP" && finding.decision_ref === null;
 }
@@ -775,6 +781,8 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     fail("too_many_findings", `Review output exceeds ${MAX_NEW_FINDINGS} new findings`);
 
   const decisions = normalizeHumanDecisions(evidence?.human_decisions || []);
+  // Sorted by comment ID, so each finding maps to its latest decision.
+  const latestDecisionById = new Map(decisions.map((decision) => [decision.stable_id, decision]));
   const reviewPriorProjection = prepareReviewPriorProjection({
     priorProjection,
     priorProjections: evidence?.prior_projections || [],
@@ -810,6 +818,18 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       for (const key of ["evidence", "challenge_ref", "decision_ref"])
         if (evaluation[key] === null || (key === "evidence" && evaluation.result === "still_open"))
           delete evaluation[key];
+      // The contract asks every evaluation for decision_ref, and a decision that
+      // keeps its finding open is answered still_open. The finding carries that
+      // reference, so a copy naming the latest such decision for this finding is
+      // dropped here, before duplicate checks; any other copy is rejected below.
+      if (evaluation.result === "still_open" && Object.hasOwn(evaluation, "decision_ref")) {
+        const decision = latestDecisionById.get(evaluation.stable_id);
+        if (decision && decisionKeepsFindingOpen(decision) &&
+          evaluation.decision_ref === decisionRef(decision)) {
+          delete evaluation.decision_ref;
+          warnings.push(`${evaluation.stable_id}: still_open decision_ref names its ${decision.kind} decision; the finding carries it`);
+        }
+      }
     }
     if (!isObject(evaluation)) {
       warnings.push("Unknown prior evaluation was dropped: evaluation is not an object");
@@ -1080,6 +1100,11 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
         fail(
           "pending_challenge_requires_reference",
           "The replacement review must reference the pending evidence challenge",
+        );
+      if (Object.hasOwn(evaluation, "decision_ref"))
+        fail(
+          "still_open_decision_ref_mismatch",
+          "A still_open decision_ref must name the latest collected decision that keeps this finding open",
         );
       exactKeys(
         evaluation,
