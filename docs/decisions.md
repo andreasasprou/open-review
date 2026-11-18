@@ -24,7 +24,7 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `auto`: review level (floor-high `gpt-6-astra`, locally for at most 2 settled rounds and then `gpt-6.1-sol` at `high`; model-high `gpt-6.1-sol` at `high`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap) |
+| `parent-model` | `auto`: review level (floor-high `gpt-6.2-astra`, locally for at most 2 settled rounds and then `gpt-6.2-sol` at `high`; model-high `gpt-6.2-sol` at `high`; normal `gpt-6.2-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap), [gpt-6-2-models](#gpt-6-2-models) |
 | Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
@@ -41,11 +41,11 @@ decision entry behind it.
 | Codex skill list (parent, children, workers) | off (`skills.include_instructions=false`) | [review-cost-trims](#review-cost-trims) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
-| `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
-| `review-budget-minutes` | `20` | [review-budget](#review-budget) |
+| `codex-cli-version` | `0.169.1` | [codex-cli-version](#codex-cli-version), [gpt-6-2-models](#gpt-6-2-models) |
+| `review-budget-minutes` | `30` | [review-budget](#review-budget), [gpt-6-2-models](#gpt-6-2-models) |
 | Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
-| `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `10m` | [review-scope](#review-scope) |
+| `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `15m` | [review-scope](#review-scope), [gpt-6-2-models](#gpt-6-2-models) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
 
 ## Decisions
@@ -195,6 +195,21 @@ GPT-6.1 Sol's price. Do they replace the current parent at each review level?
   2. Model-high and normal: `sol62` passes the quality and precision bars and
      fails the time bar (+101%) and, by $0.03, the cost bar. `sol61` stays.
   3. Configuration unchanged.
+- Owner decision, 2026-11-18, after the held-out result: switch; twice the
+  review time is worth 6 more known defects of 38.
+  - Floor-high: `gpt-6.2-astra`, which found the most known defects over both
+    sets (38 of 71, against 33 for `sol62` and 25 for `astra6`).
+  - Model-high, normal and the round cap's later floor-high rounds:
+    `gpt-6.2-sol`.
+  - Codex 0.169.1. The full-review time limit rises from 20 to 30 minutes
+    (`review-budget-minutes` and the local default), and the local
+    incremental limit from 10 to 15 minutes in the same proportion.
+  - Triage, workers, children and the contract investigator keep their
+    models.
+  - Untested: `sol62` ran only at `high`; the normal level runs it at
+    `medium`.
+- Reopen when reviews at the new levels time out more often than before the
+  switch, or when a cheaper model finds as many known defects.
 
 ### astra-round-cap
 

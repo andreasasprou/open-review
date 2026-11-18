@@ -46,9 +46,9 @@ inputs:
       Codex model for the parent reviewer. "auto" sets the review level
       (engine/risk-triage.cjs): a PR that changes a stored-data, security or
       infrastructure path outside tests and Markdown, or a review, merge-gate,
-      prompt, rule-pack or agent-instruction path, gets gpt-6-astra with focused
+      prompt, rule-pack or agent-instruction path, gets gpt-6.2-astra with focused
       workers; otherwise a GPT-6.1 Sol triage call through provider-base-url
-      picks gpt-6.1-sol at high without focused workers, or one gpt-6.1-sol
+      picks gpt-6.2-sol at high without focused workers, or one gpt-6.2-sol
       medium pass without child threads, focused or rules workers. A model name always uses
       that model with the configured workers and effort.
     default: auto
@@ -80,7 +80,7 @@ inputs:
     default: "true"
   codex-cli-version:
     description: Exact @openai/codex version to install and verify.
-    default: 0.157.1
+    default: 0.169.1
   provider-base-url:
     description: >-
       Required. Responses-API base URL of the model provider (Codex appends
@@ -119,7 +119,7 @@ inputs:
     default: "false"
   review-budget-minutes:
     description: Total hosted Codex model budget across attempts.
-    default: "20"
+    default: "30"
   pr-number:
     description: PR number to review for workflow_dispatch callers.
     default: ""
@@ -1326,7 +1326,7 @@ runs:
         else
           echo "review_generated=false" >> "$GITHUB_OUTPUT"
           if [ "$CODEX_EXIT_CODE" -eq 124 ] || [ "$CODEX_EXIT_CODE" -eq 137 ]; then
-            echo "::error::Code review timed out after 20 minutes"
+            echo "::error::Code review timed out after ${REVIEW_BUDGET_MINUTES} minutes"
           elif [ "$CODEX_EXIT_CODE" -ne 0 ]; then
             echo "::error::Codex exited with code $CODEX_EXIT_CODE [$ATTEMPT_CLASSIFICATION] after $ATTEMPT attempt(s)"
           else

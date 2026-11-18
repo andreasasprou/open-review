@@ -46,7 +46,7 @@ jobs:
   review:
     runs-on: ubuntu-24.04
     # The action has no step timeout of its own (composite actions cannot set
-    # one); its model budget is 20 minutes per review.
+    # one); its model budget is 30 minutes per review.
     timeout-minutes: 40
 
     if: |

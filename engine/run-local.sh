@@ -17,16 +17,16 @@ Options:
   --rules <path>         Repository-relative rule pack path. Default: OPEN_REVIEW_RULES_PATH.
   --head-sha <sha>       Review a specific PR head SHA instead of the current PR tip.
   --base-sha <sha>       Diff against a specific base SHA instead of the current PR base.
-  --timeout <duration>   Codex timeout duration, incremental reviews included. Default: 20m
-                         (10m for an incremental review).
+  --timeout <duration>   Codex timeout duration, incremental reviews included. Default: 30m
+                         (15m for an incremental review).
   --kill-after <duration>
                          Extra time before force-killing after timeout. Default: 60s.
   --model <model|auto>   Parent model. auto sets the review level (engine/risk-triage.cjs):
                          a stored-data, security or infrastructure path outside tests and
                          Markdown, or a review, merge-gate, prompt, rule-pack or agent-
-                         instruction path, gets gpt-6-astra with focused workers for 2 rounds,
-                         then gpt-6.1-sol high; otherwise a GPT-6.1 Sol triage call picks
-                         gpt-6.1-sol high without focused workers, or one gpt-6.1-sol medium
+                         instruction path, gets gpt-6.2-astra with focused workers for 2 rounds,
+                         then gpt-6.2-sol high; otherwise a GPT-6.1 Sol triage call picks
+                         gpt-6.2-sol high without focused workers, or one gpt-6.2-sol medium
                          pass without helpers or workers.
                          Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
@@ -72,7 +72,7 @@ and result blobs (rerun, or a rebase or merge that left the PR's files alone)
 or only docs-only paths changed. Otherwise, if the passed head is an ancestor
 of this head, it reviews only the files that changed: the parent alone, at
 OPEN_REVIEW_INCREMENTAL_REASONING (default high) within
-OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 10m). Every other run is a full review.
+OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 15m). Every other run is a full review.
 
 Environment: CODEX_MODEL, CODEX_REASONING, CODEX_SUBAGENT_MODEL,
 CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_WORKER_MODEL and
@@ -95,9 +95,9 @@ require_command() {
 PR_NUMBER=""
 HEAD_SHA_OVERRIDE=""
 BASE_SHA_OVERRIDE=""
-CODEX_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-20m}"
+CODEX_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-30m}"
 KILL_AFTER="${CODEX_REVIEW_KILL_AFTER:-60s}"
-REQUIRED_CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.157.1}"
+REQUIRED_CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.169.1}"
 export CODEX_MODEL="${CODEX_MODEL:-auto}"
 export CODEX_REASONING="${CODEX_REASONING:-high}"
 export CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-gpt-6-luna}"
@@ -108,7 +108,7 @@ RULES_WORKER="${OPEN_REVIEW_RULES_WORKER:-true}"
 DOCS_ONLY_PATHS="${OPEN_REVIEW_DOCS_ONLY_PATHS:-}"
 FULL_REVIEW="${OPEN_REVIEW_FULL_REVIEW:-false}"
 INCREMENTAL_REASONING="${OPEN_REVIEW_INCREMENTAL_REASONING:-high}"
-INCREMENTAL_TIMEOUT="${OPEN_REVIEW_INCREMENTAL_TIMEOUT:-10m}"
+INCREMENTAL_TIMEOUT="${OPEN_REVIEW_INCREMENTAL_TIMEOUT:-15m}"
 PROVIDER_BASE_URL="${OPEN_REVIEW_PROVIDER_BASE_URL:-}"
 PROVIDER_ENV_KEY="${OPEN_REVIEW_PROVIDER_ENV_KEY:-}"
 RULES_PATH="${OPEN_REVIEW_RULES_PATH:-}"
