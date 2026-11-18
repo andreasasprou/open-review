@@ -53,6 +53,51 @@ decision entry behind it.
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
 
+### gpt-6-2-models
+
+**2026-11-18.** Owner request. GPT-6.2 Astra and GPT-6.2 Sol shipped on
+2026-11-17. GPT-6.2 Astra lists at 20% below GPT-6 Astra; GPT-6.2 Sol keeps
+GPT-6.1 Sol's price. Do they replace the current parent at each review level?
+
+- Codex 0.157.1 has no metadata for either model. Codex 0.169.1 is the first
+  release with it, so every arm runs on 0.169.1 (reopens
+  [codex-cli-version](#codex-cli-version)). The CLI change alone is read from
+  the `astra6` and `sol61` arms against their 0.157.1 results in
+  [parent-model](#parent-model); it has no arm of its own.
+- Arms, parent only: an explicit `parent-model` at `high`, `focused-workers`
+  0, no rules worker, children unchanged (GPT-6 Luna `max`; the contract
+  investigator GPT-6 Sol `high`):
+  - `astra6`: `gpt-6-astra`, today's floor-high parent;
+  - `astra62`: `gpt-6.2-astra`;
+  - `sol61`: `gpt-6.1-sol`, today's model-high and normal parent;
+  - `sol62`: `gpt-6.2-sol`.
+- Sets: screen on the development set (14 PRs, 33 known defects). Decide on
+  two other consumers' held-out manifests: 18 PRs, 38 known defects. Part of
+  one held-out manifest was adjudicated from an earlier GPT-6 Astra
+  reviewer's findings, which favours `astra6`.
+- Model traffic goes through the consumers' pooling provider, as in
+  production. Every arm of a set runs at the same time.
+- Grading: `eval/score-recall.cjs` for known defects; a blind Claude grader
+  for every other finding (`plausible_real`, `invalid` or `unclear`).
+- Rule, declared before the run, applied to the held-out set. An arm within 2
+  known defects of its baseline gets 3 paired samples.
+  1. Floor-high parent: adopt the cheaper of `sol62` and `astra62` that finds
+     at least as many known defects as `astra6`, with no more invalid P0 or P1
+     findings, no higher list-price cost per review, and a median review time
+     at most 20% longer.
+  2. Model-high and normal parent: adopt `sol62` if it meets the same bar
+     against `sol61`.
+  3. Otherwise keep the current model for that level.
+- Cost ceiling: about 2,500 credits for the screen and 3,200 per held-out
+  sample, estimated from the measured parent in
+  [review-cost-trims](#review-cost-trims) and the quarter ratio in
+  [parent-model-risk-gated](#parent-model-risk-gated). Stop at 15,000
+  credits.
+- Out of scope: focused and rules workers, the triage model (a change needs a
+  recalibration; see [risk-triage](#risk-triage)) and the contract
+  investigator. Each is evaluated only after its level's parent switches.
+- Result: pending.
+
 ### astra-round-cap
 
 **2026-11-05.** Owner decision on cost, without an evaluation run. GPT-6 Astra
