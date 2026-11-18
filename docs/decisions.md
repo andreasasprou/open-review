@@ -24,7 +24,7 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `auto`: review level (floor-high `gpt-6-astra`, locally for at most 2 settled rounds and then `gpt-6.1-sol` at `high`; model-high `gpt-6.1-sol` at `high`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap) |
+| `parent-model` | `auto`: review level (floor-high `gpt-6.2-astra`, locally for at most 2 settled rounds and then `gpt-6.2-sol` at `high`; model-high `gpt-6.2-sol` at `high`; normal `gpt-6.2-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap), [gpt-6-2-models](#gpt-6-2-models) |
 | Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
@@ -41,17 +41,175 @@ decision entry behind it.
 | Codex skill list (parent, children, workers) | off (`skills.include_instructions=false`) | [review-cost-trims](#review-cost-trims) |
 | `rules-worker-limit` | `12m` | [rules-worker](#rules-worker) |
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
-| `codex-cli-version` | `0.157.1` | [codex-cli-version](#codex-cli-version) |
-| `review-budget-minutes` | `20` | [review-budget](#review-budget) |
+| `codex-cli-version` | `0.169.1` | [codex-cli-version](#codex-cli-version), [gpt-6-2-models](#gpt-6-2-models) |
+| `review-budget-minutes` | `30` | [review-budget](#review-budget), [gpt-6-2-models](#gpt-6-2-models) |
 | Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
-| `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `10m` | [review-scope](#review-scope) |
+| `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `15m` | [review-scope](#review-scope), [gpt-6-2-models](#gpt-6-2-models) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
 
 ## Decisions
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### gpt-6-2-models
+
+**2026-11-18.** Owner request. GPT-6.2 Astra and GPT-6.2 Sol shipped on
+2026-11-17. GPT-6.2 Astra lists at 20% below GPT-6 Astra; GPT-6.2 Sol keeps
+GPT-6.1 Sol's price. Do they replace the current parent at each review level?
+
+- Codex 0.157.1 has no metadata for either model. Codex 0.169.1 is the first
+  release with it, so every arm runs on 0.169.1 (reopens
+  [codex-cli-version](#codex-cli-version)). The CLI change alone is read from
+  the `astra6` and `sol61` arms against their 0.157.1 results in
+  [parent-model](#parent-model); it has no arm of its own.
+- Arms, parent only: an explicit `parent-model` at `high`, `focused-workers`
+  0, no rules worker, children unchanged (GPT-6 Luna `max`; the contract
+  investigator GPT-6 Sol `high`):
+  - `astra6`: `gpt-6-astra`, today's floor-high parent;
+  - `astra62`: `gpt-6.2-astra`;
+  - `sol61`: `gpt-6.1-sol`, today's model-high and normal parent;
+  - `sol62`: `gpt-6.2-sol`.
+- Sets: screen on the development set (14 PRs, 33 known defects). Decide on
+  two other consumers' held-out manifests: 18 PRs, 38 known defects. Part of
+  one held-out manifest was adjudicated from an earlier GPT-6 Astra
+  reviewer's findings, which favours `astra6`.
+- Model traffic goes through the consumers' pooling provider, as in
+  production. Every arm of a set runs at the same time.
+- Grading: `eval/score-recall.cjs` for known defects; a blind Claude grader
+  for every other finding (`plausible_real`, `invalid` or `unclear`).
+- Rule, declared before the run, applied to the held-out set. An arm within 2
+  known defects of its baseline gets 3 paired samples.
+  1. Floor-high parent: adopt the cheaper of `sol62` and `astra62` that finds
+     at least as many known defects as `astra6`, with no more invalid P0 or P1
+     findings, no higher list-price cost per review, and a median review time
+     at most 20% longer.
+  2. Model-high and normal parent: adopt `sol62` if it meets the same bar
+     against `sol61`.
+  3. Otherwise keep the current model for that level.
+- Cost ceiling: about 2,500 credits for the screen and 3,200 per held-out
+  sample, estimated from the measured parent in
+  [review-cost-trims](#review-cost-trims) and the quarter ratio in
+  [parent-model-risk-gated](#parent-model-risk-gated). Stop at 15,000
+  credits.
+- Out of scope: focused and rules workers, the triage model (a change needs a
+  recalibration; see [risk-triage](#risk-triage)) and the contract
+  investigator. Each is evaluated only after its level's parent switches.
+- Screen, 2026-11-18, development set, 1 sample, Codex 0.169.1. Known defects
+  by the blind grader (`yes` only); "real" is known defects plus
+  `plausible_real`; cost is list price per review from the provider log:
+
+  | Arm | Known (of 33) | Real / findings | Invalid | Invalid P0/P1 | Cost | Median time |
+  |---|---|---|---|---|---|---|
+  | `astra6` | 15 | 26 / 33 (79%) | 2 | 2 of 10 | $10.79 | 9.8 min |
+  | `astra62` | 22 | 107 / 133 (80%) | 11 | 5 of 61 | $6.98 | 15.6 min |
+  | `sol61` | 12 | 20 / 29 (69%) | 1 | 1 of 8 | $1.39 | 9.9 min |
+  | `sol62` | 17 | 72 / 91 (79%) | 7 | 5 of 35 | $2.13 | 16.0 min |
+
+  - Both 6.2 models find more known defects and about four times as many real
+    findings at equal or higher precision. `astra62` costs 35% less than `astra6`;
+    `sol62` costs 53% more than `sol61`, mostly from child threads (it
+    delegates about twice as many requests).
+  - Times are not comparable. The models launched the day before: each 6.2
+    request took about twice as long as the 6.0 and 6.1 requests in the same
+    hour (median 16.6 s against 8.0 s for Astra).
+  - Capacity: of 47 attempts on the 6.2 models, 17 failed with `Selected
+    model is at capacity` (upstream `server_is_overloaded`, spread across
+    accounts and plans) and 2 timed out at 30 minutes; no 6.0 or 6.1 attempt
+    failed. Failed pairs were rerun on their own, up to four attempts, so
+    those reviews ran under lighter local load than their baselines. Codex
+    does not retry that error; the action retries once within
+    `review-budget-minutes`.
+  - The CLI change shows no loss: on 0.169.1 `astra6` finds 15 and `sol61` 12,
+    against 9 and 6 on 0.157.1 in [parent-model](#parent-model). The grader
+    and prompt have changed since, so this rules out a loss and measures
+    nothing more. On 0.169.1,
+    Codex warns that the repository's AGENTS.md is truncated at 32 KiB, and
+    the progress log prints `unknown` for commands; both are the same in every
+    arm.
+  - Cost: about 8,600 credits, above the 2,500 estimated. The parent-only
+    `astra6` review costs about 270 credits, not the estimate's quarter ratio.
+  - As declared, the rule rejects both 6.2 models: an absolute count of
+    invalid P0/P1 findings penalises a reviewer that raises four to six times
+    as many, and the cost bar rejects `sol62` at the model-high and normal
+    levels.
+- Owner, 2026-11-18, after the screen: more findings per review are
+  acceptable when they are real; judge a reviewer on its true positives and
+  precision, not on volume. Any amendment to the rule follows from this and is
+  recorded here before the decision run.
+- Rule, amended by the owner on 2026-11-18 before the decision run; it
+  replaces the declared rule above. An arm within 2 known defects of its
+  baseline gets 3 paired samples.
+  1. Floor-high parent: adopt the cheaper of `sol62` and `astra62` that finds
+     at least as many known defects and at least as many real findings as
+     `astra6`, has at most 10% of its findings graded `invalid`, costs no
+     more per review at list price, and has a median review time at most 20%
+     longer.
+  2. Model-high and normal parent: adopt `sol62` if it meets the same quality
+     and time bars against `sol61` and costs at most $0.80 more per review at
+     list price.
+  3. Otherwise keep the current model for that level.
+- Budget, amended by the owner on 2026-11-18: stop at 20,000 credits.
+- Decision run: every review has a 45-minute limit, the same for all arms. The
+  screen's 30 minutes timed out a GPT-6.2 Astra review that GPT-6 Astra
+  finished in 26.
+- Before the held-out results, the owner was asked whether to replace the
+  time bar with a count of reviews over the 20-minute production budget, and
+  whether floor-high should prefer more known defects to lower cost. No answer
+  had come when grading finished, so the amended rule applies as written.
+- Held-out result, 2026-11-18, 1 sample, Codex 0.169.1. All four arms ran at
+  once per consumer, with the rule pack pinned to one commit per consumer.
+  Known defects are graded by the blind grader (`yes` only): the location
+  matcher in `eval/score-recall.cjs` credited two findings that sit nine
+  lines from a defect they do not describe. "Real" is known defects plus
+  `plausible_real`. Cost is list price per review, including the
+  long-context rate above 272K input tokens and the failed review:
+
+  | Arm | Known (of 38) | Real / findings | Invalid | Invalid P0/P1 | Cost | Median time | Over 20 min or failed |
+  |---|---|---|---|---|---|---|---|
+  | `astra6` | 10 | 24 / 25 | 1 (4%) | 0 of 3 | $7.71 | 5.5 min | 0 of 18 |
+  | `astra62` | 16 | 83 / 87 | 3 (3%) | 0 of 13 | $7.27 | 11.5 min | 4 of 18 |
+  | `sol61` | 10 | 25 / 27 | 2 (7%) | 0 of 2 | $1.50 | 7.4 min | 4 of 18 |
+  | `sol62` | 16 | 72 / 73 | 1 (1%) | 0 of 12 | $2.33 | 14.9 min | 4 of 18 |
+
+  - Both 6.2 models find 6 more known defects than either baseline and about
+    three times as many real findings, at an equal or lower invalid rate. The
+    held-out set agrees with the screen. No arm is within 2 known defects of
+    its baseline, so no repeats ran.
+  - No capacity failures in 72 reviews. One `astra62` review reached the
+    45-minute limit and counts as a failure with no findings; `astra6`
+    finished that PR in 19 minutes.
+  - Time: a 6.2 review takes about twice as long. Each request is slower
+    (median 12.0 s against 8.0 s for Astra, 11.5 s against 8.8 s for Sol),
+    and a review makes about 1.4 times as many requests. Times run from first
+    to last request in the provider log, with 8 reviews running at once.
+  - Cost: `sol62` adds $0.83 per review over `sol61`. $0.15 of it is the
+    long-context rate (50 requests above 272K, against 20); without that rate
+    it adds $0.74.
+  - Spend: about 8,500 credits, about 17,100 in all.
+- Result:
+  1. Floor-high: both 6.2 models pass the quality, precision and cost bars
+     against `astra6` and fail the time bar (`astra62` +109%, `sol62` +171%,
+     against 20%). `astra6` stays.
+  2. Model-high and normal: `sol62` passes the quality and precision bars and
+     fails the time bar (+101%) and, by $0.03, the cost bar. `sol61` stays.
+  3. Configuration unchanged.
+- Owner decision, 2026-11-18, after the held-out result: switch; twice the
+  review time is worth 6 more known defects of 38.
+  - Floor-high: `gpt-6.2-astra`, which found the most known defects over both
+    sets (38 of 71, against 33 for `sol62` and 25 for `astra6`).
+  - Model-high, normal and the round cap's later floor-high rounds:
+    `gpt-6.2-sol`.
+  - Codex 0.169.1. The full-review time limit rises from 20 to 30 minutes
+    (`review-budget-minutes` and the local default), and the local
+    incremental limit from 10 to 15 minutes in the same proportion.
+  - Triage, workers, children and the contract investigator keep their
+    models.
+  - Untested: `sol62` ran only at `high`; the normal level runs it at
+    `medium`.
+- Reopen when reviews at the new levels time out more often than before the
+  switch, or when a cheaper model finds as many known defects.
 
 ### astra-round-cap
 

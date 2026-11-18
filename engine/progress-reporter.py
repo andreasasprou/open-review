@@ -46,6 +46,8 @@ MAX_QUEUED_EVENTS = 32
 MAX_COMMAND_WRAPPER_DEPTH = 4
 MAX_DISTINCT_SUBAGENTS = 100_000
 FLEET_MODELS = {
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",

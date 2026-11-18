@@ -1306,6 +1306,8 @@ class ProgressReporterTest(unittest.TestCase):
         self.assertEqual(
             progress_reporter.FLEET_MODELS,
             {
+                "gpt-6.2-astra",
+                "gpt-6.2-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-6-luna",
@@ -1654,7 +1656,7 @@ class ProgressReporterTest(unittest.TestCase):
         """
         normalized = " ".join(CODE_REVIEW_WORKFLOW_PATH.read_text().split())
 
-        # Bounded: at most two attempts, sharing the one 20m model budget, and
+        # Bounded: at most two attempts, sharing the one 30m model budget, and
         # never a retry with too little of it left to finish a review.
         self.assertIn(
             "CODEX_BUDGET_SECONDS=$(( REVIEW_BUDGET_MINUTES * 60 )) MIN_RETRY_SECONDS=300 MAX_ATTEMPTS=2",
@@ -1666,7 +1668,7 @@ class ProgressReporterTest(unittest.TestCase):
         )
 
         self.assertIn("REVIEW_BUDGET_MINUTES: ${{ inputs.review-budget-minutes }}", CODE_REVIEW_WORKFLOW_PATH.read_text())
-        self.assertIn('default: "20"', CODE_REVIEW_WORKFLOW_PATH.read_text().split("  review-budget-minutes:", 1)[1].split("  pr-number:", 1)[0])
+        self.assertIn('default: "30"', CODE_REVIEW_WORKFLOW_PATH.read_text().split("  review-budget-minutes:", 1)[1].split("  pr-number:", 1)[0])
 
         self.assertIn(
             'timeout --kill-after=60s "${budget_seconds}s" codex '
