@@ -96,7 +96,49 @@ GPT-6.1 Sol's price. Do they replace the current parent at each review level?
 - Out of scope: focused and rules workers, the triage model (a change needs a
   recalibration; see [risk-triage](#risk-triage)) and the contract
   investigator. Each is evaluated only after its level's parent switches.
-- Result: pending.
+- Screen, 2026-11-18, development set, 1 sample, Codex 0.169.1. Known defects
+  by the blind grader (`yes` only); "real" is known defects plus
+  `plausible_real`; cost is list price per review from the provider log:
+
+  | Arm | Known (of 33) | Real / findings | Invalid | Invalid P0/P1 | Cost | Median time |
+  |---|---|---|---|---|---|---|
+  | `astra6` | 15 | 26 / 33 (79%) | 2 | 2 of 10 | $10.79 | 9.8 min |
+  | `astra62` | 22 | 107 / 133 (80%) | 11 | 5 of 61 | $6.98 | 15.6 min |
+  | `sol61` | 12 | 20 / 29 (69%) | 1 | 1 of 8 | $1.39 | 9.9 min |
+  | `sol62` | 17 | 72 / 91 (79%) | 7 | 5 of 35 | $2.13 | 16.0 min |
+
+  - Both 6.2 models find more known defects and about four times as many real
+    findings at equal or higher precision. `astra62` costs 35% less than `astra6`;
+    `sol62` costs 53% more than `sol61`, mostly from child threads (it
+    delegates about twice as many requests).
+  - Times are not comparable. The models launched the day before: each 6.2
+    request took about twice as long as the 6.0 and 6.1 requests in the same
+    hour (median 16.6 s against 8.0 s for Astra).
+  - Capacity: of 47 attempts on the 6.2 models, 17 failed with `Selected
+    model is at capacity` (upstream `server_is_overloaded`, spread across
+    accounts and plans) and 2 timed out at 30 minutes; no 6.0 or 6.1 attempt
+    failed. Failed pairs were rerun on their own, up to four attempts, so
+    those reviews ran under lighter local load than their baselines. Codex
+    does not retry that error; the action retries once within
+    `review-budget-minutes`.
+  - The CLI change shows no loss: on 0.169.1 `astra6` finds 15 and `sol61` 12,
+    against 9 and 6 on 0.157.1 in [parent-model](#parent-model). The grader
+    and prompt have changed since, so this rules out a loss and measures
+    nothing more. On 0.169.1,
+    Codex warns that the repository's AGENTS.md is truncated at 32 KiB, and
+    the progress log prints `unknown` for commands; both are the same in every
+    arm.
+  - Cost: about 8,600 credits, above the 2,500 estimated. The parent-only
+    `astra6` review costs about 270 credits, not the estimate's quarter ratio.
+  - As declared, the rule rejects both 6.2 models: an absolute count of
+    invalid P0/P1 findings penalises a reviewer that raises four to six times
+    as many, and the cost bar rejects `sol62` at the model-high and normal
+    levels.
+- Owner, 2026-11-18, after the screen: more findings per review are
+  acceptable when they are real; judge a reviewer on its true positives and
+  precision, not on volume. Any amendment to the rule follows from this and is
+  recorded here before the decision run.
+- Decision run: pending.
 
 ### astra-round-cap
 
