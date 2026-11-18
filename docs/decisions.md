@@ -153,7 +153,48 @@ GPT-6.1 Sol's price. Do they replace the current parent at each review level?
 - Budget, amended by the owner on 2026-11-18: stop at 20,000 credits.
 - Decision run: every review has a 45-minute limit, the same for all arms. The
   screen's 30 minutes timed out a GPT-6.2 Astra review that GPT-6 Astra
-  finished in 26. Result: pending.
+  finished in 26.
+- Before the held-out results, the owner was asked whether to replace the
+  time bar with a count of reviews over the 20-minute production budget, and
+  whether floor-high should prefer more known defects to lower cost. No answer
+  had come when grading finished, so the amended rule applies as written.
+- Held-out result, 2026-11-18, 1 sample, Codex 0.169.1. All four arms ran at
+  once per consumer, with the rule pack pinned to one commit per consumer.
+  Known defects are graded by the blind grader (`yes` only): the location
+  matcher in `eval/score-recall.cjs` credited two findings that sit nine
+  lines from a defect they do not describe. "Real" is known defects plus
+  `plausible_real`. Cost is list price per review, including the
+  long-context rate above 272K input tokens and the failed review:
+
+  | Arm | Known (of 38) | Real / findings | Invalid | Invalid P0/P1 | Cost | Median time | Over 20 min or failed |
+  |---|---|---|---|---|---|---|---|
+  | `astra6` | 10 | 24 / 25 | 1 (4%) | 0 of 3 | $7.71 | 5.5 min | 0 of 18 |
+  | `astra62` | 16 | 83 / 87 | 3 (3%) | 0 of 13 | $7.27 | 11.5 min | 4 of 18 |
+  | `sol61` | 10 | 25 / 27 | 2 (7%) | 0 of 2 | $1.50 | 7.4 min | 4 of 18 |
+  | `sol62` | 16 | 72 / 73 | 1 (1%) | 0 of 12 | $2.33 | 14.9 min | 4 of 18 |
+
+  - Both 6.2 models find 6 more known defects than either baseline and about
+    three times as many real findings, at an equal or lower invalid rate. The
+    held-out set agrees with the screen. No arm is within 2 known defects of
+    its baseline, so no repeats ran.
+  - No capacity failures in 72 reviews. One `astra62` review reached the
+    45-minute limit and counts as a failure with no findings; `astra6`
+    finished that PR in 19 minutes.
+  - Time: a 6.2 review takes about twice as long. Each request is slower
+    (median 12.0 s against 8.0 s for Astra, 11.5 s against 8.8 s for Sol),
+    and a review makes about 1.4 times as many requests. Times run from first
+    to last request in the provider log, with 8 reviews running at once.
+  - Cost: `sol62` adds $0.83 per review over `sol61`. $0.15 of it is the
+    long-context rate (50 requests above 272K, against 20); without that rate
+    it adds $0.74.
+  - Spend: about 8,500 credits, about 17,100 in all.
+- Result:
+  1. Floor-high: both 6.2 models pass the quality, precision and cost bars
+     against `astra6` and fail the time bar (`astra62` +109%, `sol62` +171%,
+     against 20%). `astra6` stays.
+  2. Model-high and normal: `sol62` passes the quality and precision bars and
+     fails the time bar (+101%) and, by $0.03, the cost bar. `sol61` stays.
+  3. Configuration unchanged.
 
 ### astra-round-cap
 
