@@ -138,7 +138,22 @@ GPT-6.1 Sol's price. Do they replace the current parent at each review level?
   acceptable when they are real; judge a reviewer on its true positives and
   precision, not on volume. Any amendment to the rule follows from this and is
   recorded here before the decision run.
-- Decision run: pending.
+- Rule, amended by the owner on 2026-11-18 before the decision run; it
+  replaces the declared rule above. An arm within 2 known defects of its
+  baseline gets 3 paired samples.
+  1. Floor-high parent: adopt the cheaper of `sol62` and `astra62` that finds
+     at least as many known defects and at least as many real findings as
+     `astra6`, has at most 10% of its findings graded `invalid`, costs no
+     more per review at list price, and has a median review time at most 20%
+     longer.
+  2. Model-high and normal parent: adopt `sol62` if it meets the same quality
+     and time bars against `sol61` and costs at most $0.80 more per review at
+     list price.
+  3. Otherwise keep the current model for that level.
+- Budget, amended by the owner on 2026-11-18: stop at 20,000 credits.
+- Decision run: every review has a 45-minute limit, the same for all arms. The
+  screen's 30 minutes timed out a GPT-6.2 Astra review that GPT-6 Astra
+  finished in 26. Result: pending.
 
 ### astra-round-cap
 
