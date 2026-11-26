@@ -54,6 +54,104 @@ decision entry behind it.
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
 
+### importance-bar
+
+**2026-11-26.** The GPT-6.2 parents raised edge cases nobody would fix and
+were rolled back; [gpt-6-2-rollback](#gpt-6-2-rollback) has the production
+evidence. The [gpt-6-2-models](#gpt-6-2-models) evaluation graded whether
+findings were real, not whether the author would act on them.
+
+- The importance prompt, at commit 3041f6f on branch `review/importance-bar`
+  (not merged): Part 1 of `engine/prompt/core.md` (importance first, edge
+  cases left out, honest likelihood, at most three P2 findings, follow-up
+  reviews judge the change), and the **Worth
+  raising** condition and likelihood cap in `examples/rules.md`. The run keeps
+  the consumers' rule packs, so it tests the core prompt only.
+- Question: does the importance prompt cut findings that are not worth raising
+  without losing known defects? With that prompt in place, should any level
+  move back to a GPT-6.2 parent?
+- Set: the held-out set from [gpt-6-2-models](#gpt-6-2-models) (18 PRs, 38
+  known defects), parent only, 1 sample, with the same heads, rule packs and
+  Codex 0.169.1.
+- Arms: six new runs, all at the same time, parent only as in
+  [gpt-6-2-models](#gpt-6-2-models). The Astra arms run at the floor-high
+  setting and the Sol arms at `high`. The earlier run outputs no longer
+  exist, so no arm is reused.
+  - current prompt: `astra6` (`gpt-6-astra`), `sol61` (`gpt-6.1-sol`);
+  - importance prompt: `astra6-imp`, `sol61-imp`, `astra62-imp`
+    (`gpt-6.2-astra`), `sol62-imp` (`gpt-6.2-sol`).
+- Grading: blind, cross-family Claude graders. The findings of all six arms
+  are pooled per PR and graded on two axes:
+  - validity, as before: known defect `yes` or `partial`, `plausible_real`,
+    `invalid`, `unclear`;
+  - importance: `must_fix` (the author should fix it before merge),
+    `worth_raising` (the author would likely fix it, but it should not
+    block), `not_worth` (an edge case a senior engineer would not raise).
+- Measures per arm:
+  - known defects found (of 38; `yes` only, as before);
+  - worth findings per review: valid findings (known `yes` or `partial`, or
+    `plausible_real`) graded `must_fix` or `worth_raising`;
+  - noise per review: findings graded `not_worth` or `invalid`, each counted
+    once;
+  - simulated false-block rate: the share of reviews that the gate in
+    [edge-case-gate](#edge-case-gate) would block although no blocking
+    finding is `must_fix`;
+  - median time and list-price cost per review.
+- Rule 1, adopt the importance prompt, if for both current models
+  (`astra6-imp` against `astra6`, `sol61-imp` against `sol61`):
+  - known defects drop by at most 2;
+  - noise per review falls by at least half;
+  - worth findings per review fall by at most 20%.
+- Rule 2, move a level back to GPT-6.2, only with the importance prompt
+  adopted. Floor-high compares `astra62-imp` with `astra6-imp`; model-high and
+  normal compare `sol62-imp` with `sol61-imp`. A level moves only if its
+  GPT-6.2 arm:
+  - finds at least 3 more known defects;
+  - has noise per review at most 1.25 times as high;
+  - has a simulated false-block rate at most 5 points higher;
+  - has a median time at most twice as long.
+- Cost ceiling: 15,000 credits for the six runs. Stop at the ceiling and
+  record what ran.
+- Result, 2026-11-27, 1 sample, Codex 0.169.1, the rule pack pinned to one
+  commit per consumer. Known defects are graded by the blind graders (`yes`
+  only). A review that reached the 45-minute limit counts as a review with no
+  findings. Cost is list price per review, children included. The reviews ran
+  several at a time on one shared machine, so their times are not comparable
+  with earlier entries and are left out:
+
+  | Arm | Known (of 38) | Findings per review | Worth per review | Noise per review | Simulated block | Simulated false block | Timed out | Cost |
+  |---|---|---|---|---|---|---|---|---|
+  | `astra6` | 12 | 1.50 | 1.39 | 0.11 | 11% | 0% | 0 of 18 | $7.17 |
+  | `astra6-imp` | 8 | 0.94 | 0.83 | 0.11 | 11% | 0% | 1 of 18 | $6.20 |
+  | `sol61` | 9 | 1.39 | 1.11 | 0.28 | 6% | 0% | 0 of 18 | $1.15 |
+  | `sol61-imp` | 8 | 0.89 | 0.89 | 0.00 | 6% | 0% | 1 of 18 | $1.38 |
+  | `astra62-imp` | 16 | 2.94 | 2.06 | 0.89 | 28% | 6% | 2 of 18 | $5.48 |
+  | `sol62-imp` | 16 | 2.89 | 2.06 | 0.83 | 17% | 6% | 1 of 18 | $1.60 |
+
+  - Rule 1 fails. `astra6-imp` against `astra6`: 4 fewer known defects (the
+    limit is 2), noise unchanged (it had to halve) and worth findings down
+    40% (the limit is 20%). `sol61-imp` against `sol61` passes: 1 fewer known
+    defect, noise down to 0 and worth findings down 20%. The rule needs both.
+  - Rule 2 does not apply.
+  - Spend: 10,342 credits of the 15,000 ceiling.
+- Decision, by the declared rule: the importance prompt is not adopted, and
+  the configuration in [gpt-6-2-rollback](#gpt-6-2-rollback) stays.
+- Observations, not part of the rule:
+  - The current parents already raised little noise (0.11 and 0.28 per
+    review). On GPT-6 Astra the prompt removed real findings, not noise.
+  - With the importance prompt, both GPT-6.2 parents found 16 known defects,
+    against 12 and 9 for the current parents on the current prompt, and 2.06
+    worth findings per review against 1.39 and 1.11. Their noise was about
+    0.9 per review. The gate from [edge-case-gate](#edge-case-gate) would have
+    blocked 28% and 17% of their reviews, one of them falsely each.
+  - In [gpt-6-2-models](#gpt-6-2-models), GPT-6.2 Astra raised 87 findings
+    on the same 18 PRs (4.8 per review) with the current prompt; here it
+    raised 2.94. That comparison crosses runs.
+- Reopen when a week of production under [edge-case-gate](#edge-case-gate),
+  [converge-after-block](#converge-after-block) and
+  [hosted-converge](#hosted-converge) shows the block rate and reviews per
+  PR, or when the owner asks.
+
 ### hosted-converge
 
 **2026-11-26.** Owner request, without an evaluation run. Can hosted reviews
