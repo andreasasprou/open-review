@@ -43,6 +43,7 @@ structured output, not the model's verdict word.
 | `rules-worker` | `true` | Advisory check of the changed production files (tests, docs and generated files excluded) against the rule pack |
 | `review-budget-minutes` | `30` | Total hosted Codex budget across attempts (1–120 minutes) |
 | `pr-number` | empty | PR number for `workflow_dispatch` |
+| `since-sha` | empty | For `workflow_dispatch`: review only the changes since this full commit SHA, as `/code-review --since` does; empty reviews the whole PR |
 
 The action has one output, `rules_changed`. It is `true` when the PR edits the
 rule pack. In that case the review used the default-branch version and says so.
