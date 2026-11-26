@@ -155,7 +155,7 @@ runs:
     # ── PR Context ───────────────────────────────────────────
     - name: Get PR details
       id: pr
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         PR_NUMBER_INPUT: ${{ inputs.pr-number }}
         SINCE_SHA_INPUT: ${{ inputs.since-sha }}
@@ -301,7 +301,7 @@ runs:
 
     - name: React to command
       if: github.event_name == 'issue_comment' && steps.skip.outputs.skip != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         github-token: ${{ github.token }}
         script: |
@@ -316,7 +316,7 @@ runs:
     - name: Create pending check
       id: check
       if: steps.skip.outputs.skip != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         CHECK_NAME: ${{ inputs.check-name }}
       with:
@@ -338,7 +338,7 @@ runs:
     # ── Code Checkout ────────────────────────────────────────
     - name: Checkout PR
       if: steps.skip.outputs.skip != 'true'
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         ref: ${{ steps.pr.outputs.head_sha }}
         # Review needs recent head ancestry; the next step fetches the exact
@@ -383,7 +383,7 @@ runs:
     - name: Load previous state
       id: state
       if: steps.skip.outputs.skip != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         github-token: ${{ github.token }}
         script: |
@@ -425,7 +425,7 @@ runs:
 
     - name: Collect review discussion context
       if: steps.skip.outputs.skip != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         DECISION_OWNERS: ${{ inputs.decision-owners }}
         FRAMEWORK_DECISION_OWNERS: ${{ inputs.framework-decision-owners }}
@@ -729,7 +729,7 @@ runs:
     # ── Codex Setup & Execution ──────────────────────────────
     - name: Setup Node.js
       if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode != 'skip'
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: "22"
 
@@ -824,7 +824,7 @@ runs:
     - name: Restore prior review session
       id: resume
       if: steps.skip.outputs.skip != 'true' && steps.scope.outputs.review_mode == 'incremental' && inputs.session-resume == 'true' && inputs.provider-session-resume == 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         BASE_SHA: ${{ steps.pr.outputs.base_sha }}
@@ -1444,7 +1444,7 @@ runs:
       # Diagnostics only: an artifact-service failure must not discard a
       # completed review by failing the action.
       continue-on-error: true
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: code-review-transcripts-${{ github.run_attempt }}
         path: |
@@ -1466,7 +1466,7 @@ runs:
     # ── Post-Processing ──────────────────────────────────────
     - name: Post results
       if: always() && steps.pr.outputs.number
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         CHECK_ID: ${{ steps.check.outputs.check_id }}
         SHOULD_SKIP: ${{ steps.skip.outputs.skip }}
