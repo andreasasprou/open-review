@@ -46,9 +46,9 @@ inputs:
       Codex model for the parent reviewer. "auto" sets the review level
       (engine/risk-triage.cjs): a PR that changes a stored-data, security or
       infrastructure path outside tests and Markdown, or a review, merge-gate,
-      prompt, rule-pack or agent-instruction path, gets gpt-6.2-astra with focused
+      prompt, rule-pack or agent-instruction path, gets gpt-6-astra with focused
       workers; otherwise a GPT-6.1 Sol triage call through provider-base-url
-      picks gpt-6.2-sol at high without focused workers, or one gpt-6.2-sol
+      picks gpt-6.1-sol at high without focused workers, or one gpt-6.1-sol
       medium pass without child threads, focused or rules workers. A model name always uses
       that model with the configured workers and effort.
     default: auto

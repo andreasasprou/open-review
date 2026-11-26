@@ -24,7 +24,7 @@ decision entry behind it.
 
 | Setting | Value | Decision |
 | --- | --- | --- |
-| `parent-model` | `auto`: review level (floor-high `gpt-6.2-astra`, locally for at most 2 settled rounds and then `gpt-6.2-sol` at `high`; model-high `gpt-6.2-sol` at `high`; normal `gpt-6.2-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap), [gpt-6-2-models](#gpt-6-2-models) |
+| `parent-model` | `auto`: review level (floor-high `gpt-6-astra`, locally for at most 2 settled rounds and then `gpt-6.1-sol` at `high`; model-high `gpt-6.1-sol` at `high`; normal `gpt-6.1-sol` at `medium`, no child threads) | [risk-triage](#risk-triage), [astra-round-cap](#astra-round-cap), [gpt-6-2-rollback](#gpt-6-2-rollback) |
 | Review-level triage | `gpt-6.1-sol` at `medium`, prompt `risk-triage-v2`; any failure is model-high | [risk-triage](#risk-triage) |
 | `parent-reasoning-effort` | `high` | [parent-model](#parent-model), [parent-model-risk-gated](#parent-model-risk-gated) |
 | Child threads open at once | `2` | [child-thread-cap](#child-thread-cap) |
@@ -52,6 +52,44 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### gpt-6-2-rollback
+
+**2026-11-26.** Owner decision after a week of production use. Do the GPT-6.2
+parents from [gpt-6-2-models](#gpt-6-2-models) stay?
+
+- Production evidence, three consumers pooled, two weeks before the switch
+  against the week after it:
+
+  | Measure | Before | After |
+  |---|---|---|
+  | Findings per review | 0.27 | 1.67 |
+  | Reviews that block the merge | 6% | 21% |
+  | Reviews per PR | 2.65 | 4.10 |
+  | Reviews that were a full re-review after a block | 4% | 13% |
+
+  - On the most affected consumer, reviews that block the merge rose from 12%
+    to 61%. Blocking findings that need several conditions to line up, with
+    low or unknown likelihood, rose from 37% to 65% of its blocking findings.
+  - Engineers reported edge-case findings that block merges, and new findings
+    on every push.
+- Owner decision, 2026-11-26: roll the parents back now. The
+  [gpt-6-2-models](#gpt-6-2-models) evaluation graded whether findings were
+  real, not whether they mattered.
+  - Floor-high: `gpt-6-astra`; locally, after 2 settled rounds, `gpt-6.1-sol`
+    at `high` ([astra-round-cap](#astra-round-cap)).
+  - Model-high: `gpt-6.1-sol` at `high`.
+  - Normal: `gpt-6.1-sol` at `medium`.
+- Kept from [gpt-6-2-models](#gpt-6-2-models): Codex 0.169.1,
+  `review-budget-minutes` 30 and the local limits of 30 minutes for a full
+  review and 15 for an incremental one. The older models are faster, so the
+  higher limits are harmless. The progress reporter still recognises the 6.2
+  names, for a consumer that sets one as `parent-model`.
+- Triage, workers, children, the contract investigator, prompts, the merge
+  gate and review scope are unchanged.
+- Reopen when an evaluation that grades importance (would the author fix this
+  before merging?) shows a 6.2 model ahead; see
+  [importance-bar](#importance-bar).
 
 ### gpt-6-2-models
 
@@ -210,6 +248,7 @@ GPT-6.1 Sol's price. Do they replace the current parent at each review level?
     `medium`.
 - Reopen when reviews at the new levels time out more often than before the
   switch, or when a cheaper model finds as many known defects.
+- Rolled back on 2026-11-26; see [gpt-6-2-rollback](#gpt-6-2-rollback).
 
 ### astra-round-cap
 

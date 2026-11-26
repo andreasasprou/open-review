@@ -86,17 +86,17 @@ test("the review level asks the triage model only when the paths do not decide",
   const small = commit({ "src/a.ts": lines("a", 8) });
   const tiny = await level(small, stub(answer("normal")));
   assert.deepEqual([tiny.level, tiny.parentModel, tiny.reasoning, tiny.workers, tiny.rulesWorker, tiny.helpers],
-    ["normal", "gpt-6.2-sol", "medium", 0, false, false]);
+    ["normal", "gpt-6.1-sol", "medium", 0, false, false]);
   assert.equal(calls.length, 1);
 
   const large = commit({ "src/b.ts": lines("b", 80) });
-  // Only the path floor gets GPT-6.2 Astra; a model-high PR gets GPT-6.2 Sol at high (decision gpt-6-2-models).
+  // Only the path floor gets GPT-6 Astra; a model-high PR gets GPT-6.1 Sol at high (decision astra-round-cap).
   const high = await level(large, stub(answer("high")));
   assert.deepEqual([high.level, high.parentModel, high.reasoning, high.workers, high.rulesWorker, high.helpers, high.roundCap, high.triage.risk],
-    ["model-high", "gpt-6.2-sol", "high", 0, true, true, null, "high"]);
+    ["model-high", "gpt-6.1-sol", "high", 0, true, true, null, "high"]);
   const normal = await level(large, stub(answer("normal")));
   assert.deepEqual([normal.level, normal.parentModel, normal.reasoning, normal.workers, normal.rulesWorker, normal.helpers],
-    ["normal", "gpt-6.2-sol", "medium", 0, false, false]);
+    ["normal", "gpt-6.1-sol", "medium", 0, false, false]);
   assert.equal((await level(large, stub(answer("docs")))).level, "normal");
   assert.deepEqual([(await level(large, stub(null, "timeout"))).level, (await level(large, stub(null, "timeout"))).triage.error],
     ["model-high", "timeout"]);
@@ -107,7 +107,7 @@ test("the review level asks the triage model only when the paths do not decide",
   const sensitive = commit({ "db/migrations/001_add.sql": "alter table t add c int;\n" });
   const floor = await level(sensitive, stub(answer("normal")));
   assert.deepEqual([floor.level, floor.parentModel, floor.workers, floor.floorPaths, floor.triage, floor.roundCap],
-    ["floor-high", "gpt-6.2-astra", 2, ["db/migrations/001_add.sql"], null, { rounds: 2, parentModel: "gpt-6.2-sol", reasoning: "high" }]);
+    ["floor-high", "gpt-6-astra", 2, ["db/migrations/001_add.sql"], null, { rounds: 2, parentModel: "gpt-6.1-sol", reasoning: "high" }]);
   assert.equal(calls.length, before, "the model never sees a floor-high PR");
 });
 
