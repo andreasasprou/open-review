@@ -1736,7 +1736,7 @@ runs:
               eventName: context.eventName,
               headSha: process.env.HEAD_SHA,
               ledgerTarget, checkIdentity, revalidateLedgerAuthority: revalidateAuthority,
-              ledgerChangedPaths: changedSinceProjection({ priorProjection: ledgerEvidence.priorProjection, target: ledgerTarget }),
+              ledgerPaths: changedSinceProjection({ priorProjection: ledgerEvidence.priorProjection, target: ledgerTarget }),
               previousState,
               outputDir: '.codex-ci',
               metadata: {

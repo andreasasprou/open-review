@@ -1925,20 +1925,24 @@ function renderFocusedWorkerSection(workers, ledgerFindings, before = "", after 
 	return "";
 }
 
-// Files changed between the prior projection's head and `target`'s head, in the
-// review checkout at `cwd`. A deferral whose cited file changed needs a new
-// owner decision (decision converge-after-block). When the prior head is not
-// in the checkout, every file of the PR counts as changed.
+// Files changed between the prior projection's head and `target`'s head, and
+// the files at that head to resolve cited paths, in the review checkout at
+// `cwd`. A deferral whose cited file changed needs a new owner decision
+// (decision converge-after-block). When the prior head is not in the
+// checkout, every file of the PR counts as changed.
 function changedSinceProjection({ priorProjection, target, cwd = process.cwd() }) {
 	const priorHead = priorProjection?.review_target?.head_sha;
-	if (!priorHead || priorHead === target.head_sha) return [];
-	const changed = (from) => execFileSync("git", ["-C", cwd, "diff", "--name-only", "-z", "--no-renames", from, target.head_sha],
-		{ encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).split("\0").filter(Boolean);
+	if (!priorHead || priorHead === target.head_sha) return { changedPaths: [], knownPaths: [] };
+	const git = (...args) => execFileSync("git", ["-C", cwd, ...args],
+		{ encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).split("\0").filter(Boolean);
+	const changed = (from) => git("diff", "--name-only", "-z", "--no-renames", from, target.head_sha);
+	let changedPaths;
 	try {
-		return changed(priorHead);
+		changedPaths = changed(priorHead);
 	} catch {
-		return changed(target.merge_base_sha);
+		changedPaths = changed(target.merge_base_sha);
 	}
+	return { changedPaths, knownPaths: git("ls-tree", "-r", "--name-only", "-z", target.head_sha) };
 }
 
 async function postResults({ recorder,
@@ -1956,7 +1960,7 @@ async function postResults({ recorder,
 	checkIdentity = null,
 	revalidateLedgerAuthority = async () => {},
 	eventName = "pull_request_target",
-	ledgerChangedPaths = [],
+	ledgerPaths = { changedPaths: [], knownPaths: [] },
 }) {
 	requireCaughtErrorDiagnosticRecorder(recorder);
 	const log = (msg) => console.log(`[codex-review] ${msg}`);
@@ -1972,7 +1976,7 @@ async function postResults({ recorder,
 			priorProjections: ledgerEvidence.priorProjections || [],
 			humanDecisions: ledgerEvidence.humanDecisions,
 			evidenceChallenges: ledgerEvidence.evidenceChallenges,
-			changedPaths: ledgerChangedPaths });
+			...ledgerPaths });
 		for (const warning of ledgerCandidate.warnings) console.warn(`[codex-review] Ledger: ${warning}`);
 		const legacyIssues = ledgerCandidate.open_findings.map((finding) => ({
 			id: finding.stable_id, severity: finding.severity, reachability: finding.reachability,

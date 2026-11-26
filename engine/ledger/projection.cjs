@@ -173,26 +173,58 @@ function isFollowUpRiskEligible(finding) {
   );
 }
 
-// Whether a finding's location names one of `files` as a whole repository
-// path: not as the tail of a longer path (`src/index.ts` is not `index.ts`) nor
-// as the head of one (`a.tsx`, `a.ts.bak`). A leading `./` is allowed.
-function citesChangedFile(where, files) {
-  return files.some((file) => new RegExp(
-    `(?<=^|[^\\w./-]|(?:^|[^\\w./-])\\./)${file.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![\\w/-]|\\.\\w)`, "u",
-  ).test(where));
+// The repository files a finding's location (`where`) cites, resolved against
+// `knownPaths` (decision converge-after-block). Each run of path characters is a
+// candidate; a trailing `:line` or `:line:col` ends it. Leading prose words are
+// dropped until the rest resolves, after stripping a leading `./`. A relative
+// path matches only an equal known path; an absolute one the longest known path
+// it ends with on `/` boundaries. `unresolved` is true when a path-like
+// candidate resolves to nothing, or when nothing in the location resolves.
+function citedFiles(where, knownPaths) {
+  const resolve = (candidate) => {
+    const path = candidate.replace(/^[(\[]+/u, "").replace(/[)\].,]+$/u, "").replace(/^\.\//u, "");
+    if (!path.startsWith("/")) return knownPaths.has(path) ? path : null;
+    const parts = path.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      const suffix = parts.slice(index).join("/");
+      if (knownPaths.has(suffix)) return suffix;
+    }
+    return null;
+  };
+  const looksLikePath = (word) => /\/|\.[\p{L}\p{N}]+[)\].,]*$/u.test(word);
+  const files = [];
+  let unresolved = false;
+  for (const [run] of String(where).matchAll(/[\p{L}\p{M}\p{N}_.\-/\[\]@+()~ ]+/gu)) {
+    const words = run.trim().split(/ +/u);
+    let file = null;
+    for (let index = 0; index < words.length && file === null; index += 1)
+      file = resolve(words.slice(index).join(" "));
+    if (file !== null) files.push(file);
+    else if (words.some(looksLikePath)) unresolved = true;
+  }
+  return { files, unresolved: unresolved || files.length === 0 };
+}
+
+// Whether a finding's location cites one of `changed`. A location that cannot
+// be resolved counts as citing one, so it fails safe: it can still block, and a
+// deferral reopens. With nothing changed, nothing is cited.
+function citesChangedFile(where, changed, knownPaths = []) {
+  if (changed.length === 0) return false;
+  const { files, unresolved } = citedFiles(where, new Set([...knownPaths, ...changed]));
+  return unresolved || files.some((file) => changed.includes(file));
 }
 
 // A deferral stays in force on later heads (decision converge-after-block)
 // unless the change since the prior review touches a file its finding cites,
 // or its severity or reachability rises. A re-rated likelihood, recoverability
 // or attribution, or reworded consequences, on unchanged code do not reopen it.
-function deferredFollowUpReopened({ currentFinding, priorFinding, changedPaths }) {
+function deferredFollowUpReopened({ currentFinding, priorFinding, changedPaths, knownPaths }) {
   const riskExpanded = Object.entries(DEFERRED_FOLLOW_UP_RISK_ORDER).some(
     ([field, order]) =>
       Object.hasOwn(priorFinding, field) &&
       order[currentFinding[field]] > order[priorFinding[field]],
   );
-  return riskExpanded || citesChangedFile(priorFinding.where, changedPaths);
+  return riskExpanded || citesChangedFile(priorFinding.where, changedPaths, knownPaths);
 }
 
 function challengeRef(challenge) {
@@ -1155,6 +1187,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           reconciliationUncertain: unreconciledKnownIds.has(priorFinding.stable_id),
           // A decision made on this head postdates every change since the prior projection.
           changedPaths: decision.decision_head_sha === reviewTarget.head_sha ? [] : evidence?.changed_paths || [],
+          knownPaths: evidence?.known_paths || [],
         });
       else if (!missingEvaluation && (
         carried.approved_invariant !== priorFinding.approved_invariant ||
@@ -1372,6 +1405,7 @@ function validateDecisionTransition({
   warnings,
   reconciliationUncertain = false,
   changedPaths = [],
+  knownPaths = [],
 }) {
   const ref = decisionRef(decision);
   if (finding.decision_ref !== ref)
@@ -1401,7 +1435,7 @@ function validateDecisionTransition({
     // until a new one; the old approval cannot reapply in a subsequent review.
     if (reconciliationUncertain ||
       (priorFinding.disposition === "AUTHOR_DECISION" && priorFinding.decision_ref === ref) ||
-      deferredFollowUpReopened({ currentFinding: evaluation.finding, priorFinding, changedPaths })) {
+      deferredFollowUpReopened({ currentFinding: evaluation.finding, priorFinding, changedPaths, knownPaths })) {
       finding.disposition = "AUTHOR_DECISION";
       finding.autonomous_eligibility = "NO";
       finding.follow_up = null;
@@ -2230,8 +2264,10 @@ function buildMechanicalCandidate({ priorProjection, target, reason }) {
 
 // Shared action/local-settlement adapters. Model output omits fields owned by
 // the engine; bind those fields before entering the moved v4 state machine.
-// `changedPaths`: files changed since the prior projection's head.
-function foldReview({ output, target, priorProjection = null, humanDecisions = [], evidenceChallenges = [], priorProjections = [], changedPaths = [] }) {
+// `changedPaths`: files changed since the prior projection's head; `knownPaths`:
+// the files at this head, to resolve the paths findings cite.
+function foldReview({ output, target, priorProjection = null, humanDecisions = [], evidenceChallenges = [], priorProjections = [],
+  changedPaths = [], knownPaths = [] }) {
   const priorById = new Map((prepareReviewPriorProjection({ priorProjection, priorProjections, humanDecisions })?.open_findings || [])
     .map((finding) => [finding.stable_id, finding]));
   const bindFinding = (finding, prior = null) => ({
@@ -2256,7 +2292,7 @@ function foldReview({ output, target, priorProjection = null, humanDecisions = [
     target,
     priorProjection,
     evidence: { human_decisions: humanDecisions, evidence_challenges: evidenceChallenges, prior_projections: priorProjections,
-      changed_paths: changedPaths },
+      changed_paths: changedPaths, known_paths: knownPaths },
   });
 }
 

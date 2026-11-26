@@ -1368,12 +1368,18 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
   # Compare against the tip observed at start: also its base branch and merge base.
   verify_review_target_unchanged || exit 1
 
-  # After a BLOCK, only new findings in the reviewed files can block.
+  # After a BLOCK, only new findings in the reviewed files can block; the
+  # head's files resolve the paths findings cite.
+  SCOPE_GATE_FILES=()
+  if [ -n "$SCOPE_LEDGER" ]; then
+    git -C "$ROOT" ls-tree -r --name-only -z "$HEAD_SHA" > "$RUN_DIR/head-files.nul"
+    SCOPE_GATE_FILES=("$WORKTREE/.codex-ci/changed-files.txt" "$RUN_DIR/head-files.nul")
+  fi
   node "$ENGINE_DIR/local-settlement.cjs" \
     "$OUTPUT_JSON" \
     "$WORKTREE/.codex-ci/pr-diff-full.patch" \
     "$WORKTREE/.codex-ci/prior-projection.json" \
-    ${SCOPE_LEDGER:+"$WORKTREE/.codex-ci/changed-files.txt"} \
+    ${SCOPE_GATE_FILES[@]+"${SCOPE_GATE_FILES[@]}"} \
     > "$SETTLEMENT_JSON"
   MERGE_GATE_SUMMARY="$(jq -r '.mergeGateSummary' "$SETTLEMENT_JSON")"
   STATUS_STATE="$(jq -r '.statusState' "$SETTLEMENT_JSON")"

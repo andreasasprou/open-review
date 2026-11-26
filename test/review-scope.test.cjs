@@ -444,19 +444,29 @@ test("after a block, a new finding outside the changed files is advisory; the pr
 	const outside = ledgerFinding({ stable_id: "OR-2", where: "src/c.ts:12" });
 	const inside = ledgerFinding({ stable_id: "OR-3", where: "`src/b.ts:7`" });
 	const resolved = { stable_id: "OR-1", result: "resolved_on_target", evidence: "Fixed.", finding: prior };
-	const advisory = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"],
+	const knownFiles = ["src/a.ts", "src/b.ts", "src/c.ts", "src/index.ts", "index.ts", "src/my file.ts", "file.ts",
+		"src/naïve.ts", "ve.ts", "src/request.ts"];
+	const advisory = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"], knownFiles,
 		output: output(head, [outside], [resolved]) });
 	assert.equal(advisory.mergeGate.status, "PASS");
 	assert.deepEqual(advisory.ledger.open_findings, []);
 	assert.match(advisory.mergeGateSummary, /^Merge gate: \*\*PASS\*\*.*\nAdvisory, outside the changed files: OR-2\nModel verdict/);
-	const gated = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"],
+	const gated = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"], knownFiles,
 		output: output(head, [outside, inside], [{ stable_id: "OR-1", result: "still_open", finding: prior }]) });
 	assert.deepEqual(gated.mergeGate.blockingIssueIds, ["OR-1", "OR-3"]);
-	// Review finding 5: a changed root `index.ts` is not the cited `src/index.ts`.
-	const nested = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["index.ts"],
-		output: output(head, [ledgerFinding({ stable_id: "OR-4", where: "src/index.ts:42" })], [resolved]) });
-	assert.equal(nested.mergeGate.status, "PASS");
-	assert.match(nested.mergeGateSummary, /Advisory, outside the changed files: OR-4/);
+	// Review finding 5 and the convergence check: a cited path resolves to one whole repository file.
+	const gate = (changed, where) => buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: changed,
+		knownFiles, output: output(head, [ledgerFinding({ stable_id: "OR-4", where })], [resolved]) }).mergeGate.status;
+	assert.equal(gate(["index.ts"], "src/index.ts:42"), "PASS");
+	assert.equal(gate(["file.ts"], "src/my file.ts:42"), "PASS");
+	assert.equal(gate(["src/my file.ts"], "src/my file.ts:42"), "BLOCK");
+	assert.equal(gate(["ve.ts"], "src/naïve.ts:42"), "PASS");
+	assert.equal(gate(["src/request.ts"], "/workspace/src/request.ts:10"), "BLOCK");
+	assert.equal(gate(["index.ts"], "/workspace/src/index.ts:3"), "PASS");
+	assert.equal(gate(["src/index.ts"], "/workspace/src/index.ts:3"), "BLOCK");
+	// A location that resolves to no file fails safe: it can still block.
+	assert.equal(gate(["src/b.ts"], "/workspace/src/missing.ts:3"), "BLOCK");
+	assert.equal(gate(["src/b.ts"], "Location unavailable; inspect review evidence."), "BLOCK");
 });
 
 test("the local runner settles a carried or skipped head without a model, under the exact-head marker", (t) => {

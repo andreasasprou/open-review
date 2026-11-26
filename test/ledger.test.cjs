@@ -901,9 +901,13 @@ test("a deferral survives an unrelated push and reopens when its cited code chan
 		summaryCommentId: 100, humanDecisions: [defer] });
 	assert.equal(deferredProjection.conclusion, "pass");
 	// The model rewords and re-rates the finding on the pushed head, as it does on every review.
-	const push = (changedPaths) => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
-		result: "still_open", finding: modelFinding({ likelihood: "high", likely_consequence: "Requests fail on retry." }) }] },
-		target: target(B), priorProjection: deferredProjection, humanDecisions: [defer], changedPaths });
+	const push = (changedPaths, where = "src/request.ts:10") => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+		stable_id: "OR-1", result: "still_open",
+		finding: modelFinding({ likelihood: "high", likely_consequence: "Requests fail on retry." }) }] },
+		target: target(B), priorProjection: { ...deferredProjection, open_findings: deferredProjection.open_findings.map((finding) =>
+			({ ...finding, where })) }, humanDecisions: [defer], changedPaths,
+		knownPaths: ["src/request.ts", "request.ts", "src/other.ts", "src/my file.ts", "file.ts", "src/naïve.ts", "ve.ts",
+			"src/index.ts", "index.ts"] });
 	const unrelated = push(["src/other.ts", "docs/guide.md"]);
 	assert.equal(unrelated.open_findings[0].disposition, "FOLLOW_UP");
 	assert.equal(settlement(unrelated.open_findings).conclusion, "pass");
@@ -912,8 +916,16 @@ test("a deferral survives an unrelated push and reopens when its cited code chan
 	assert.equal(touched.open_findings[0].decision_ref, "github-comment:50");
 	assert.match(touched.warnings.join("\n"), /OR-1: deferral reopened/);
 	assert.equal(settlement(touched.open_findings).conclusion, "block");
-	// Review finding 5: a changed root `request.ts` is not the cited `src/request.ts`.
+	// Review finding 5 and the convergence check: cited paths resolve to whole repository files.
 	assert.equal(push(["request.ts"]).open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["file.ts"], "src/my file.ts:42").open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["src/my file.ts"], "src/my file.ts:42").open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(push(["ve.ts"], "src/naïve.ts:42").open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["src/request.ts"], "/workspace/src/request.ts:10").open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(push(["index.ts"], "/workspace/src/index.ts:3").open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["src/index.ts"], "/workspace/src/index.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+	// A location that resolves to no file fails safe: the deferral reopens.
+	assert.equal(push(["src/other.ts"], "/workspace/src/missing.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
 });
 
 // Review finding 4: a deferral made on the current head postdates the change since the prior projection.
@@ -954,10 +966,11 @@ test("the publisher's changed paths run from the prior projection's head, or the
 	const head = commit("b.ts");
 	const at = (priorHead) => changedSinceProjection({ cwd, target: { head_sha: head, merge_base_sha: mergeBase },
 		priorProjection: priorHead && { review_target: { head_sha: priorHead } } });
-	assert.deepEqual(at(null), []);
-	assert.deepEqual(at(head), []);
-	assert.deepEqual(at(reviewed), ["b.ts"]);
-	assert.deepEqual(at("f".repeat(40)), ["a.ts", "b.ts"]);
+	const unchanged = { changedPaths: [], knownPaths: [] };
+	assert.deepEqual(at(null), unchanged);
+	assert.deepEqual(at(head), unchanged);
+	assert.deepEqual(at(reviewed), { changedPaths: ["b.ts"], knownPaths: ["a.ts", "b.ts", "base.ts"] });
+	assert.deepEqual(at("f".repeat(40)).changedPaths, ["a.ts", "b.ts"]);
 });
 
 test("a later design decision revokes a deferred P1 even without an evaluation", () => {

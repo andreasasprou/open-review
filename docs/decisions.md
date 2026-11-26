@@ -73,9 +73,13 @@ each push. Can the reviews after a block converge?
   blocked head. A push to a descendant head on the same base gets an
   incremental review of the files whose blobs changed, which re-evaluates the
   prior open findings. In that review, a new finding whose location (`where`)
-  names none of the changed files as a whole repository path is advisory: the
-  settlement lists it and leaves it out of the ledger, so a later push does
-  not re-evaluate it into a block. Closed findings, and the IDs they reserve,
+  cites none of the changed files is advisory: the settlement lists it and
+  leaves it out of the ledger, so a later push does not re-evaluate it into a
+  block. Each cited path resolves to one file at the reviewed head, after a
+  trailing `:line` or `:line:col` and a leading `./` are stripped: a relative
+  path only by equality, an absolute one to the longest file path it ends with.
+  A location that does not resolve counts as citing a changed file, so it can
+  still block. Closed findings, and the IDs they reserve,
   carry from one local round to the next.
 - The open findings come from the blocked run's saved ledger in the same
   checkout (`.agent-data/codex-review-local`), matched by the settlement
@@ -101,7 +105,8 @@ each push. Can the reviews after a block converge?
   reopened the deferral, and a reopened deferral never re-applies.
 - Decision, deferrals: a deferral stays in force on later heads unless the
   files changed since the prior projection's head include a file its finding
-  cites (`where`), or its severity or reachability rises. A re-rated
+  cites (`where`, resolved as above; a location that does not resolve reopens
+  it when anything changed), or its severity or reachability rises. A re-rated
   likelihood, recoverability, attribution or proof strength, reworded
   consequences, or a new lifecycle plane on unchanged code do not reopen it.
   The hosted publisher computes those files with git; when the prior head is
