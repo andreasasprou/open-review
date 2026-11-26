@@ -264,7 +264,8 @@ function main(recorder, argv) {
 		latest, settlementsVerified, fullReview: fullReview === "true",
 		protectedFiles: rulesPath ? [rulesPath] : [],
 		ledger: latest?.gate === "BLOCK" ? settledLedger({ root, settlement: latest }) : null });
-	process.stdout.write(`${JSON.stringify({ ...scope, modelRounds: modelRounds(settlements, permissionOf) })}\n`);
+	// The latest trusted settlement's comment: only its local session may be resumed.
+	process.stdout.write(`${JSON.stringify({ ...scope, latestSettlement: latest?.url ?? "", modelRounds: modelRounds(settlements, permissionOf) })}\n`);
 }
 
 if (require.main === module) runReviewCli((recorder) => main(recorder, process.argv.slice(2)));

@@ -912,6 +912,25 @@ test("a deferral survives an unrelated push and reopens when its cited code chan
 	assert.equal(touched.open_findings[0].decision_ref, "github-comment:50");
 	assert.match(touched.warnings.join("\n"), /OR-1: deferral reopened/);
 	assert.equal(settlement(touched.open_findings).conclusion, "block");
+	// Review finding 5: a changed root `request.ts` is not the cited `src/request.ts`.
+	assert.equal(push(["request.ts"]).open_findings[0].disposition, "FOLLOW_UP");
+});
+
+// Review finding 4: a deferral made on the current head postdates the change since the prior projection.
+test("a fresh deferral on the current head survives the change that preceded it and later reruns", () => {
+	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: B,
+		comment_id: 50, actor_login: "sample-maintainer" };
+	const evaluation = { stable_id: "OR-1", result: "still_open", finding: modelFinding() };
+	const fresh = foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation] }, target: target(B),
+		priorProjection: published(), humanDecisions: [defer], changedPaths: ["src/request.ts"] });
+	assert.equal(fresh.open_findings[0].disposition, "FOLLOW_UP");
+	const freshProjection = buildProjection({ candidate: fresh, target: target(B), checkIdentity: checkIdentity(B),
+		summaryCommentId: 100, humanDecisions: [defer] });
+	const rerun = foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation] }, target: target(B),
+		priorProjection: freshProjection, humanDecisions: [defer] });
+	assert.equal(rerun.open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(settlement(rerun.open_findings).conclusion, "pass");
 });
 
 test("the publisher's changed paths run from the prior projection's head, or the merge base when it is gone", (t) => {

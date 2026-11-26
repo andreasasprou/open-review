@@ -323,7 +323,8 @@ test("the classify command reads the PR's comments and the author's permission",
 		"classify", root, "example/repo", "main", base, head, comments, MARKER, docs, full],
 	{ encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }));
 	assert.deepEqual(classifyCommand("docs/**", "false"),
-		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"], modelRounds: {} });
+		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"],
+			latestSettlement: "u9", modelRounds: {} });
 	assert.equal(classifyCommand("", "true").reason, "full_review_requested");
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.equal(classifyCommand("", "false").reason, "settlement_author_unverified");
@@ -398,6 +399,41 @@ test("the local runner carries a blocked settlement's open findings to a rerun h
 	assert.equal(parsed.gate, "BLOCK");
 });
 
+// Review findings 1 and 3: a carry must not stop a later fix from settling, nor drop closed history.
+test("after a carried block, a fix settles as it does after the blocked head, and closed findings survive", (t) => {
+	const { buildLocalSettlement } = require("../engine/local-settlement.cjs");
+	const settle = settleRunner(t);
+	const output = (head, newFindings, evaluations = []) => ({ review_markdown: "## Verdict: BLOCK",
+		state: { last_reviewed_head_sha: head }, inline_comments: [], prior_issue_evaluations: evaluations, new_findings: newFindings });
+	const first = ledgerFinding({ stable_id: "OR-1", where: "src/a.ts:3" });
+	const second = ledgerFinding({ stable_id: "OR-2", where: "src/b.ts:7" });
+	const opened = buildLocalSettlement({ patch: "", output: output("b".repeat(40), [first, second]) });
+	const blocked = buildLocalSettlement({ patch: "", priorProjection: opened.ledger, output: output("c".repeat(40), [], [
+		{ stable_id: "OR-1", result: "resolved_on_target", evidence: "Fixed.", finding: first },
+		{ stable_id: "OR-2", result: "still_open", finding: second },
+	]) });
+	assert.equal(blocked.mergeGate.status, "BLOCK");
+	const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "open-review-blocked-")), "local-settlement.json");
+	t.after(() => fs.rmSync(path.dirname(ledgerPath), { recursive: true, force: true }));
+	fs.writeFileSync(ledgerPath, JSON.stringify(blocked));
+	const carried = JSON.parse(settle({ mode: "carry", reason: "same_patch", settlement: "https://example.test/c/9", files: [],
+		ledger: ledgerPath }).read("local-settlement.json")).ledger;
+	assert.deepEqual(carried.closed_findings.map(({ finding }) => finding.stable_id), ["OR-1"]);
+	const fix = (priorProjection) => buildLocalSettlement({ patch: "", priorProjection, changedFiles: ["src/b.ts"],
+		output: output("e".repeat(40), [], [
+			{ stable_id: "OR-2", result: "resolved_on_target", evidence: "Fixed.", finding: second },
+		]) });
+	for (const prior of [blocked.ledger, carried]) {
+		const settled = fix(prior);
+		assert.equal(settled.mergeGate.status, "PASS");
+		assert.deepEqual(settled.ledger.closed_findings.map(({ finding }) => finding.stable_id), ["OR-1", "OR-2"]);
+	}
+	// A closed ID stays reserved in a later round.
+	assert.throws(() => buildLocalSettlement({ patch: "", priorProjection: carried,
+		output: output("e".repeat(40), [ledgerFinding({ stable_id: "OR-1", where: "src/c.ts:1" })],
+			[{ stable_id: "OR-2", result: "still_open", finding: second }]) }), /genuinely new stable ID/);
+});
+
 test("after a block, a new finding outside the changed files is advisory; the prior findings still gate", () => {
 	const { buildLocalSettlement } = require("../engine/local-settlement.cjs");
 	const output = (head, newFindings, evaluations = []) => ({ review_markdown: "## Verdict: BLOCK",
@@ -416,6 +452,11 @@ test("after a block, a new finding outside the changed files is advisory; the pr
 	const gated = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"],
 		output: output(head, [outside, inside], [{ stable_id: "OR-1", result: "still_open", finding: prior }]) });
 	assert.deepEqual(gated.mergeGate.blockingIssueIds, ["OR-1", "OR-3"]);
+	// Review finding 5: a changed root `index.ts` is not the cited `src/index.ts`.
+	const nested = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["index.ts"],
+		output: output(head, [ledgerFinding({ stable_id: "OR-4", where: "src/index.ts:42" })], [resolved]) });
+	assert.equal(nested.mergeGate.status, "PASS");
+	assert.match(nested.mergeGateSummary, /Advisory, outside the changed files: OR-4/);
 });
 
 test("the local runner settles a carried or skipped head without a model, under the exact-head marker", (t) => {

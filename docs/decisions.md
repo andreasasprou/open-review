@@ -67,18 +67,24 @@ each push. Can the reviews after a block converge?
   switch ([gpt-6-2-rollback](#gpt-6-2-rollback)).
 - Decision, local runs: after a BLOCK, the next review scopes from the blocked
   head as it does after a pass. A same-patch rerun carries the block without a
-  model, with the gate re-derived from the blocked run's open findings. A push
-  to a descendant head on the same base gets an incremental review of the files
-  whose blobs changed, which re-evaluates the prior open findings. In that
-  review, a new finding whose location (`where`) names none of the changed
-  files is advisory: the settlement lists it and leaves it out of the ledger,
-  so a later push does not re-evaluate it into a block.
+  model: it keeps the blocked run's ledger as it stands (open and closed
+  findings and the evaluations behind them) and re-derives the gate from its
+  open findings, so a later fix settles exactly as it would against the
+  blocked head. A push to a descendant head on the same base gets an
+  incremental review of the files whose blobs changed, which re-evaluates the
+  prior open findings. In that review, a new finding whose location (`where`)
+  names none of the changed files as a whole repository path is advisory: the
+  settlement lists it and leaves it out of the ledger, so a later push does
+  not re-evaluate it into a block. Closed findings, and the IDs they reserve,
+  carry from one local round to the next.
 - The open findings come from the blocked run's saved ledger in the same
   checkout (`.agent-data/codex-review-local`), matched by the settlement
   comment URL and head. Without it, for example after a run on another
   machine, the review stays full. So do a PR with no settled review, a
   retargeted base, a rewritten head, unverifiable settlement authors and a
-  requested full review.
+  requested full review. A full review resumes a saved local session only
+  when that session published the latest trusted settlement, so it cannot
+  continue from an older settlement and miss a newer block.
 - Local runs apply no owner decisions, so a carried block has none to
   re-apply.
 - Hosted runs do not use this classifier. They already review incrementally
@@ -99,8 +105,9 @@ each push. Can the reviews after a block converge?
   likelihood, recoverability, attribution or proof strength, reworded
   consequences, or a new lifecycle plane on unchanged code do not reopen it.
   The hosted publisher computes those files with git; when the prior head is
-  gone, every file of the PR counts as changed. A reopened deferral still needs
-  a new owner decision, and blocks only when its risk blocks
+  gone, every file of the PR counts as changed. A decision made on the current
+  head postdates those changes and is not reopened by them. A reopened
+  deferral still needs a new owner decision, and blocks only when its risk blocks
   ([edge-case-gate](#edge-case-gate)). An accepted exception
   (`APPROVE_BOUNDED_EXCEPTION`) closes its finding and is not re-evaluated, so
   it needs no change. Local runs collect no owner decisions, so neither

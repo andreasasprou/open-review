@@ -755,20 +755,19 @@ if [ "$SCOPE_MODE" = "skip" ] || [ "$SCOPE_MODE" = "carry" ]; then
   SCOPE_VERDICT="carried"
   if [ "$SCOPE_MODE" = "skip" ]; then SCOPE_VERDICT="skipped"; fi
   # The same settlement shape as a model review: no open findings, or after a
-  # BLOCK the saved ledger's open findings carried to this head.
+  # BLOCK the saved ledger as it stands, open and closed findings and the
+  # evaluations behind them, bound to this head. A carry evaluates nothing, so
+  # a later fix settles as it would have against the blocked head.
   node - "$ENGINE_DIR/local-settlement.cjs" "$ENGINE_DIR/index.cjs" "$SETTLEMENT_JSON" "$HEAD_SHA" "$BASE_SHA" "$SCOPE_VERDICT" "$SCOPE_JSON" <<'NODE'
 const fs = require('node:fs');
-const path = require('node:path');
 const { plainMergeGateLine, truncateStatusDescription } = require(process.argv[2]);
 const { deriveMergeGate, formatMergeGateSummary } = require(process.argv[3]);
-const { foldReview } = require(path.join(path.dirname(process.argv[3]), 'ledger', 'projection.cjs'));
 const [file, headSha, baseSha, verdict, scopeText] = process.argv.slice(4);
 const scope = JSON.parse(scopeText);
 let ledger = { review_target: { head_sha: headSha, base_sha: baseSha }, open_findings: [], closed_findings: [], prior_issue_evaluations: [] };
 if (scope.ledger) {
   const prior = JSON.parse(fs.readFileSync(scope.ledger, 'utf8')).ledger;
-  const target = { ...prior.review_target, head_sha: headSha };
-  ledger = { ...foldReview({ output: { new_findings: [], prior_issue_evaluations: [] }, target, priorProjection: prior }), review_target: target };
+  ledger = { ...prior, review_target: { ...prior.review_target, head_sha: headSha } };
 }
 const mergeGate = deriveMergeGate({ open_findings: ledger.open_findings });
 const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
@@ -862,6 +861,7 @@ elif [ -n "$PROVIDER_BASE_URL" ]; then
 elif [ "$PREPARE_ONLY" != "true" ] && [ "$USE_CLEAN_CODEX_HOME" = "true" ] && [ "$PUBLISH_TRUSTED_ARTIFACTS" = "true" ]; then
   node "$ENGINE_DIR/local-resume.cjs" select \
     "$ROOT" "$CURRENT_REPOSITORY" "$PR_NUMBER" "$HEAD_SHA" "$MERGE_BASE_SHA" "$CODEX_MODEL" "$PROMPT_BLOB" \
+    "$(jq -r '.latestSettlement // ""' <<<"$SCOPE_JSON")" \
     > "$RESUME_SELECTION"
   REVIEW_SCOPE_REASON="$(jq -r '.reason' "$RESUME_SELECTION")"
   if [ "$(jq -r '.resumable' "$RESUME_SELECTION")" = "true" ]; then

@@ -59,21 +59,26 @@ function hasUsableLocalLedger(runDir, headSha) {
 	}
 }
 
+/** Whether the run at `runDir` published the settlement comment at `url`. */
+function publishedSettlement(runDir, url) {
+	const summary = path.join(runDir, "summary.txt");
+	return Boolean(url) && fs.existsSync(summary) &&
+		fs.readFileSync(summary, "utf8").split("\n").includes(`Settlement comment: ${url}`);
+}
+
 /** The saved ledger of the local run in this checkout that published `settlement` (its URL and head), or null. */
 function settledLedger({ root, settlement }) {
 	const runsRoot = path.join(root, ".agent-data/codex-review-local");
-	if (!settlement.url || !fs.existsSync(runsRoot)) return null;
+	if (!fs.existsSync(runsRoot)) return null;
 	for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
 		const runDir = path.join(runsRoot, entry.name);
-		const summary = path.join(runDir, "summary.txt");
-		if (entry.isDirectory() && entry.name.startsWith("pr-") && fs.existsSync(summary) &&
-			fs.readFileSync(summary, "utf8").split("\n").includes(`Settlement comment: ${settlement.url}`) &&
+		if (entry.isDirectory() && entry.name.startsWith("pr-") && publishedSettlement(runDir, settlement.url) &&
 			hasUsableLocalLedger(runDir, settlement.head)) return path.join(runDir, "local-settlement.json");
 	}
 	return null;
 }
 
-function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob }) {
+function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob, latestSettlement = "" }) {
 	const runsRoot = path.join(root, ".agent-data/codex-review-local");
 	const candidates = [];
 	for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
@@ -113,6 +118,9 @@ function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, m
 	if (!git(["diff", "--name-only", metadata.headSha, headSha]).trim()) return refuse("empty_repair_delta");
 	readReview(runDir, metadata.headSha);
 	if (!hasUsableLocalLedger(runDir, metadata.headSha)) return refuse("missing_local_ledger");
+	// Only the session behind the PR's latest trusted settlement may continue: an
+	// older one would hide that settlement's findings (decision converge-after-block).
+	if (!publishedSettlement(runDir, latestSettlement)) return refuse("not_latest_settlement");
 	const rolloutPath = path.join(runDir, "parent-session", metadata.basename);
 	if (path.basename(metadata.basename) !== metadata.basename) throw new Error("invalid rollout basename");
 	if (typeof metadata.rolloutDigest !== "string") return refuse("missing_transcript_digest");
@@ -169,8 +177,8 @@ if (require.main === module) runReviewCli(recorder => {
 	}
 	if (operation !== "select") throw new Error(`unknown local resume operation: ${operation}`);
 	try {
-		const [root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob] = args;
-		console.log(JSON.stringify(select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob })));
+		const [root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob, latestSettlement] = args;
+		console.log(JSON.stringify(select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob, latestSettlement })));
 	} catch (error) {
 		recordCaughtError({ recorder, error, operation: "review.local_resume", stage: "execute", disposition: "recover", context: {} });
 		console.log(JSON.stringify({ resumable: false, reason: "unavailable_local_history" }));

@@ -173,10 +173,13 @@ function isFollowUpRiskEligible(finding) {
   );
 }
 
-// Whether a finding's location names one of `files`. A substring match errs
-// toward overlap: a suffix of a cited path also counts.
+// Whether a finding's location names one of `files` as a whole repository
+// path: not as the tail of a longer path (`src/index.ts` is not `index.ts`) nor
+// as the head of one (`a.tsx`, `a.ts.bak`). A leading `./` is allowed.
 function citesChangedFile(where, files) {
-  return files.some((file) => where.includes(file));
+  return files.some((file) => new RegExp(
+    `(?<=^|[^\\w./-]|(?:^|[^\\w./-])\\./)${file.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![\\w/-]|\\.\\w)`, "u",
+  ).test(where));
 }
 
 // A deferral stays in force on later heads (decision converge-after-block)
@@ -316,11 +319,11 @@ function closureFromEvaluation(evaluation) {
   };
 }
 
+// A v4 projection, or a local runner's saved ledger: the same closed records
+// without a schema version (decision converge-after-block).
 function closedFindingRecords({ priorProjection }) {
-  if (priorProjection?.schema_version === PROJECTION_SCHEMA_VERSION) {
-    return structuredClone(priorProjection.closed_findings);
-  }
-  return [];
+  return Array.isArray(priorProjection?.closed_findings)
+    ? structuredClone(priorProjection.closed_findings) : [];
 }
 
 function decisionCommentIdFromRef(ref) {
@@ -1150,7 +1153,8 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           priorFinding,
           warnings,
           reconciliationUncertain: unreconciledKnownIds.has(priorFinding.stable_id),
-          changedPaths: evidence?.changed_paths || [],
+          // A decision made on this head postdates every change since the prior projection.
+          changedPaths: decision.decision_head_sha === reviewTarget.head_sha ? [] : evidence?.changed_paths || [],
         });
       else if (!missingEvaluation && (
         carried.approved_invariant !== priorFinding.approved_invariant ||
