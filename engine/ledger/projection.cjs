@@ -214,6 +214,16 @@ function citesChangedFile(where, changed, knownPaths = []) {
   return unresolved || files.some((file) => changed.includes(file));
 }
 
+// A scoped review gates only on the files it reviewed: a new finding whose
+// location cites none of `changedFiles`, resolved against `knownFiles` (the
+// head's files), is published as advisory and left out of the ledger (decisions
+// converge-after-block, hosted-converge). An unresolved location stays in.
+function outsideChangedFiles(ledger, changedFiles, knownFiles) {
+  const outside = ledger.new_findings.filter((finding) => !citesChangedFile(finding.where, changedFiles, knownFiles));
+  const kept = (finding) => !outside.includes(finding);
+  return { outside, ledger: { ...ledger, new_findings: ledger.new_findings.filter(kept), open_findings: ledger.open_findings.filter(kept) } };
+}
+
 // A deferral stays in force on later heads (decision converge-after-block)
 // unless the change since the prior review touches a file its finding cites,
 // or its severity or reachability rises. A re-rated likelihood, recoverability
@@ -2332,6 +2342,7 @@ module.exports = {
   formatProjectionComment,
   isMergeBlocker,
   isProposedFollowUp,
+  outsideChangedFiles,
   riskBlocks,
   parseProjectionComment,
   prepareReviewPriorProjection,

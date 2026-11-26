@@ -7,8 +7,13 @@ const { execFileSync } = require("node:child_process");
 const { recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require("./diagnostics-runtime.cjs");
 const path = require("node:path");
 const { spansForPath } = require("./location-spans.cjs");
-const { foldReview, isMergeBlocker: isLedgerMergeBlocker, riskBlocks } = require("./ledger/projection.cjs");
+const { foldReview, isMergeBlocker: isLedgerMergeBlocker, outsideChangedFiles, riskBlocks } = require("./ledger/projection.cjs");
 const { postResults: publishLedger } = require("./ledger/publisher.cjs");
+
+// Reviews scoped to what changed since the prior settlement: an incremental
+// review, and a re-evaluation of the prior findings on an unchanged head
+// (decision hosted-converge).
+const SCOPED_REVIEW_MODES = new Set(["incremental", "prior_findings"]);
 
 // ─── Comment Markers ──────────────────────────────────────────────────────────
 // These HTML comments identify bot-managed comments on the PR.
@@ -110,7 +115,9 @@ function verdictImpliedGate(verdict) {
 	return "UNKNOWN";
 }
 
-function formatMergeGateSummary(gate, verdict) {
+// `outside`: new findings a scoped review left advisory because they cite no
+// changed file (outsideChangedFiles in ledger/projection.cjs).
+function formatMergeGateSummary(gate, verdict, outside = []) {
 	const lines = [];
 	if (gate.status === "BLOCK") {
 		lines.push(
@@ -128,6 +135,8 @@ function formatMergeGateSummary(gate, verdict) {
 			"Merge gate: **UNKNOWN** — the review produced no structured state to derive from.",
 		);
 	}
+	if (outside.length > 0)
+		lines.push(`Advisory, outside the changed files: ${outside.map((finding) => finding.stable_id).join(", ")}`);
 	lines.push(`Model verdict (display only): \`${verdict}\``);
 	return lines.join("\n");
 }
@@ -1968,6 +1977,7 @@ async function postResults({ recorder,
 	let { reviewBody, reviewState, inlineComments } = parsedOutput;
 	let ledgerCandidate = null;
 	let ledgerEvidence = null;
+	let outside = [];
 	if (ledgerTarget && checkIdentity) {
 		ledgerEvidence = JSON.parse(fs.readFileSync(path.join(outputDir, "ledger-evidence.json"), "utf8"));
 		ledgerCandidate = foldReview({ output: parsedOutput.rawOutput,
@@ -1977,6 +1987,10 @@ async function postResults({ recorder,
 			humanDecisions: ledgerEvidence.humanDecisions,
 			evidenceChallenges: ledgerEvidence.evidenceChallenges,
 			...ledgerPaths });
+		// A scoped review gates only on the files changed since the prior
+		// projection; on an unchanged head that is none (decision hosted-converge).
+		if (SCOPED_REVIEW_MODES.has(metadata.reviewMode))
+			({ ledger: ledgerCandidate, outside } = outsideChangedFiles(ledgerCandidate, ledgerPaths.changedPaths, ledgerPaths.knownPaths));
 		for (const warning of ledgerCandidate.warnings) console.warn(`[codex-review] Ledger: ${warning}`);
 		const legacyIssues = ledgerCandidate.open_findings.map((finding) => ({
 			id: finding.stable_id, severity: finding.severity, reachability: finding.reachability,
@@ -2025,9 +2039,10 @@ async function postResults({ recorder,
 	const ledgerSummary = ledgerCandidate ? `\n\n### Ledger findings (${ledgerCandidate.open_findings.length})\n${ledgerCandidate.open_findings.map((finding) => `- **${finding.severity} ${finding.stable_id}: ${finding.title}** — ${finding.failure_scenario} (${finding.where})`).join("\n") || "- None."}` : "";
 	const ledgerWarnings = ledgerCandidate?.warnings.length ? `\n\n### Ledger warnings\n${ledgerCandidate.warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
 	// A full review judges the whole pull request, so its callouts replace the earlier ones.
-	const reviewBodyWithCallouts = metadata.reviewMode === "incremental"
+	const reviewBodyWithCallouts = SCOPED_REVIEW_MODES.has(metadata.reviewMode)
 		? carryCallouts(reviewBody, readPreviousReview(outputDir), reviewNumber) : reviewBody;
-	const bodyBeforeWorkers = `> ${formatMergeGateSummary(mergeGate, verdict).split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBodyWithCallouts}${ledgerSummary}`;
+	const gateSummary = formatMergeGateSummary(mergeGate, verdict, outside);
+	const bodyBeforeWorkers = `> ${gateSummary.split("\n").join("\n> ")}\n\n${formatRulesChangedNote(metadata)}${reviewBodyWithCallouts}${ledgerSummary}`;
 	const bodyAfterWorkers = `${ledgerWarnings}${footer}`;
 	const focusedWorkers = readFocusedWorkers(outputDir);
 	const focusedSection = renderFocusedWorkerSection(focusedWorkers, ledgerCandidate?.open_findings || [],
@@ -2054,7 +2069,7 @@ async function postResults({ recorder,
 			await updateCheckRun({ github, owner, repo, checkId,
 				conclusion: published.projection.conclusion === "block" ? "failure" : "success",
 				title: `${formatReviewLabel(reviewNumber)}: ${published.projection.conclusion === "block" ? "BLOCK" : "PASS"}`,
-				summary: formatMergeGateSummary(mergeGate, verdict) });
+				summary: gateSummary });
 		} catch (error) {
 			recordCaughtError({ recorder, error, operation: "review.process", stage: "complete_check", disposition: "recover", context: {} });
 			log(`Could not complete the review check after publication: ${error?.message || String(error)}`);

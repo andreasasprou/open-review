@@ -36,6 +36,10 @@ pre-existing attribution or because it was outside the latest repair delta.
 
 ### `new_findings`
 
+In mode `prior_findings` the head has not changed since the last settlement:
+read the scoped diff as usual, evaluate only the prior open findings against
+the collected owner decisions and challenges, and raise no new findings.
+
 Include every genuinely new supported finding, up to the existing 25-finding
 output safety limit. Use a stable ID that does not appear in
 `.codex-ci/ledger-evidence.json` `reservedFindingIds`. Do not include a prior

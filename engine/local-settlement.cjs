@@ -3,7 +3,7 @@
 
 const fs = require("node:fs");
 const { runReviewCli } = require("./diagnostics-runtime.cjs");
-const { citesChangedFile, foldReview } = require("./ledger/projection.cjs");
+const { foldReview, outsideChangedFiles } = require("./ledger/projection.cjs");
 
 const {
 	buildIssueSeverityMap,
@@ -69,16 +69,8 @@ function buildInlineApiComments({ inlineComments, reviewState, patch }) {
 	};
 }
 
-// After a block, an incremental review gates only on the files it reviewed: a
-// new finding whose location cites none of `changedFiles`, resolved against
-// `knownFiles` (the head's files), is published as advisory and left out of the
-// ledger (decision converge-after-block). An unresolved location stays in.
-function outsideChangedFiles(ledger, changedFiles, knownFiles) {
-	const outside = ledger.new_findings.filter((finding) => !citesChangedFile(finding.where, changedFiles, knownFiles));
-	const kept = (finding) => !outside.includes(finding);
-	return { outside, ledger: { ...ledger, new_findings: ledger.new_findings.filter(kept), open_findings: ledger.open_findings.filter(kept) } };
-}
-
+// After a block, an incremental review passes `changedFiles`, the files it
+// reviewed (decision converge-after-block).
 function buildLocalSettlement({ output, patch, priorProjection = null, changedFiles = null, knownFiles = [] }) {
 	const reviewMarkdown = String(output?.review_markdown || "").trim();
 	if (!reviewMarkdown) {
@@ -98,10 +90,7 @@ function buildLocalSettlement({ output, patch, priorProjection = null, changedFi
 		: { ledger: foldReview({ output, target, priorProjection }), outside: [] };
 	const mergeGate = deriveMergeGate({ open_findings: ledger.open_findings });
 	const capWarning = ledger.warnings.find((warning) => warning.includes("reachable blockers exceed"));
-	const gateLines = formatMergeGateSummary(mergeGate, verdict).split("\n");
-	if (outside.length > 0)
-		gateLines.splice(-1, 0, `Advisory, outside the changed files: ${outside.map((finding) => finding.stable_id).join(", ")}`);
-	const mergeGateSummary = `${gateLines.join("\n")}${capWarning ? `\n${capWarning}` : ""}`;
+	const mergeGateSummary = `${formatMergeGateSummary(mergeGate, verdict, outside)}${capWarning ? `\n${capWarning}` : ""}`;
 	const mergeGateLine = mergeGateSummary.split("\n", 1)[0];
 	const inline = buildInlineApiComments({
 		inlineComments: output?.inline_comments,

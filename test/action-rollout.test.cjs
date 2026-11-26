@@ -189,15 +189,18 @@ async function commandOutputs(eventName, body, sinceInput = '') {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-for (const [event, body] of [
-  ['issue_comment', '/code-review'],
-  ['issue_comment', '/code-review please review this'],
-  ['issue_comment', '/code-review full'],
-  ['issue_comment', '/alias-review'],
-  ['issue_comment', '/alias-review full'],
-  ['workflow_dispatch', ''],
+// Decision hosted-converge: a review command on the last reviewed head re-evaluates
+// the prior findings; `full` and a manual run review the whole PR, as every command
+// does once the head has moved.
+for (const [event, body, unchanged] of [
+  ['issue_comment', '/code-review', 'prior_findings'],
+  ['issue_comment', '/code-review please review this', 'prior_findings'],
+  ['issue_comment', '/code-review full', 'full'],
+  ['issue_comment', '/alias-review', 'prior_findings'],
+  ['issue_comment', '/alias-review full', 'full'],
+  ['workflow_dispatch', '', 'full'],
 ]) {
-  test(`explicit ${event} ${body || '(manual)'} reviews an unchanged head`, async (t) => {
+  test(`explicit ${event} ${body || '(manual)'} on the last reviewed head: ${unchanged}`, async (t) => {
     const outputs = await commandOutputs(event, body);
     assert.equal(outputs.trigger_rejected, undefined);
     assert.equal(outputs.default_branch, 'main');
@@ -208,15 +211,36 @@ for (const [event, body] of [
       priorProjection: {}, modelReviewRequired: false,
       humanDecisions: [], evidenceChallenges: [],
     }));
-    const result = runShell(block('Determine review scope', 'run'), f.root, {
-      BASE_SHA: f.base, HEAD_SHA: f.base, LAST_REVIEWED_SHA: f.base,
-      FORCE_FULL_REVIEW: outputs.force_full_review, RESET_STATE: outputs.reset_state,
-      SINCE_SHA: outputs.since_sha, EVENT_NAME: event, GITHUB_OUTPUT: f.output,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(readFileSync(f.output, 'utf8'), /review_mode=full/);
+    const scope = (head) => {
+      writeFileSync(f.output, '');
+      const result = runShell(block('Determine review scope', 'run'), f.root, {
+        BASE_SHA: f.base, HEAD_SHA: head, LAST_REVIEWED_SHA: f.base,
+        FORCE_FULL_REVIEW: outputs.force_full_review, RESET_STATE: outputs.reset_state,
+        SINCE_SHA: outputs.since_sha, EVENT_NAME: event, GITHUB_OUTPUT: f.output,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return readFileSync(f.output, 'utf8');
+    };
+    assert.match(scope(f.base), new RegExp(`review_mode=${unchanged}\n`));
+    assert.match(scope(f.trusted), /review_mode=full\n/);
   });
 }
+
+test('an owner event on the last reviewed head re-evaluates the prior findings instead of a full review', (t) => {
+  const f = fixture(t, false, false);
+  mkdirSync(join(f.root, '.codex-ci'));
+  writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
+    priorProjection: { human_decisions: [] }, modelReviewRequired: false, evidenceChallenges: [],
+    humanDecisions: [{ comment_id: 50 }],
+  }));
+  const result = runShell(block('Determine review scope', 'run'), f.root, {
+    BASE_SHA: f.base, HEAD_SHA: f.base, LAST_REVIEWED_SHA: f.base,
+    FORCE_FULL_REVIEW: 'false', RESET_STATE: 'false', SINCE_SHA: '',
+    EVENT_NAME: 'pull_request_target', GITHUB_OUTPUT: f.output,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(f.output, 'utf8'), /review_mode=prior_findings\n[^]*review_scope_reason=new_owner_event\n/);
+});
 
 test('automatic unchanged head may skip', (t) => {
   const f = fixture(t, false, false);
@@ -324,7 +348,7 @@ test('a merge from the base branch after the last pass makes a full review', (t)
   assert.match(scope(merged), /review_mode=full\n[^]*review_scope_reason=merge_base_moved/);
 });
 
-test('incremental reviews start no focused or rules workers', (t) => {
+test('incremental and prior-findings reviews start no focused or rules workers', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'open-review-action-incremental-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, '.codex-ci'));
@@ -337,6 +361,7 @@ test('incremental reviews start no focused or rules workers', (t) => {
     RULES_WORKER: 'true', DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: record };
   for (const [mode, expected] of [
     ['incremental', /focused-workers\.cjs run 0 a{40} .* rules=false\n$/],
+    ['prior_findings', /focused-workers\.cjs run 0 a{40} .* rules=false\n$/],
     ['full', /focused-workers\.cjs run auto a{40} .* rules=true\n$/],
   ]) {
     rmSync(record, { force: true });

@@ -212,3 +212,80 @@ test("an inline title carries one severity tag even when the model wrote one", (
 	assert.equal(formatInlineBody({ ...comment, title: "[P2] Retry is not bounded" }, undefined).split("\n", 1)[0],
 		"**[P2] Retry is not bounded**");
 });
+
+// Decision hosted-converge: a hosted review scoped to what changed since the prior projection.
+const A = "a".repeat(40);
+const D = "d".repeat(40);
+const hostedTarget = (head) => ({ repository: "o/r", pr_number: 1, base_ref: "main", base_sha: A, merge_base_sha: A,
+	head_sha: head, trusted_reviewer_ref: A, evidence_bundle_sha256: "c".repeat(64), evidence_schema_version: 2 });
+const hostedIdentity = (head, run) => ({ workflow_path: ".github/workflows/review.yml",
+	workflow_ref: "o/r/.github/workflows/review.yml@refs/heads/main", trusted_workflow_sha: A,
+	workflow_run_id: run, workflow_run_attempt: 1, workflow_job_id: 1, check_run_id: 2,
+	check_suite_id: 3, app_slug: "github-actions", head_sha: head });
+const hostedFinding = (overrides = {}) => ({ stable_id: "OR-1", severity: "P1", reachability: "normal_path",
+	likelihood: "medium", likely_consequence: "A request fails.", worst_credible_consequence: "A request fails and needs repair.",
+	recoverability: "operational_intervention", proof_strength: "deterministic_static_proof", attribution: "introduced",
+	risk_rationale: "A supported customer loses data.", disposition: "FIX_IN_PR", autonomous_eligibility: "YES",
+	title: "Lost request", failure_scenario: "A normal request is lost.", approved_invariant: "Preserve every request.",
+	where: "src/a.ts:10", evidence: "The changed write omits the requested row.", affected_lifecycle_planes: [], ...overrides });
+const blockedAtA = () => {
+	const { buildProjection, foldReview } = require("../engine/ledger/projection.cjs");
+	const candidate = foldReview({ output: { new_findings: [hostedFinding()], prior_issue_evaluations: [] }, target: hostedTarget(A) });
+	return buildProjection({ candidate, target: hostedTarget(A), checkIdentity: hostedIdentity(A, "10"), summaryCommentId: 99 });
+};
+
+async function hostedRound(t, { head, reviewMode, ledgerPaths, priorProjection, humanDecisions = [], output }) {
+	const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-scoped-"));
+	t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));
+	fs.writeFileSync(path.join(outputDir, "codex-review-output.json"), JSON.stringify({
+		review_markdown: "## Verdict: BLOCK", inline_comments: [], state: {}, ...output }));
+	fs.writeFileSync(path.join(outputDir, "ledger-evidence.json"), JSON.stringify({ priorProjection, humanDecisions, evidenceChallenges: [] }));
+	const posted = [];
+	const checks = [];
+	const github = { rest: { issues: { createComment: async ({ body }) => {
+		posted.push(body);
+		return { data: { id: posted.length } };
+	} }, pulls: { get: async () => ({ data: { head: { sha: head, repo: { full_name: "o/r" } }, base: { sha: A, ref: "main" } } }) },
+	checks: { update: async (input) => { checks.push(input); } } } };
+	const result = await postResults({ recorder: createRecordingCaughtErrorDiagnosticRecorder(), github,
+		owner: "o", repo: "r", prNumber: 1, headSha: head, checkId: 2, previousState: null, outputDir,
+		ledgerTarget: hostedTarget(head), checkIdentity: hostedIdentity(head, "11"), metadata: { reviewMode }, ledgerPaths });
+	return { gate: result.mergeGate, summary: posted[0], check: checks.at(-1),
+		projection: readProjectionComment(posted.find((body) => body.startsWith("<!-- codex-review:projection:v4 -->"))) };
+}
+
+test("a hosted incremental review leaves a new finding outside the changed files advisory; an unresolved location still blocks", async (t) => {
+	const round = (reviewMode, where) => hostedRound(t, { head: D, reviewMode, priorProjection: blockedAtA(),
+		ledgerPaths: { changedPaths: ["src/a.ts"], knownPaths: ["src/a.ts", "src/b.ts"] },
+		output: { prior_issue_evaluations: [{ stable_id: "OR-1", result: "resolved_on_target", evidence: "Fixed.", finding: hostedFinding() }],
+			new_findings: [hostedFinding({ stable_id: "OR-2", where })] } });
+	const outside = await round("incremental", "src/b.ts:12");
+	assert.equal(outside.gate.status, "PASS");
+	assert.equal(outside.check.conclusion, "success");
+	assert.deepEqual(outside.projection.open_findings, []);
+	assert.match(outside.summary, /Merge gate: \*\*PASS\*\*.*\n> Advisory, outside the changed files: OR-2\n> Model verdict/);
+	assert.match(outside.check.output.summary, /Advisory, outside the changed files: OR-2/);
+	const unresolved = await round("incremental", "Location unavailable; inspect review evidence.");
+	assert.deepEqual(unresolved.gate.blockingIssueIds, ["OR-2"]);
+	assert.equal(unresolved.projection.conclusion, "block");
+	// A full review gates on every new finding.
+	assert.deepEqual((await round("full", "src/b.ts:12")).gate.blockingIssueIds, ["OR-2"]);
+});
+
+test("a prior-findings review of an unchanged head re-applies the owner's deferral and raises no new blocker", async (t) => {
+	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: A,
+		comment_id: 50, actor_login: "sample-maintainer" };
+	// On the prior projection's head, changedSinceProjection finds nothing changed.
+	const round = (reviewMode) => hostedRound(t, { head: A, reviewMode, priorProjection: blockedAtA(), humanDecisions: [defer],
+		ledgerPaths: { changedPaths: [], knownPaths: [] },
+		output: { prior_issue_evaluations: [{ stable_id: "OR-1", result: "still_open", finding: hostedFinding() }],
+			new_findings: [hostedFinding({ stable_id: "OR-2", where: "src/a.ts:20" })] } });
+	const settled = await round("prior_findings");
+	assert.equal(settled.gate.status, "PASS");
+	assert.deepEqual(settled.projection.open_findings.map(({ stable_id, disposition }) => [stable_id, disposition]),
+		[["OR-1", "FOLLOW_UP"]]);
+	assert.deepEqual(settled.projection.human_decisions.map(({ comment_id }) => comment_id), [50]);
+	assert.match(settled.summary, /Advisory, outside the changed files: OR-2/);
+	assert.deepEqual((await round("full")).gate.blockingIssueIds, ["OR-2"]);
+});

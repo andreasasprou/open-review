@@ -25,6 +25,15 @@ structured output, not the model's verdict word.
    comments from members and collaborators, or by manual dispatch from the
    default branch.
 
+After a settled review, a push gets an incremental review of the commits since
+the last reviewed head, where a new finding whose location names none of the
+files changed since then is advisory. On the last reviewed head itself, an
+owner decision, an evidence challenge or an `/open-review` comment re-evaluates
+only the open findings against the owner's decisions, with no hunt for new
+findings (a `prior_findings` review); a new finding there is advisory.
+`/open-review full`, `/open-review reset` or a manual dispatch without
+`since-sha` reviews the whole PR.
+
 | Input | Default | Purpose |
 |---|---|---|
 | `rules-path` | (required) | Rule pack path. It is read from the default branch. |
@@ -40,7 +49,7 @@ structured output, not the model's verdict word.
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
 | `provider-session-resume` | `false` | Allows session resume through a custom provider |
-| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes one of the `parent-model` paths that get `gpt-6-astra` with workers, and none otherwise; `0` to `4` sets the maximum. Incremental reviews run none |
+| `focused-workers` | `auto` | Advisory workers, one per changed non-test file; findings go to a summary section and never block merge. `auto` runs 2 when the PR changes one of the `parent-model` paths that get `gpt-6-astra` with workers, and none otherwise; `0` to `4` sets the maximum. Incremental and `prior_findings` reviews run none |
 | `worker-model` / `worker-reasoning-effort` | `gpt-6.1-sol` / `medium` | Focused and rules workers; empty uses these defaults |
 | `rules-worker` | `true` | Advisory check of the changed production files (tests, docs and generated files excluded) against the rule pack |
 | `review-budget-minutes` | `30` | Total hosted Codex budget across attempts (1–120 minutes) |
