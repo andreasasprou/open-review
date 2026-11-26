@@ -43,7 +43,7 @@ decision entry behind it.
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
 | `codex-cli-version` | `0.169.1` | [codex-cli-version](#codex-cli-version), [gpt-6-2-models](#gpt-6-2-models) |
 | `review-budget-minutes` | `30` | [review-budget](#review-budget), [gpt-6-2-models](#gpt-6-2-models) |
-| Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
+| Local scope after a settled review | carry an unchanged patch; otherwise incremental from a settled ancestor; after a BLOCK, only with that run's saved ledger, and a new finding outside the changed files is advisory | [review-scope](#review-scope), [converge-after-block](#converge-after-block) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `15m` | [review-scope](#review-scope), [gpt-6-2-models](#gpt-6-2-models) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
@@ -52,6 +52,39 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### converge-after-block
+
+**2026-11-26.** Owner request, without an evaluation run. After a block, every
+push got a full re-review. Can the reviews after a block converge?
+
+- Evidence: `classify` in `engine/review-scope.cjs` returned a full review
+  whenever the latest settlement did not pass. Each full re-review hunted the
+  whole PR again. On one PR, 14 review passes ran; each fix drew a new P1
+  `compound_path` finding of the same class.
+- Decision, local runs: after a BLOCK, the next review scopes from the blocked
+  head as it does after a pass. A same-patch rerun carries the block without a
+  model, with the gate re-derived from the blocked run's open findings. A push
+  to a descendant head on the same base gets an incremental review of the files
+  whose blobs changed, which re-evaluates the prior open findings. In that
+  review, a new finding whose location (`where`) names none of the changed
+  files is advisory: the settlement lists it and leaves it out of the ledger,
+  so a later push does not re-evaluate it into a block.
+- The open findings come from the blocked run's saved ledger in the same
+  checkout (`.agent-data/codex-review-local`), matched by the settlement
+  comment URL and head. Without it, for example after a run on another
+  machine, the review stays full. So do a PR with no settled review, a
+  retargeted base, a rewritten head, unverifiable settlement authors and a
+  requested full review.
+- Local runs apply no owner decisions, so a carried block has none to
+  re-apply.
+- Hosted runs do not use this classifier. They already review incrementally
+  from the last reviewed head after a block, and carry a same-head rerun with
+  the current owner decisions. A new owner decision or an explicit request on
+  an unchanged head still runs a full review there, and the advisory rule for
+  new findings outside the changed files is not applied there.
+- Reopen when a blocking defect ships through a file outside an incremental
+  review's changed files, or when local blocks per PR do not fall.
 
 ### edge-case-gate
 

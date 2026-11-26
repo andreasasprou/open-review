@@ -6,21 +6,26 @@
 //
 // - skip: every path the PR changes matches the consumer's docs-only paths and
 //   none is on the review floor (focused-workers.cjs sensitivePaths).
-// - carry: the latest trusted settlement passed on the same base branch, and
-//   every file of the PR has the same base and result blobs as at the passed
-//   head (a rerun, or a rebase or merge that left the PR's files alone), or
-//   differs only in docs-only files.
-// - incremental: the latest trusted settlement passed on the same base branch
-//   at an ancestor of this head; only the files whose blobs changed are
-//   reviewed, from the passed head, or from the current merge base when the
-//   base moved in between (so a dropped base-branch change shows).
-// - full: anything else, including a retargeted PR, a passed head that was
-//   force-rewritten, or a settlement that does not record its base.
+// - carry: the latest trusted settlement passed or blocked on the same base
+//   branch, and every file of the PR has the same base and result blobs as at
+//   the settled head (a rerun, or a rebase or merge that left the PR's files
+//   alone), or differs only in docs-only files.
+// - incremental: the latest trusted settlement passed or blocked on the same
+//   base branch at an ancestor of this head; only the files whose blobs changed
+//   are reviewed, from the settled head, or from the current merge base when
+//   the base moved in between (so a dropped base-branch change shows).
+// - full: anything else, including a retargeted PR, a settled head that was
+//   force-rewritten, a settlement that does not record its base, or a BLOCK
+//   whose saved local ledger is missing.
+//
+// After a BLOCK, carry and incremental scopes name that settlement's saved
+// local ledger (`ledger`), so its open findings are carried or re-evaluated.
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const { sensitivePaths } = require("./focused-workers.cjs");
 const { recordCaughtError, runReviewCli } = require("./diagnostics-runtime.cjs");
+const { settledLedger } = require("./local-resume.cjs");
 
 const WRITE_PERMISSIONS = new Set(["write", "maintain", "admin"]);
 
@@ -172,9 +177,10 @@ function isAncestor(git, ancestor, head) {
  * Review scope for `headSha` on `baseRef` at `baseSha`. `latest` is the latest
  * trusted settlement on the PR or null; its head and recorded merge base must
  * already be fetched. `settlementsVerified` is false when the settlements'
- * authors could not be checked. A full review names its reason.
+ * authors could not be checked. `ledger` is the saved local ledger of a BLOCK
+ * `latest`, or null. A full review names its reason.
  */
-function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false, protectedFiles = [] }) {
+function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = null, settlementsVerified = true, fullReview = false, protectedFiles = [], ledger = null }) {
 	const full = (reason) => ({ mode: "full", reason, files: [] });
 	const mergeBase = git(["merge-base", baseSha, headSha]).trim();
 	const files = changedPaths(git, mergeBase, headSha);
@@ -184,7 +190,9 @@ function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = nul
 	if (fullReview) return full("full_review_requested");
 	if (!settlementsVerified) return full("settlement_author_unverified");
 	if (latest === null) return full("no_settled_review");
-	if (latest.gate !== "PASS") return full("last_review_not_passed");
+	// After a BLOCK the next review needs its open findings (decision converge-after-block).
+	if (latest.gate === "BLOCK" && ledger === null) return full("blocked_ledger_missing");
+	if (latest.gate !== "PASS" && latest.gate !== "BLOCK") return full("last_review_not_passed");
 	if (latest.base === null) return full("passed_base_unrecorded");
 	if (latest.base.baseRef !== baseRef) return full("base_retargeted");
 	if (!commitExists(git, latest.head) || !commitExists(git, latest.base.mergeBase)) return full("passed_head_missing");
@@ -192,7 +200,7 @@ function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = nul
 		before: { mergeBase: latest.base.mergeBase, head: latest.head },
 		after: { mergeBase, head: headSha },
 	});
-	const scope = { from: latest.head, settlement: latest.url, files: delta };
+	const scope = { from: latest.head, settlement: latest.url, files: delta, ...(latest.gate === "BLOCK" ? { ledger } : {}) };
 	if (delta.length === 0) return { mode: "carry", reason: latest.head === headSha ? "same_head" : "same_patch", ...scope };
 	if (docsOnlyUnprotected(delta)) return { mode: "carry", reason: "docs_only_change", ...scope };
 	if (!isAncestor(git, latest.head, headSha)) return full("passed_head_rewritten");
@@ -202,7 +210,8 @@ function classify({ git, baseRef, baseSha, headSha, docsPaths = [], latest = nul
 	// When the base moved in between, a diff from the passed head would hide a
 	// base-branch change the PR dropped; review those files' whole PR patch.
 	const baseMoved = latest.base.mergeBase !== mergeBase;
-	return { mode: "incremental", reason: baseMoved ? "since_passed_review_base_moved" : "since_passed_review",
+	const since = latest.gate === "BLOCK" ? "since_blocked_review" : "since_passed_review";
+	return { mode: "incremental", reason: baseMoved ? `${since}_base_moved` : since,
 		diffBase: baseMoved ? mergeBase : latest.head, ...scope };
 }
 
@@ -253,7 +262,8 @@ function main(recorder, argv) {
 	}
 	const scope = classify({ git, baseRef, baseSha, headSha, docsPaths: parseDocsPaths(docsPathsText),
 		latest, settlementsVerified, fullReview: fullReview === "true",
-		protectedFiles: rulesPath ? [rulesPath] : [] });
+		protectedFiles: rulesPath ? [rulesPath] : [],
+		ledger: latest?.gate === "BLOCK" ? settledLedger({ root, settlement: latest }) : null });
 	process.stdout.write(`${JSON.stringify({ ...scope, modelRounds: modelRounds(settlements, permissionOf) })}\n`);
 }
 

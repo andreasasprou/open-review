@@ -110,20 +110,25 @@ machine's `codex` is another version, it installs the pinned version once into
 run only. It needs model credentials: `--provider-base-url <url>`, or a
 ChatGPT login (`codex login`).
 
-A publishing run reviews only what changed since the PR last passed on the same
-base branch. When every file of the PR has the same base and result blobs as at
-the passed head (a rerun, or a rebase or merge that left the PR's files alone),
-it carries that pass without a model. When the passed head is an ancestor of the
-current head, the parent alone reviews the files that changed, at `high`
-reasoning within 10 minutes (`OPEN_REVIEW_INCREMENTAL_REASONING`,
-`OPEN_REVIEW_INCREMENTAL_TIMEOUT`); if the base moved in between, it reads those
-files' whole PR patch. Anything else, including a retargeted PR or a force-push
-that changed the patch, gets a full review; `--full-review` asks for one. `--docs-only-paths '<globs>'` lets a PR
+A publishing run reviews only what changed since the PR's last settlement on
+the same base branch, whether it passed or blocked. When every file of the PR
+has the same base and result blobs as at the settled head (a rerun, or a rebase
+or merge that left the PR's files alone), it carries that result without a
+model. When the settled head is an ancestor of the current head, the parent
+alone reviews the files that changed, at `high` reasoning within 10 minutes
+(`OPEN_REVIEW_INCREMENTAL_REASONING`, `OPEN_REVIEW_INCREMENTAL_TIMEOUT`); if the
+base moved in between, it reads those files' whole PR patch. After a block,
+both need that run's saved ledger in the same checkout: a carry keeps its open
+findings, and an incremental review re-evaluates them, where a new finding
+whose location names none of the changed files is advisory. Anything else,
+including a retargeted PR, a force-push that changed the patch, or a block
+whose ledger is not in this checkout, gets a full review; `--full-review` asks
+for one. `--docs-only-paths '<globs>'` lets a PR
 that changes only those paths pass without a model; read the globs from a
 trusted ref, never from the PR head. Docs-only paths never cover a file on the
 review floor (code or MDX under `docs/`, review policy, prompts, rule packs or
 agent instructions). Each such settlement keeps the exact-head marker and names
-the passed head and settlement it builds on.
+the settled head and settlement it builds on.
 
 A PR at the sensitive-path level gets `gpt-6-astra` for at most 2 settled
 rounds; later local rounds use `gpt-6.1-sol` at `high`.

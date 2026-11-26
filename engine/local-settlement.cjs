@@ -69,7 +69,16 @@ function buildInlineApiComments({ inlineComments, reviewState, patch }) {
 	};
 }
 
-function buildLocalSettlement({ output, patch, priorProjection = null }) {
+// After a block, an incremental review gates only on the files it reviewed: a
+// new finding whose location names none of `changedFiles` is published as
+// advisory and left out of the ledger (decision converge-after-block).
+function outsideChangedFiles(ledger, changedFiles) {
+	const outside = ledger.new_findings.filter((finding) => !changedFiles.some((file) => finding.where.includes(file)));
+	const kept = (finding) => !outside.includes(finding);
+	return { outside, ledger: { ...ledger, new_findings: ledger.new_findings.filter(kept), open_findings: ledger.open_findings.filter(kept) } };
+}
+
+function buildLocalSettlement({ output, patch, priorProjection = null, changedFiles = null }) {
 	const reviewMarkdown = String(output?.review_markdown || "").trim();
 	if (!reviewMarkdown) {
 		throw new Error("review output has no review_markdown");
@@ -83,10 +92,15 @@ function buildLocalSettlement({ output, patch, priorProjection = null }) {
 		base_ref: "local", base_sha: headSha, merge_base_sha: headSha,
 		trusted_reviewer_ref: headSha, evidence_bundle_sha256: "0".repeat(64),
 		evidence_schema_version: 2, ...priorProjection?.review_target, head_sha: headSha };
-	const ledger = foldReview({ output, target, priorProjection });
+	const { ledger, outside } = changedFiles
+		? outsideChangedFiles(foldReview({ output, target, priorProjection }), changedFiles)
+		: { ledger: foldReview({ output, target, priorProjection }), outside: [] };
 	const mergeGate = deriveMergeGate({ open_findings: ledger.open_findings });
 	const capWarning = ledger.warnings.find((warning) => warning.includes("reachable blockers exceed"));
-	const mergeGateSummary = `${formatMergeGateSummary(mergeGate, verdict)}${capWarning ? `\n${capWarning}` : ""}`;
+	const gateLines = formatMergeGateSummary(mergeGate, verdict).split("\n");
+	if (outside.length > 0)
+		gateLines.splice(-1, 0, `Advisory, outside the changed files: ${outside.map((finding) => finding.stable_id).join(", ")}`);
+	const mergeGateSummary = `${gateLines.join("\n")}${capWarning ? `\n${capWarning}` : ""}`;
 	const mergeGateLine = mergeGateSummary.split("\n", 1)[0];
 	const inline = buildInlineApiComments({
 		inlineComments: output?.inline_comments,
@@ -110,17 +124,18 @@ function buildLocalSettlement({ output, patch, priorProjection = null }) {
 }
 
 function main(argv) {
-	const [outputPath, patchPath, priorPath] = argv;
+	const [outputPath, patchPath, priorPath, changedFilesPath] = argv;
 	if (!outputPath || !patchPath) {
 		throw new Error(
-			"usage: local-settlement.cjs <codex-review-output.json> <pr-diff.patch> [prior-projection.json]",
+			"usage: local-settlement.cjs <codex-review-output.json> <pr-diff.patch> [prior-projection.json] [changed-files.txt]",
 		);
 	}
 
 	const output = JSON.parse(fs.readFileSync(outputPath, "utf8"));
 	const patch = fs.readFileSync(patchPath, "utf8");
 	const priorProjection = priorPath && fs.existsSync(priorPath) ? JSON.parse(fs.readFileSync(priorPath, "utf8")) : null;
-	process.stdout.write(`${JSON.stringify(buildLocalSettlement({ output, patch, priorProjection }))}\n`);
+	const changedFiles = changedFilesPath ? fs.readFileSync(changedFilesPath, "utf8").split("\n").filter(Boolean) : null;
+	process.stdout.write(`${JSON.stringify(buildLocalSettlement({ output, patch, priorProjection, changedFiles }))}\n`);
 }
 
 if (require.main === module) runReviewCli(() => main(process.argv.slice(2)));

@@ -59,6 +59,20 @@ function hasUsableLocalLedger(runDir, headSha) {
 	}
 }
 
+/** The saved ledger of the local run in this checkout that published `settlement` (its URL and head), or null. */
+function settledLedger({ root, settlement }) {
+	const runsRoot = path.join(root, ".agent-data/codex-review-local");
+	if (!settlement.url || !fs.existsSync(runsRoot)) return null;
+	for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+		const runDir = path.join(runsRoot, entry.name);
+		const summary = path.join(runDir, "summary.txt");
+		if (entry.isDirectory() && entry.name.startsWith("pr-") && fs.existsSync(summary) &&
+			fs.readFileSync(summary, "utf8").split("\n").includes(`Settlement comment: ${settlement.url}`) &&
+			hasUsableLocalLedger(runDir, settlement.head)) return path.join(runDir, "local-settlement.json");
+	}
+	return null;
+}
+
 function select({ recorder, root, repository, prNumber, headSha, mergeBaseSha, model, promptBlob }) {
 	const runsRoot = path.join(root, ".agent-data/codex-review-local");
 	const candidates = [];
@@ -163,4 +177,4 @@ if (require.main === module) runReviewCli(recorder => {
 	}
 });
 
-module.exports = { select, hasUsableLocalLedger };
+module.exports = { select, hasUsableLocalLedger, settledLedger };

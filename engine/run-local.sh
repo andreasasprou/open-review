@@ -41,7 +41,7 @@ Options:
                          review (`**` crosses directories). A PR changing only these
                          passes without a model. Default: OPEN_REVIEW_DOCS_ONLY_PATHS, or
                          none. Pass them from a trusted ref, never from the PR head.
-  --full-review          Review the whole PR even after a passed review.
+  --full-review          Review the whole PR even after a settled review.
   --stream-raw           Also stream raw Codex JSONL to the terminal.
   --use-user-codex-home  Use the current CODEX_HOME/~/.codex instead of a clean temp home.
   --provider-base-url <url>
@@ -66,13 +66,17 @@ Options:
 
 Logs are written under .agent-data/codex-review-local/.
 
-Review scope: when the latest settlement on the PR passed on the same base
-branch, a published run carries that pass if every PR file has the same base
-and result blobs (rerun, or a rebase or merge that left the PR's files alone)
-or only docs-only paths changed. Otherwise, if the passed head is an ancestor
-of this head, it reviews only the files that changed: the parent alone, at
-OPEN_REVIEW_INCREMENTAL_REASONING (default high) within
-OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 15m). Every other run is a full review.
+Review scope: when the latest settlement on the PR passed or blocked on the
+same base branch, a published run carries that result if every PR file has the
+same base and result blobs (rerun, or a rebase or merge that left the PR's
+files alone) or only docs-only paths changed. Otherwise, if the settled head is
+an ancestor of this head, it reviews only the files that changed: the parent
+alone, at OPEN_REVIEW_INCREMENTAL_REASONING (default high) within
+OPEN_REVIEW_INCREMENTAL_TIMEOUT (default 15m). After a block, both use that
+run's saved ledger in this checkout: a carry keeps its open findings, and an
+incremental review re-evaluates them, where a new finding outside the changed
+files is advisory. Without that ledger, and in every other case, the run is a
+full review.
 
 Environment: CODEX_MODEL, CODEX_REASONING, CODEX_SUBAGENT_MODEL,
 CODEX_SUBAGENT_REASONING, CODEX_CLI_VERSION, OPEN_REVIEW_WORKER_MODEL and
@@ -725,15 +729,19 @@ SCOPE_REASON="$(jq -r '.reason' <<<"$SCOPE_JSON")"
 SCOPE_FROM="$(jq -r '.from // ""' <<<"$SCOPE_JSON")"
 SCOPE_SETTLEMENT="$(jq -r '.settlement // ""' <<<"$SCOPE_JSON")"
 SCOPE_FILE_COUNT="$(jq -r '.files | length' <<<"$SCOPE_JSON")"
+# Set after a BLOCK: that settlement's saved ledger (decision converge-after-block).
+SCOPE_LEDGER="$(jq -r '.ledger // ""' <<<"$SCOPE_JSON")"
+SCOPE_SETTLED="passed"
+if [ -n "$SCOPE_LEDGER" ]; then SCOPE_SETTLED="blocked"; fi
 # Recorded in every settlement; a later run scopes from it only on the same base.
 SCOPE_BASE_LINE="Review base: \`$BASE_REF\` at $MERGE_BASE_SHA."
 case "$SCOPE_MODE:$SCOPE_REASON" in
   skip:*) SCOPE_LINE="Review scope: skipped, docs only. All $SCOPE_FILE_COUNT changed files match the docs-only paths, so no model reviewed this PR." ;;
-  carry:same_head) SCOPE_LINE="Review scope: carried. This head already passed: $SCOPE_SETTLEMENT" ;;
-  carry:same_patch) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). This head's patch is the same file for file." ;;
-  carry:*) SCOPE_LINE="Review scope: carried from $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT). Only $SCOPE_FILE_COUNT docs-only files changed since." ;;
-  incremental:since_passed_review) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT), an ancestor of this head. The parent reviewed the $SCOPE_FILE_COUNT files whose patch changed since." ;;
-  incremental:*) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM (passed settlement $SCOPE_SETTLEMENT), an ancestor of this head. The base moved since, so the parent reviewed the whole PR patch of the $SCOPE_FILE_COUNT files that changed." ;;
+  carry:same_head) SCOPE_LINE="Review scope: carried. This head already $SCOPE_SETTLED: $SCOPE_SETTLEMENT" ;;
+  carry:same_patch) SCOPE_LINE="Review scope: carried from $SCOPE_FROM ($SCOPE_SETTLED settlement $SCOPE_SETTLEMENT). This head's patch is the same file for file." ;;
+  carry:*) SCOPE_LINE="Review scope: carried from $SCOPE_FROM ($SCOPE_SETTLED settlement $SCOPE_SETTLEMENT). Only $SCOPE_FILE_COUNT docs-only files changed since." ;;
+  incremental:since_passed_review|incremental:since_blocked_review) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM ($SCOPE_SETTLED settlement $SCOPE_SETTLEMENT), an ancestor of this head. The parent reviewed the $SCOPE_FILE_COUNT files whose patch changed since." ;;
+  incremental:*) SCOPE_LINE="Review scope: incremental since $SCOPE_FROM ($SCOPE_SETTLED settlement $SCOPE_SETTLEMENT), an ancestor of this head. The base moved since, so the parent reviewed the whole PR patch of the $SCOPE_FILE_COUNT files that changed." ;;
   *) SCOPE_LINE="Review scope: full ($SCOPE_REASON)." ;;
 esac
 echo "Review mode: $SCOPE_MODE ($SCOPE_REASON)" | tee -a "$RUN_DIR/summary.txt"
@@ -746,22 +754,32 @@ if [ "$SCOPE_MODE" = "skip" ] || [ "$SCOPE_MODE" = "carry" ]; then
   fi
   SCOPE_VERDICT="carried"
   if [ "$SCOPE_MODE" = "skip" ]; then SCOPE_VERDICT="skipped"; fi
-  # The same settlement shape as a model review with no open findings.
+  # The same settlement shape as a model review: no open findings, or after a
+  # BLOCK the saved ledger's open findings carried to this head.
   node - "$ENGINE_DIR/local-settlement.cjs" "$ENGINE_DIR/index.cjs" "$SETTLEMENT_JSON" "$HEAD_SHA" "$BASE_SHA" "$SCOPE_VERDICT" "$SCOPE_JSON" <<'NODE'
 const fs = require('node:fs');
+const path = require('node:path');
 const { plainMergeGateLine, truncateStatusDescription } = require(process.argv[2]);
 const { deriveMergeGate, formatMergeGateSummary } = require(process.argv[3]);
+const { foldReview } = require(path.join(path.dirname(process.argv[3]), 'ledger', 'projection.cjs'));
 const [file, headSha, baseSha, verdict, scopeText] = process.argv.slice(4);
 const scope = JSON.parse(scopeText);
-const mergeGate = deriveMergeGate({ open_findings: [] });
+let ledger = { review_target: { head_sha: headSha, base_sha: baseSha }, open_findings: [], closed_findings: [], prior_issue_evaluations: [] };
+if (scope.ledger) {
+  const prior = JSON.parse(fs.readFileSync(scope.ledger, 'utf8')).ledger;
+  const target = { ...prior.review_target, head_sha: headSha };
+  ledger = { ...foldReview({ output: { new_findings: [], prior_issue_evaluations: [] }, target, priorProjection: prior }), review_target: target };
+}
+const mergeGate = deriveMergeGate({ open_findings: ledger.open_findings });
 const mergeGateSummary = formatMergeGateSummary(mergeGate, verdict);
 const mergeGateLine = mergeGateSummary.split('\n', 1)[0];
 const reason = scope.mode === 'skip' ? 'skipped, docs only' : `carried from ${scope.from.slice(0, 8)}`;
 fs.writeFileSync(file, `${JSON.stringify({
   reviewScope: scope, reviewMarkdown: '', verdict, mergeGate, mergeGateSummary, mergeGateLine,
-  statusState: 'success', statusDescription: truncateStatusDescription(`${plainMergeGateLine(mergeGateLine).split(' — ')[0]} — ${reason}`),
+  statusState: mergeGate.status === 'PASS' ? 'success' : 'failure',
+  statusDescription: truncateStatusDescription(`${plainMergeGateLine(mergeGateLine).split(' — ')[0]} — ${reason}`),
   inline: { candidateCount: 0, validatedCount: 0, warnings: [], comments: [] },
-  ledger: { review_target: { head_sha: headSha, base_sha: baseSha }, open_findings: [], closed_findings: [], prior_issue_evaluations: [] },
+  ledger,
 })}\n`);
 NODE
   MERGE_GATE_SUMMARY="$(jq -r '.mergeGateSummary' "$SETTLEMENT_JSON")"
@@ -926,6 +944,10 @@ echo "Session: ${RESUME_SESSION_ID:-fresh} ($REVIEW_SCOPE_REASON)" | tee -a "$RU
     if [ -f "$RUN_DIR/resumed-settlement.json" ]; then
       jq '.ledger' "$RUN_DIR/resumed-settlement.json" > .codex-ci/prior-projection.json
     fi
+  fi
+  # After a BLOCK, the incremental review re-evaluates that settlement's open findings.
+  if [ -n "$SCOPE_LEDGER" ]; then
+    jq '.ledger' "$SCOPE_LEDGER" > .codex-ci/prior-projection.json
   fi
   jq '{priorProjection: ., reservedFindingIds: (([.open_findings[]?.stable_id] + [.closed_findings[]?.finding.stable_id]) | unique), humanDecisions: [], evidenceChallenges: []}' \
     .codex-ci/prior-projection.json > .codex-ci/ledger-evidence.json
@@ -1346,10 +1368,12 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] && [ -s "$OUTPUT_JSON" ]; then
   # Compare against the tip observed at start: also its base branch and merge base.
   verify_review_target_unchanged || exit 1
 
+  # After a BLOCK, only new findings in the reviewed files can block.
   node "$ENGINE_DIR/local-settlement.cjs" \
     "$OUTPUT_JSON" \
     "$WORKTREE/.codex-ci/pr-diff-full.patch" \
     "$WORKTREE/.codex-ci/prior-projection.json" \
+    ${SCOPE_LEDGER:+"$WORKTREE/.codex-ci/changed-files.txt"} \
     > "$SETTLEMENT_JSON"
   MERGE_GATE_SUMMARY="$(jq -r '.mergeGateSummary' "$SETTLEMENT_JSON")"
   STATUS_STATE="$(jq -r '.statusState' "$SETTLEMENT_JSON")"
