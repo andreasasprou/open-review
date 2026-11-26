@@ -24,9 +24,9 @@ Options:
   --model <model|auto>   Parent model. auto sets the review level (engine/risk-triage.cjs):
                          a stored-data, security or infrastructure path outside tests and
                          Markdown, or a review, merge-gate, prompt, rule-pack or agent-
-                         instruction path, gets gpt-6.2-astra with focused workers for 2 rounds,
-                         then gpt-6.2-sol high; otherwise a GPT-6.1 Sol triage call picks
-                         gpt-6.2-sol high without focused workers, or one gpt-6.2-sol medium
+                         instruction path, gets gpt-6-astra with focused workers for 2 rounds,
+                         then gpt-6.1-sol high; otherwise a GPT-6.1 Sol triage call picks
+                         gpt-6.1-sol high without focused workers, or one gpt-6.1-sol medium
                          pass without helpers or workers.
                          Default: CODEX_MODEL or auto.
   --reasoning <effort>   Codex reasoning effort. Default: CODEX_REASONING or high.
