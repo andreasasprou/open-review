@@ -123,6 +123,11 @@ inputs:
   pr-number:
     description: PR number to review for workflow_dispatch callers.
     default: ""
+  since-sha:
+    description: >-
+      For workflow_dispatch callers: review only the changes since this full commit SHA, as `/code-review --since`
+      does. The usual fallbacks to a full review still apply. Empty reviews the whole PR.
+    default: ""
 
 outputs:
   rules_changed:
@@ -153,6 +158,7 @@ runs:
       uses: actions/github-script@v7
       env:
         PR_NUMBER_INPUT: ${{ inputs.pr-number }}
+        SINCE_SHA_INPUT: ${{ inputs.since-sha }}
         REVIEW_COMMANDS: ${{ inputs.command }}
       with:
         github-token: ${{ github.token }}
@@ -239,6 +245,13 @@ runs:
               else if (t === '--since' && /^[0-9a-f]{7,40}$/i.test(tokens[i+1] || '')) sinceSha = tokens[++i];
               else { const m = t.match(/^--since=([0-9a-f]{7,40})$/i); if (m) sinceSha = m[1]; }
             }
+          }
+          if (context.eventName === 'workflow_dispatch' && process.env.SINCE_SHA_INPUT) {
+            if (!/^[0-9a-f]{40}$/i.test(process.env.SINCE_SHA_INPUT)) {
+              core.setFailed('since-sha must be a full commit SHA');
+              return;
+            }
+            sinceSha = process.env.SINCE_SHA_INPUT;
           }
           core.setOutput('force_full_review', String(forceFullReview));
           core.setOutput('reset_state', String(resetState));
@@ -505,8 +518,8 @@ runs:
           REASON="reset_requested"
         elif [ "${FORCE_FULL_REVIEW:-false}" = "true" ]; then
           REASON="forced_full_review"
-        elif [ "$EVENT_NAME" = "workflow_dispatch" ] ||
-             { [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$SINCE_SHA" ]; }; then
+        elif { [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "issue_comment" ]; } &&
+             [ -z "$SINCE_SHA" ]; then
           REASON="explicit_review_requested"
         elif [ -n "$SINCE" ]; then
           if git cat-file -e "${SINCE}^{commit}" 2>/dev/null; then

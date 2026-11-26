@@ -151,7 +151,7 @@ for (const [name, baseRules, trustedRules, baseRef, expected, source] of [
   });
 }
 
-async function commandOutputs(eventName, body) {
+async function commandOutputs(eventName, body, sinceInput = '') {
   const root = mkdtempSync(join(tmpdir(), 'open-review-command-'));
   try {
     mkdirSync(join(root, 'open-review'));
@@ -173,7 +173,9 @@ async function commandOutputs(eventName, body) {
     const oldTemp = process.env.RUNNER_TEMP;
     const oldCommands = process.env.REVIEW_COMMANDS;
     const oldNumber = process.env.PR_NUMBER_INPUT;
+    const oldSince = process.env.SINCE_SHA_INPUT;
     process.env.RUNNER_TEMP = root;
+    process.env.SINCE_SHA_INPUT = sinceInput;
     process.env.REVIEW_COMMANDS = 'code-review,alias-review';
     process.env.PR_NUMBER_INPUT = '7';
     try { await new AsyncFunction('github', 'context', 'core', 'require', 'console', block('Get PR details', 'script'))(github, context, core, require, { log() {} }); }
@@ -181,6 +183,7 @@ async function commandOutputs(eventName, body) {
       if (oldTemp === undefined) delete process.env.RUNNER_TEMP; else process.env.RUNNER_TEMP = oldTemp;
       if (oldCommands === undefined) delete process.env.REVIEW_COMMANDS; else process.env.REVIEW_COMMANDS = oldCommands;
       if (oldNumber === undefined) delete process.env.PR_NUMBER_INPUT; else process.env.PR_NUMBER_INPUT = oldNumber;
+      if (oldSince === undefined) delete process.env.SINCE_SHA_INPUT; else process.env.SINCE_SHA_INPUT = oldSince;
     }
     return outputs;
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -246,6 +249,49 @@ test('explicit --since retains incremental scope', async (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(f.output, 'utf8'), /review_mode=incremental/);
   assert.match(readFileSync(f.output, 'utf8'), /review_scope_reason=since_requested_sha/);
+});
+
+test('a manual run with since-sha retains incremental scope', async (t) => {
+  const f = fixture(t, false, false);
+  const outputs = await commandOutputs('workflow_dispatch', '', f.base);
+  assert.equal(outputs.since_sha, f.base);
+  mkdirSync(join(f.root, '.codex-ci'));
+  writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
+    priorProjection: {}, modelReviewRequired: false, humanDecisions: [], evidenceChallenges: [],
+  }));
+  const result = runShell(block('Determine review scope', 'run'), f.root, {
+    BASE_SHA: f.base, HEAD_SHA: f.trusted, LAST_REVIEWED_SHA: '',
+    FORCE_FULL_REVIEW: outputs.force_full_review, RESET_STATE: outputs.reset_state,
+    SINCE_SHA: outputs.since_sha, EVENT_NAME: 'workflow_dispatch', GITHUB_OUTPUT: f.output,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(f.output, 'utf8'), /review_mode=incremental/);
+  assert.match(readFileSync(f.output, 'utf8'), /review_scope_reason=since_requested_sha/);
+});
+
+test('a manual run with since-sha still reviews in full without a prior v4 ledger', async (t) => {
+  const f = fixture(t, false, false);
+  const outputs = await commandOutputs('workflow_dispatch', '', f.base);
+  mkdirSync(join(f.root, '.codex-ci'));
+  writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
+    priorProjection: null, modelReviewRequired: false, humanDecisions: [], evidenceChallenges: [],
+  }));
+  const result = runShell(block('Determine review scope', 'run'), f.root, {
+    BASE_SHA: f.base, HEAD_SHA: f.trusted, LAST_REVIEWED_SHA: '',
+    FORCE_FULL_REVIEW: outputs.force_full_review, RESET_STATE: outputs.reset_state,
+    SINCE_SHA: outputs.since_sha, EVENT_NAME: 'workflow_dispatch', GITHUB_OUTPUT: f.output,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(f.output, 'utf8'), /review_mode=full/);
+});
+
+test('a manual run refuses a since-sha that is not a full commit SHA', async () => {
+  await assert.rejects(commandOutputs('workflow_dispatch', '', 'abc1234'), /since-sha must be a full commit SHA/);
+});
+
+test('since-sha is ignored outside manual runs', async () => {
+  const outputs = await commandOutputs('issue_comment', '/code-review', 'b'.repeat(40));
+  assert.equal(outputs.since_sha, '');
 });
 
 test('a merge from the base branch after the last pass makes a full review', (t) => {
