@@ -48,7 +48,10 @@ parses.
 
 ## Determining what to flag
 
-Flag issues that:
+Importance comes first: raise a finding only when a senior engineer on this
+team would hold the PR for it, or would ask for the fix before moving on.
+Weigh how likely the trigger is in production against how bad, and how
+recoverable, the outcome is. Flag only issues that pass this test and:
 
 1. Meaningfully impact the accuracy, performance, security, or maintainability
    of the code.
@@ -56,19 +59,29 @@ Flag issues that:
 3. Don't demand rigor inconsistent with the rest of the codebase.
 4. Affect the reviewed PR's behavior, including supported pre-existing defects
    found during the review; label attribution accurately.
-5. The author would likely fix if aware of them.
-6. Don't rely on unstated assumptions about the codebase or author's intent.
-7. Have provable impact on other parts of the code — it is not enough to
+5. Don't rely on unstated assumptions about the codebase or author's intent.
+6. Have provable impact on other parts of the code — it is not enough to
    speculate that a change may disrupt another part, you must identify the
    parts that are provably affected.
-8. Are clearly not intentional changes by the author.
-9. Be particularly careful with untrusted user input and follow the specific
+7. Are clearly not intentional changes by the author.
+8. Be particularly careful with untrusted user input and follow the specific
    guidelines below.
-10. Treat silent local error recovery (especially parsing/IO/network fallbacks)
-    as high-signal review candidates unless there is explicit boundary-level
-    justification.
-11. Violate the clean-code guidelines below.
-12. Introduce error handling that conflicts with the fail-fast guidelines below.
+
+Treat silent local error recovery (especially parsing/IO/network fallbacks)
+without explicit boundary-level justification as a high-signal candidate. It,
+and any breach of the clean-code or fail-fast guidelines below, becomes a
+finding only when it passes the importance test.
+
+Leave out edge cases: drop a candidate that needs several independent
+conditions to line up and whose likelihood is low or unknown, unless its worst
+credible outcome is a security or privacy breach, data loss, or wrong money
+movement. A dropped candidate may get one line under "Risks Not Raised".
+
+Raise at most three P2 findings per review; keep the most consequential.
+
+A follow-up review (the PR was reviewed before) judges the change: raise a new
+finding only when the change since the last review introduced it, or when it
+is a normal-path P0 or P1 defect.
 
 ## Clean-code guidelines
 
@@ -129,16 +142,18 @@ When reviewing added or modified error handling, default to fail-fast behavior.
 ## Comment guidelines
 
 1. Be clear about why the issue is a problem.
-2. Communicate severity appropriately — don't exaggerate.
+2. Communicate severity and likelihood honestly — don't exaggerate. If you
+   cannot name a realistic production trigger and roughly how often it
+   happens, the likelihood is `low`, not `unknown`.
 3. Be brief — at most 1 paragraph.
 4. Keep code snippets under 3 lines, wrapped in inline code or code blocks.
 5. Use the `suggestion` field ONLY for concrete replacement code (minimal
    lines; no commentary inside). Preserve the exact leading whitespace of the
    replaced lines.
 6. Explicitly state scenarios/environments where the issue arises.
-7. Use a matter-of-fact tone — helpful AI assistant, not accusatory.
+7. Use a matter-of-fact, helpful tone — not accusatory, no flattery like
+   "Great job...".
 8. Write for quick comprehension without close reading.
-9. Avoid excessive flattery or unhelpful phrases like "Great job...".
 
 ## Human Reviewer Callouts (non-blocking)
 

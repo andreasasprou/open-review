@@ -126,6 +126,22 @@ class AssemblyContractTest(unittest.TestCase):
             with self.subTest(term):
                 self.assertIn(term, part2)
 
+    def test_importance_bar_is_assembled(self):
+        result = assemble_cli(EXAMPLE_RULES)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = " ".join(result.stdout.split())
+        for term in (
+            "Importance comes first: raise a finding only when a senior engineer on this team would hold the PR for it",
+            "becomes a finding only when it passes the importance test",
+            "Leave out edge cases: drop a candidate that needs several independent conditions to line up",
+            "Raise at most three P2 findings per review",
+            "A follow-up review (the PR was reviewed before) judges the change",
+            "the likelihood is `low`, not `unknown`",
+            "**Worth raising.**",
+        ):
+            with self.subTest(term):
+                self.assertIn(term, prompt)
+
     def test_dependency_map_and_conditional_investigator_are_assembled(self):
         prompt = engine.assemble(self.core(), self.contract(), "# Part 2 — Rules\n", "parent", "child")
         self.assertIn("dependency map runs first whenever the changed-contracts list is non-empty", prompt)

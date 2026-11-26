@@ -42,7 +42,7 @@ imagined ideal PR:
 
 ## Findings Bar (apply before writing any finding)
 
-Emit a finding only when all three conditions hold:
+Emit a finding only when all four conditions hold:
 
 1. **Reachable today.** A supported execution path in the merged code reaches
    the defect.
@@ -51,6 +51,11 @@ Emit a finding only when all three conditions hold:
    documentation tidiness are not user impact.
 3. **This PR.** The PR introduced the defect, made it materially worse, or
    newly relies on it.
+4. **Worth raising.** A senior engineer on this team would hold the PR for it,
+   or ask for the fix before moving on. A defect that needs several
+   independent conditions to line up, with `low` or `unknown` likelihood, is
+   not worth raising unless its worst credible consequence is a security or
+   privacy breach, data loss or wrong money movement.
 
 For each candidate, write a concrete failure scenario: the input or action, the
 path it takes, and what the user observes. Look for one explanation that would
@@ -89,8 +94,11 @@ Set these fields on every finding from evidence:
   the author and never blocks.
 
 Reachability caps severity. A `theoretical` finding is P2. A `compound_path`
-finding is P2 unless current code proves every trigger in the chain. A `MUST`
-in repo guidance proves intent, but it does not make a finding P1 by itself.
+finding is P2 unless current code proves every trigger in the chain; with
+`low` or `unknown` likelihood it is P2 even then, unless its worst credible
+consequence is a security or privacy breach, data loss or wrong money
+movement. A `MUST` in repo guidance proves intent, but it does not make a
+finding P1 by itself.
 
 Trusted code decides what blocks, not you. An open issue blocks the merge when
 its severity is P0 or P1 and its reachability is not `theoretical`. Write the

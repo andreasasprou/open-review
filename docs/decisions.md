@@ -53,6 +53,65 @@ decision entry behind it.
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
 
+### importance-bar
+
+**2026-11-26.** The GPT-6.2 parents raised edge cases nobody would fix and
+were rolled back; [gpt-6-2-rollback](#gpt-6-2-rollback) has the production
+evidence. The [gpt-6-2-models](#gpt-6-2-models) evaluation graded whether
+findings were real, not whether the author would act on them.
+
+- The importance prompt: Part 1 of `engine/prompt/core.md` at this entry's
+  commit (importance first, edge cases left out, honest likelihood, at most
+  three P2 findings, follow-up reviews judge the change), and the **Worth
+  raising** condition and likelihood cap in `examples/rules.md`. The run keeps
+  the consumers' rule packs, so it tests the core prompt only.
+- Question: does the importance prompt cut findings that are not worth raising
+  without losing known defects? With that prompt in place, should any level
+  move back to a GPT-6.2 parent?
+- Set: the held-out set from [gpt-6-2-models](#gpt-6-2-models) (18 PRs, 38
+  known defects), parent only, 1 sample, with the same heads, rule packs and
+  Codex 0.169.1.
+- Arms: six new runs, all at the same time, parent only as in
+  [gpt-6-2-models](#gpt-6-2-models). The Astra arms run at the floor-high
+  setting and the Sol arms at `high`. The earlier run outputs no longer
+  exist, so no arm is reused.
+  - current prompt: `astra6` (`gpt-6-astra`), `sol61` (`gpt-6.1-sol`);
+  - importance prompt: `astra6-imp`, `sol61-imp`, `astra62-imp`
+    (`gpt-6.2-astra`), `sol62-imp` (`gpt-6.2-sol`).
+- Grading: blind, cross-family Claude graders. The findings of all six arms
+  are pooled per PR and graded on two axes:
+  - validity, as before: known defect `yes` or `partial`, `plausible_real`,
+    `invalid`, `unclear`;
+  - importance: `must_fix` (the author should fix it before merge),
+    `worth_raising` (the author would likely fix it, but it should not
+    block), `not_worth` (an edge case a senior engineer would not raise).
+- Measures per arm:
+  - known defects found (of 38; `yes` only, as before);
+  - worth findings per review: valid findings (known `yes` or `partial`, or
+    `plausible_real`) graded `must_fix` or `worth_raising`;
+  - noise per review: findings graded `not_worth` or `invalid`, each counted
+    once;
+  - simulated false-block rate: the share of reviews that the gate in
+    [edge-case-gate](#edge-case-gate) would block although no blocking
+    finding is `must_fix`;
+  - median time and list-price cost per review.
+- Rule 1, adopt the importance prompt, if for both current models
+  (`astra6-imp` against `astra6`, `sol61-imp` against `sol61`):
+  - known defects drop by at most 2;
+  - noise per review falls by at least half;
+  - worth findings per review fall by at most 20%.
+- Rule 2, move a level back to GPT-6.2, only with the importance prompt
+  adopted. Floor-high compares `astra62-imp` with `astra6-imp`; model-high and
+  normal compare `sol62-imp` with `sol61-imp`. A level moves only if its
+  GPT-6.2 arm:
+  - finds at least 3 more known defects;
+  - has noise per review at most 1.25 times as high;
+  - has a simulated false-block rate at most 5 points higher;
+  - has a median time at most twice as long.
+- Cost ceiling: 15,000 credits for the six runs. Stop at the ceiling and
+  record what ran.
+- Result: pending.
+
 ### gpt-6-2-rollback
 
 **2026-11-26.** Owner decision after a week of production use. Do the GPT-6.2
