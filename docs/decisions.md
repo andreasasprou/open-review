@@ -56,12 +56,15 @@ what would reopen it.
 ### converge-after-block
 
 **2026-11-26.** Owner request, without an evaluation run. After a block, every
-push got a full re-review. Can the reviews after a block converge?
+push got a full re-review, and an owner's deferral had to be posted again after
+each push. Can the reviews after a block converge?
 
 - Evidence: `classify` in `engine/review-scope.cjs` returned a full review
   whenever the latest settlement did not pass. Each full re-review hunted the
   whole PR again. On one PR, 14 review passes ran; each fix drew a new P1
-  `compound_path` finding of the same class.
+  `compound_path` finding of the same class. Across three consumers, full
+  re-reviews after a block rose from 4% to 13% of reviews after the GPT-6.2
+  switch ([gpt-6-2-rollback](#gpt-6-2-rollback)).
 - Decision, local runs: after a BLOCK, the next review scopes from the blocked
   head as it does after a pass. A same-patch rerun carries the block without a
   model, with the gate re-derived from the blocked run's open findings. A push
@@ -83,8 +86,28 @@ push got a full re-review. Can the reviews after a block converge?
   the current owner decisions. A new owner decision or an explicit request on
   an unchanged head still runs a full review there, and the advisory rule for
   new findings outside the changed files is not applied there.
+- Deferrals, evidence: an approved `DEFER_FOLLOW_UP` reopened as an owner
+  decision whenever the next evaluation raised any ordered risk field
+  (likelihood, recoverability, attribution included), changed
+  `proof_strength` or either consequence text, or added a lifecycle plane
+  (`deferredFollowUpRiskDrifted` in `engine/ledger/projection.cjs`). Each
+  review re-evaluates the finding on the new head and rewords it, so a push
+  reopened the deferral, and a reopened deferral never re-applies.
+- Decision, deferrals: a deferral stays in force on later heads unless the
+  files changed since the prior projection's head include a file its finding
+  cites (`where`), or its severity or reachability rises. A re-rated
+  likelihood, recoverability, attribution or proof strength, reworded
+  consequences, or a new lifecycle plane on unchanged code do not reopen it.
+  The hosted publisher computes those files with git; when the prior head is
+  gone, every file of the PR counts as changed. A reopened deferral still needs
+  a new owner decision, and blocks only when its risk blocks
+  ([edge-case-gate](#edge-case-gate)). An accepted exception
+  (`APPROVE_BOUNDED_EXCEPTION`) closes its finding and is not re-evaluated, so
+  it needs no change. Local runs collect no owner decisions, so neither
+  applies to them.
 - Reopen when a blocking defect ships through a file outside an incremental
-  review's changed files, or when local blocks per PR do not fall.
+  review's changed files or under a deferral that stayed in force, or when
+  local blocks per PR do not fall.
 
 ### edge-case-gate
 

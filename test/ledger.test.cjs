@@ -890,6 +890,57 @@ test("local settlement keeps prior findings when the model emits no new findings
 	assert.equal(result.ledger.open_findings[0].stable_id, "OR-1");
 });
 
+// Decision converge-after-block: a deferral survives later pushes unless its cited code changes.
+test("a deferral survives an unrelated push and reopens when its cited code changes", () => {
+	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: A,
+		comment_id: 50, actor_login: "sample-maintainer" };
+	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
+		result: "still_open", finding: modelFinding() }] }, target: target(), priorProjection: published(), humanDecisions: [defer] });
+	const deferredProjection = buildProjection({ candidate: deferred, target: target(), checkIdentity: checkIdentity(),
+		summaryCommentId: 100, humanDecisions: [defer] });
+	assert.equal(deferredProjection.conclusion, "pass");
+	// The model rewords and re-rates the finding on the pushed head, as it does on every review.
+	const push = (changedPaths) => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
+		result: "still_open", finding: modelFinding({ likelihood: "high", likely_consequence: "Requests fail on retry." }) }] },
+		target: target(B), priorProjection: deferredProjection, humanDecisions: [defer], changedPaths });
+	const unrelated = push(["src/other.ts", "docs/guide.md"]);
+	assert.equal(unrelated.open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(settlement(unrelated.open_findings).conclusion, "pass");
+	const touched = push(["src/request.ts"]);
+	assert.equal(touched.open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(touched.open_findings[0].decision_ref, "github-comment:50");
+	assert.match(touched.warnings.join("\n"), /OR-1: deferral reopened/);
+	assert.equal(settlement(touched.open_findings).conclusion, "block");
+});
+
+test("the publisher's changed paths run from the prior projection's head, or the merge base when it is gone", (t) => {
+	const { execFileSync } = require("node:child_process");
+	const fs = require("node:fs");
+	const os = require("node:os");
+	const path = require("node:path");
+	const { changedSinceProjection } = require("../engine/index.cjs");
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-changed-"));
+	t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+	const git = (...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+	const commit = (file) => {
+		fs.writeFileSync(path.join(cwd, file), `${file}\n`);
+		git("add", "-A");
+		git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", file);
+		return git("rev-parse", "HEAD");
+	};
+	git("init", "-q");
+	const mergeBase = commit("base.ts");
+	const reviewed = commit("a.ts");
+	const head = commit("b.ts");
+	const at = (priorHead) => changedSinceProjection({ cwd, target: { head_sha: head, merge_base_sha: mergeBase },
+		priorProjection: priorHead && { review_target: { head_sha: priorHead } } });
+	assert.deepEqual(at(null), []);
+	assert.deepEqual(at(head), []);
+	assert.deepEqual(at(reviewed), ["b.ts"]);
+	assert.deepEqual(at("f".repeat(40)), ["a.ts", "b.ts"]);
+});
+
 test("a later design decision revokes a deferred P1 even without an evaluation", () => {
 	const first = published();
 	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",

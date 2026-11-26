@@ -1695,7 +1695,7 @@ runs:
               return;
             }
 
-            const { postResults } = require(path.join(engineDir, 'index.cjs'));
+            const { changedSinceProjection, postResults } = require(path.join(engineDir, 'index.cjs'));
 
             let previousState = { stateCommentId: null, reviewCommentId: null, reviewCount: 0 };
             try {
@@ -1736,6 +1736,7 @@ runs:
               eventName: context.eventName,
               headSha: process.env.HEAD_SHA,
               ledgerTarget, checkIdentity, revalidateLedgerAuthority: revalidateAuthority,
+              ledgerChangedPaths: changedSinceProjection({ priorProjection: ledgerEvidence.priorProjection, target: ledgerTarget }),
               previousState,
               outputDir: '.codex-ci',
               metadata: {

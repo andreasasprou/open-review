@@ -3,7 +3,7 @@
 
 const fs = require("node:fs");
 const { runReviewCli } = require("./diagnostics-runtime.cjs");
-const { foldReview } = require("./ledger/projection.cjs");
+const { citesChangedFile, foldReview } = require("./ledger/projection.cjs");
 
 const {
 	buildIssueSeverityMap,
@@ -73,7 +73,7 @@ function buildInlineApiComments({ inlineComments, reviewState, patch }) {
 // new finding whose location names none of `changedFiles` is published as
 // advisory and left out of the ledger (decision converge-after-block).
 function outsideChangedFiles(ledger, changedFiles) {
-	const outside = ledger.new_findings.filter((finding) => !changedFiles.some((file) => finding.where.includes(file)));
+	const outside = ledger.new_findings.filter((finding) => !citesChangedFile(finding.where, changedFiles));
 	const kept = (finding) => !outside.includes(finding);
 	return { outside, ledger: { ...ledger, new_findings: ledger.new_findings.filter(kept), open_findings: ledger.open_findings.filter(kept) } };
 }

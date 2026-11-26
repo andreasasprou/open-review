@@ -58,6 +58,7 @@ const ATTRIBUTIONS = new Set([
   "pre_existing",
 ]);
 const DISPOSITIONS = new Set(["FIX_IN_PR", "AUTHOR_DECISION", "FOLLOW_UP"]);
+// A deferral's risk truly expands only when one of these rises.
 const DEFERRED_FOLLOW_UP_RISK_ORDER = Object.freeze({
   severity: Object.freeze({ P2: 0, P1: 1, P0: 2 }),
   reachability: Object.freeze({
@@ -65,25 +66,7 @@ const DEFERRED_FOLLOW_UP_RISK_ORDER = Object.freeze({
     compound_path: 1,
     normal_path: 2,
   }),
-  likelihood: Object.freeze({ low: 0, medium: 1, high: 2, unknown: 3 }),
-  recoverability: Object.freeze({
-    routine: 0,
-    operational_intervention: 1,
-    unknown: 2,
-    irreversible: 3,
-  }),
-  attribution: Object.freeze({
-    pre_existing: 0,
-    introduced: 1,
-    materially_expanded: 2,
-    relied_upon: 3,
-  }),
 });
-const DEFERRED_FOLLOW_UP_EXACT_RISK_FIELDS = Object.freeze([
-  "proof_strength",
-  "likely_consequence",
-  "worst_credible_consequence",
-]);
 const DESIGN_DECISION_KINDS = new Set([
   "REDESIGN_IN_PR",
   "NARROW_BEHAVIOR",
@@ -190,24 +173,23 @@ function isFollowUpRiskEligible(finding) {
   );
 }
 
-function deferredFollowUpRiskDrifted({ currentFinding, priorFinding }) {
-  const orderedRiskExpanded = Object.entries(
-    DEFERRED_FOLLOW_UP_RISK_ORDER,
-  ).some(
+// Whether a finding's location names one of `files`. A substring match errs
+// toward overlap: a suffix of a cited path also counts.
+function citesChangedFile(where, files) {
+  return files.some((file) => where.includes(file));
+}
+
+// A deferral stays in force on later heads (decision converge-after-block)
+// unless the change since the prior review touches a file its finding cites,
+// or its severity or reachability rises. A re-rated likelihood, recoverability
+// or attribution, or reworded consequences, on unchanged code do not reopen it.
+function deferredFollowUpReopened({ currentFinding, priorFinding, changedPaths }) {
+  const riskExpanded = Object.entries(DEFERRED_FOLLOW_UP_RISK_ORDER).some(
     ([field, order]) =>
       Object.hasOwn(priorFinding, field) &&
       order[currentFinding[field]] > order[priorFinding[field]],
   );
-  const exactRiskChanged = DEFERRED_FOLLOW_UP_EXACT_RISK_FIELDS.some(
-    (field) =>
-      Object.hasOwn(priorFinding, field) &&
-      currentFinding[field] !== priorFinding[field],
-  );
-  const priorPlanes = new Set(priorFinding.affected_lifecycle_planes);
-  const lifecycleExpanded = currentFinding.affected_lifecycle_planes.some(
-    (plane) => !priorPlanes.has(plane),
-  );
-  return orderedRiskExpanded || exactRiskChanged || lifecycleExpanded;
+  return riskExpanded || citesChangedFile(priorFinding.where, changedPaths);
 }
 
 function challengeRef(challenge) {
@@ -1168,6 +1150,7 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           priorFinding,
           warnings,
           reconciliationUncertain: unreconciledKnownIds.has(priorFinding.stable_id),
+          changedPaths: evidence?.changed_paths || [],
         });
       else if (!missingEvaluation && (
         carried.approved_invariant !== priorFinding.approved_invariant ||
@@ -1384,6 +1367,7 @@ function validateDecisionTransition({
   priorFinding,
   warnings,
   reconciliationUncertain = false,
+  changedPaths = [],
 }) {
   const ref = decisionRef(decision);
   if (finding.decision_ref !== ref)
@@ -1409,16 +1393,16 @@ function validateDecisionTransition({
     return;
   }
   if (decision.kind === "DEFER_FOLLOW_UP") {
-    // Ruling D1: widened risk remains published and blocked until a new
-    // owner decision; the old approval cannot reapply in a subsequent review.
+    // Ruling D1: a reopened deferral remains published as an owner decision
+    // until a new one; the old approval cannot reapply in a subsequent review.
     if (reconciliationUncertain ||
       (priorFinding.disposition === "AUTHOR_DECISION" && priorFinding.decision_ref === ref) ||
-      deferredFollowUpRiskDrifted({ currentFinding: evaluation.finding, priorFinding })) {
+      deferredFollowUpReopened({ currentFinding: evaluation.finding, priorFinding, changedPaths })) {
       finding.disposition = "AUTHOR_DECISION";
       finding.autonomous_eligibility = "NO";
       finding.follow_up = null;
       finding.approved_invariant = priorFinding.approved_invariant;
-      warnings.push(`${finding.stable_id}: deferred risk drift requires a new owner decision`);
+      warnings.push(`${finding.stable_id}: deferral reopened by changed cited code or higher risk; it needs a new owner decision`);
       return;
     }
     if (
@@ -2241,8 +2225,9 @@ function buildMechanicalCandidate({ priorProjection, target, reason }) {
 }
 
 // Shared action/local-settlement adapters. Model output omits fields owned by
-// the engine; bind those fields before entering the moved Intavia state machine.
-function foldReview({ output, target, priorProjection = null, humanDecisions = [], evidenceChallenges = [], priorProjections = [] }) {
+// the engine; bind those fields before entering the moved v4 state machine.
+// `changedPaths`: files changed since the prior projection's head.
+function foldReview({ output, target, priorProjection = null, humanDecisions = [], evidenceChallenges = [], priorProjections = [], changedPaths = [] }) {
   const priorById = new Map((prepareReviewPriorProjection({ priorProjection, priorProjections, humanDecisions })?.open_findings || [])
     .map((finding) => [finding.stable_id, finding]));
   const bindFinding = (finding, prior = null) => ({
@@ -2266,7 +2251,8 @@ function foldReview({ output, target, priorProjection = null, humanDecisions = [
     },
     target,
     priorProjection,
-    evidence: { human_decisions: humanDecisions, evidence_challenges: evidenceChallenges, prior_projections: priorProjections },
+    evidence: { human_decisions: humanDecisions, evidence_challenges: evidenceChallenges, prior_projections: priorProjections,
+      changed_paths: changedPaths },
   });
 }
 
@@ -2300,6 +2286,7 @@ module.exports = {
   buildMechanicalCandidate,
   buildProjection,
   challengeRef,
+  citesChangedFile,
   consumedChallengeRefs,
   deriveCandidateSettlement,
   formatProjectionComment,
