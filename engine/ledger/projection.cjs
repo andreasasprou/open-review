@@ -174,12 +174,15 @@ function isFollowUpRiskEligible(finding) {
 }
 
 // The repository files a finding's location (`where`) cites, resolved against
-// `knownPaths` (decision converge-after-block). Each run of path characters is a
-// candidate; a trailing `:line` or `:line:col` ends it. Leading prose words are
-// dropped until the rest resolves, after stripping a leading `./`. A relative
+// `knownPaths` (decisions converge-after-block, hosted-converge). Runs of path
+// characters are scanned word by word; a trailing `:line` or `:line:col` ends a
+// run. At each word the longest span starting there that resolves, after
+// stripping a leading `./`, is a cited file, and the scan continues after it, so
+// every path in the location counts and a path may contain spaces. A relative
 // path matches only an equal known path; an absolute one the longest known path
-// it ends with on `/` boundaries. `unresolved` is true when a path-like
-// candidate resolves to nothing, or when nothing in the location resolves.
+// it ends with on `/` boundaries. A word that starts no resolving span is skipped
+// as prose, unless it looks like a path. `unresolved` is true when such a
+// path-like word resolves to nothing, or when nothing in the location resolves.
 function citedFiles(where, knownPaths) {
   const resolve = (candidate) => {
     const path = candidate.replace(/^[(\[]+/u, "").replace(/[)\].,]+$/u, "").replace(/^\.\//u, "");
@@ -196,20 +199,26 @@ function citedFiles(where, knownPaths) {
   let unresolved = false;
   for (const [run] of String(where).matchAll(/[\p{L}\p{M}\p{N}_.\-/\[\]@+()~ ]+/gu)) {
     const words = run.trim().split(/ +/u);
-    let file = null;
-    for (let index = 0; index < words.length && file === null; index += 1)
-      file = resolve(words.slice(index).join(" "));
-    if (file !== null) files.push(file);
-    else if (words.some(looksLikePath)) unresolved = true;
+    for (let start = 0; start < words.length;) {
+      let end = words.length;
+      let file = null;
+      while (end > start && (file = resolve(words.slice(start, end).join(" "))) === null) end -= 1;
+      if (file !== null) {
+        files.push(file);
+        start = end;
+      } else {
+        if (looksLikePath(words[start])) unresolved = true;
+        start += 1;
+      }
+    }
   }
   return { files, unresolved: unresolved || files.length === 0 };
 }
 
 // Whether a finding's location cites one of `changed`. A location that cannot
 // be resolved counts as citing one, so it fails safe: it can still block, and a
-// deferral reopens. With nothing changed, nothing is cited.
+// deferral reopens.
 function citesChangedFile(where, changed, knownPaths = []) {
-  if (changed.length === 0) return false;
   const { files, unresolved } = citedFiles(where, new Set([...knownPaths, ...changed]));
   return unresolved || files.some((file) => changed.includes(file));
 }
@@ -217,9 +226,12 @@ function citesChangedFile(where, changed, knownPaths = []) {
 // A scoped review gates only on the files it reviewed: a new finding whose
 // location cites none of `changedFiles`, resolved against `knownFiles` (the
 // head's files), is published as advisory and left out of the ledger (decisions
-// converge-after-block, hosted-converge). An unresolved location stays in.
+// converge-after-block, hosted-converge). An unresolved location stays in, even
+// when nothing changed. `changedFiles` null means the review could raise no new
+// finding (a `prior_findings` review), so every new finding is advisory.
 function outsideChangedFiles(ledger, changedFiles, knownFiles) {
-  const outside = ledger.new_findings.filter((finding) => !citesChangedFile(finding.where, changedFiles, knownFiles));
+  const outside = ledger.new_findings.filter((finding) =>
+    changedFiles === null || !citesChangedFile(finding.where, changedFiles, knownFiles));
   const kept = (finding) => !outside.includes(finding);
   return { outside, ledger: { ...ledger, new_findings: ledger.new_findings.filter(kept), open_findings: ledger.open_findings.filter(kept) } };
 }
@@ -234,7 +246,7 @@ function deferredFollowUpReopened({ currentFinding, priorFinding, changedPaths, 
       Object.hasOwn(priorFinding, field) &&
       order[currentFinding[field]] > order[priorFinding[field]],
   );
-  return riskExpanded || citesChangedFile(priorFinding.where, changedPaths, knownPaths);
+  return riskExpanded || (changedPaths.length > 0 && citesChangedFile(priorFinding.where, changedPaths, knownPaths));
 }
 
 function challengeRef(challenge) {

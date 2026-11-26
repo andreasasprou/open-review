@@ -926,6 +926,9 @@ test("a deferral survives an unrelated push and reopens when its cited code chan
 	assert.equal(push(["src/index.ts"], "/workspace/src/index.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
 	// A location that resolves to no file fails safe: the deferral reopens.
 	assert.equal(push(["src/other.ts"], "/workspace/src/missing.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+	// Independent review finding 3: a changed file anywhere in the location reopens the deferral.
+	assert.equal(push(["src/request.ts"], "src/request.ts and src/other.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(push(["src/index.ts"], "src/request.ts and src/other.ts:3").open_findings[0].disposition, "FOLLOW_UP");
 });
 
 // Review finding 4: a deferral made on the current head postdates the change since the prior projection.

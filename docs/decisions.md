@@ -44,7 +44,7 @@ decision entry behind it.
 | `codex-cli-version` | `0.169.1` | [codex-cli-version](#codex-cli-version), [gpt-6-2-models](#gpt-6-2-models) |
 | `review-budget-minutes` | `30` | [review-budget](#review-budget), [gpt-6-2-models](#gpt-6-2-models) |
 | Local scope after a settled review | carry an unchanged patch; otherwise incremental from a settled ancestor; after a BLOCK, only with that run's saved ledger, and a new finding outside the changed files is advisory | [review-scope](#review-scope), [converge-after-block](#converge-after-block) |
-| Hosted scope after a settled review | incremental from the last reviewed head, where a new finding outside the files changed since the prior projection is advisory; on that head again, an owner event or a review command without `full` or `reset` re-evaluates only the prior findings | [review-scope](#review-scope), [hosted-converge](#hosted-converge) |
+| Hosted scope after a settled review | incremental from the last reviewed head, where a new finding outside the files changed since the prior projection is advisory; on the head, base branch and merge base the projection settled, an owner event or a review command without `full`, `reset` or `--since` re-evaluates only the prior findings | [review-scope](#review-scope), [hosted-converge](#hosted-converge) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `15m` | [review-scope](#review-scope), [gpt-6-2-models](#gpt-6-2-models) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
@@ -73,10 +73,14 @@ converge as local ones do since [converge-after-block](#converge-after-block)?
   and the model must weigh an evidence challenge's free-text evidence. A carry
   without a model would need a new trust rule, so the hosted path runs the
   model on the prior findings only.
-- Decision, unchanged head: on the last reviewed head, an owner event (a new
+- Decision, unchanged head: when the authenticated prior projection settled
+  this head on the same base branch and merge base, an owner event (a new
   owner decision, an unconsumed evidence challenge, or any other reason the
   evidence collector sets `modelReviewRequired`) or a review command without
-  `full` or `reset` runs a `prior_findings` review. The parent reviews alone,
+  `full`, `reset` or `--since` runs a `prior_findings` review. Eligibility
+  comes from the projection's review target, never from a requested `--since`
+  base or the separately written state comment, so neither an unreviewed head
+  nor a retargeted PR can reach it. The parent reviews alone,
   without focused or rules workers, with the whole PR diff as context, and the
   runner contract tells it: "In mode `prior_findings` the head has not changed
   since the last settlement: read the scoped diff as usual, evaluate only the
@@ -84,22 +88,32 @@ converge as local ones do since [converge-after-block](#converge-after-block)?
   and raise no new findings." The publisher folds the current decisions into
   the ledger and derives the gate under the current rule
   ([edge-case-gate](#edge-case-gate)). A new finding the model raises anyway
-  is advisory, since no file changed (below). An automatic event without an
-  owner event still carries the prior result without a model. `/<command> full`,
-  `reset`, a manual dispatch without `since-sha` and any command on a moved
-  head still review the whole PR.
-- Decision, incremental reviews: on a hosted incremental or `prior_findings`
-  review, a new finding whose location cites none of the files changed since
-  the prior projection's head is advisory: the gate summary lists it and the
-  projection leaves it out. The files are the ones the deferral rule already
-  uses (`changedSinceProjection` in `engine/index.cjs`; every file of the PR
-  when that head is gone), so a `--since` request still gates on the change
-  since the prior projection. Paths resolve with the local runner's resolver
+  is advisory. An automatic event without an owner event still carries the
+  prior result without a model. `/<command> full`, `reset`, a manual dispatch
+  without `since-sha`, and any command on another head, base branch or merge
+  base still review the whole PR; a `--since` request keeps its scope.
+- Decision, incremental reviews: on a hosted incremental review, a new
+  finding whose location cites none of the files changed since the prior
+  projection's head is advisory: the gate summary lists it and the projection
+  leaves it out. The files are the ones the deferral rule already uses
+  (`changedSinceProjection` in `engine/index.cjs`; every file of the PR when
+  that head is gone), so a `--since` request still gates on the change since
+  the prior projection. Paths resolve with the local runner's resolver
   (`outsideChangedFiles` in `engine/ledger/projection.cjs`, now shared): a
   location that does not resolve counts as citing a changed file and can
-  still block. Hosted incremental reviews follow a pass as well as a block,
+  still block, even when no file changed. Only a `prior_findings` review makes
+  every new finding advisory. Hosted incremental reviews follow a pass as well as a block,
   so the rule applies after either; the local runner applies it only after a
   block.
+- Resolver, independent review: the resolver kept only the last path that
+  resolved in each run of path characters, so `src/changed.ts and
+  src/unchanged.ts:10` cited only the unchanged file, and a missing path
+  before a resolving one was ignored. Both made a blocker advisory on the
+  local and hosted paths, and kept a deferral in force. It now scans each run
+  word by word: the longest span starting at a word that resolves is a cited
+  file, and the scan continues after it, so every path counts and a path may
+  contain spaces; a path-like word that starts no resolving span makes the
+  location unresolved; other words are prose and are skipped.
 - The projection format is unchanged.
 - Accepted loss, not measured: a defect that an earlier review missed in a file
   the latest push did not change, or anywhere on an unchanged head, merges with
@@ -133,6 +147,7 @@ each push. Can the reviews after a block converge?
   block. Each cited path resolves to one file at the reviewed head, after a
   trailing `:line` or `:line:col` and a leading `./` are stripped: a relative
   path only by equality, an absolute one to the longest file path it ends with.
+  Every path in the location counts ([hosted-converge](#hosted-converge)).
   A location that does not resolve counts as citing a changed file, so it can
   still block. Closed findings, and the IDs they reserve,
   carry from one local round to the next.

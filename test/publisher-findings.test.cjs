@@ -255,8 +255,8 @@ async function hostedRound(t, { head, reviewMode, ledgerPaths, priorProjection, 
 }
 
 test("a hosted incremental review leaves a new finding outside the changed files advisory; an unresolved location still blocks", async (t) => {
-	const round = (reviewMode, where) => hostedRound(t, { head: D, reviewMode, priorProjection: blockedAtA(),
-		ledgerPaths: { changedPaths: ["src/a.ts"], knownPaths: ["src/a.ts", "src/b.ts"] },
+	const round = (reviewMode, where, changedPaths = ["src/a.ts"]) => hostedRound(t, { head: D, reviewMode, priorProjection: blockedAtA(),
+		ledgerPaths: { changedPaths, knownPaths: ["src/a.ts", "src/b.ts"] },
 		output: { prior_issue_evaluations: [{ stable_id: "OR-1", result: "resolved_on_target", evidence: "Fixed.", finding: hostedFinding() }],
 			new_findings: [hostedFinding({ stable_id: "OR-2", where })] } });
 	const outside = await round("incremental", "src/b.ts:12");
@@ -270,6 +270,11 @@ test("a hosted incremental review leaves a new finding outside the changed files
 	assert.equal(unresolved.projection.conclusion, "block");
 	// A full review gates on every new finding.
 	assert.deepEqual((await round("full", "src/b.ts:12")).gate.blockingIssueIds, ["OR-2"]);
+	// Independent review findings 3 and 5: a changed file anywhere in the location blocks, and an
+	// incremental review whose change set is empty still blocks an unresolved location.
+	assert.deepEqual((await round("incremental", "src/a.ts and src/b.ts:12")).gate.blockingIssueIds, ["OR-2"]);
+	assert.deepEqual((await round("incremental", "Location unavailable; inspect review evidence.", [])).gate.blockingIssueIds, ["OR-2"]);
+	assert.equal((await round("incremental", "src/b.ts:12", [])).gate.status, "PASS");
 });
 
 test("a prior-findings review of an unchanged head re-applies the owner's deferral and raises no new blocker", async (t) => {

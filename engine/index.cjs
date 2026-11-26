@@ -1987,10 +1987,11 @@ async function postResults({ recorder,
 			humanDecisions: ledgerEvidence.humanDecisions,
 			evidenceChallenges: ledgerEvidence.evidenceChallenges,
 			...ledgerPaths });
-		// A scoped review gates only on the files changed since the prior
-		// projection; on an unchanged head that is none (decision hosted-converge).
+		// An incremental review gates only on the files changed since the prior
+		// projection; a prior_findings review raises no new blocker (decision hosted-converge).
 		if (SCOPED_REVIEW_MODES.has(metadata.reviewMode))
-			({ ledger: ledgerCandidate, outside } = outsideChangedFiles(ledgerCandidate, ledgerPaths.changedPaths, ledgerPaths.knownPaths));
+			({ ledger: ledgerCandidate, outside } = outsideChangedFiles(ledgerCandidate,
+				metadata.reviewMode === "prior_findings" ? null : ledgerPaths.changedPaths, ledgerPaths.knownPaths));
 		for (const warning of ledgerCandidate.warnings) console.warn(`[codex-review] Ledger: ${warning}`);
 		const legacyIssues = ledgerCandidate.open_findings.map((finding) => ({
 			id: finding.stable_id, severity: finding.severity, reachability: finding.reachability,

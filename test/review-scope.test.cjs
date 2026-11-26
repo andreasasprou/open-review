@@ -467,6 +467,14 @@ test("after a block, a new finding outside the changed files is advisory; the pr
 	// A location that resolves to no file fails safe: it can still block.
 	assert.equal(gate(["src/b.ts"], "/workspace/src/missing.ts:3"), "BLOCK");
 	assert.equal(gate(["src/b.ts"], "Location unavailable; inspect review evidence."), "BLOCK");
+	// Independent review finding 3: every path in a location counts, and a missing path fails safe.
+	assert.equal(gate(["src/b.ts"], "src/b.ts and src/c.ts:10"), "BLOCK");
+	assert.equal(gate(["src/b.ts"], "src/c.ts and src/b.ts:10"), "BLOCK");
+	assert.equal(gate(["src/b.ts"], "src/a.ts and src/c.ts:10"), "PASS");
+	assert.equal(gate(["src/b.ts"], "src/missing.ts and src/c.ts:10"), "BLOCK");
+	assert.equal(gate(["file.ts"], "In src/my file.ts:42 and src/c.ts:1"), "PASS");
+	assert.equal(gate(["src/c.ts"], "In src/my file.ts:42 and src/c.ts:1"), "BLOCK");
+	assert.equal(gate(["src/my file.ts"], "src/c.ts:1, src/my file.ts:42"), "BLOCK");
 });
 
 test("the local runner settles a carried or skipped head without a model, under the exact-head marker", (t) => {

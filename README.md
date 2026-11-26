@@ -27,12 +27,13 @@ structured output, not the model's verdict word.
 
 After a settled review, a push gets an incremental review of the commits since
 the last reviewed head, where a new finding whose location names none of the
-files changed since then is advisory. On the last reviewed head itself, an
-owner decision, an evidence challenge or an `/open-review` comment re-evaluates
-only the open findings against the owner's decisions, with no hunt for new
-findings (a `prior_findings` review); a new finding there is advisory.
-`/open-review full`, `/open-review reset` or a manual dispatch without
-`since-sha` reviews the whole PR.
+files changed since then is advisory; a location that names no file can still
+block. When the last settlement reviewed this same head on the same base branch
+and merge base, an owner decision, an evidence challenge or an `/open-review`
+comment re-evaluates only the open findings against the owner's decisions, with
+no hunt for new findings (a `prior_findings` review); a new finding there is
+advisory. `/open-review full`, `/open-review reset` or a manual dispatch without
+`since-sha` reviews the whole PR, and `--since` keeps its scope.
 
 | Input | Default | Purpose |
 |---|---|---|

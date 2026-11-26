@@ -491,6 +491,7 @@ runs:
       if: steps.skip.outputs.skip != 'true'
       shell: bash
       env:
+        BASE_REF: ${{ steps.pr.outputs.base_ref }}
         BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         LAST_REVIEWED_SHA: ${{ steps.state.outputs.last_reviewed_sha }}
@@ -510,6 +511,22 @@ runs:
         if jq -e '.priorProjection == null' .codex-ci/ledger-evidence.json >/dev/null; then
           SINCE=""
         fi
+        OWNER_EVENT=false
+        if jq -e '(.modelReviewRequired == true) or
+          (([.humanDecisions[]?.comment_id] - [.priorProjection.human_decisions[]?.comment_id]) | length > 0) or
+          (([.evidenceChallenges[]? | "github-comment:\(.comment_id)"] -
+          (.priorProjection.consumed_evidence_challenge_refs // [])) | length > 0)' \
+          .codex-ci/ledger-evidence.json >/dev/null; then
+          OWNER_EVENT=true
+        fi
+        # The authenticated projection settled this head on the same base branch
+        # and merge base, so the PR's patch is unchanged since that settlement.
+        SETTLED_HERE=false
+        if jq -e --arg head "$HEAD_SHA" --arg ref "${BASE_REF:-}" --arg base "$MERGE_BASE_SHA" \
+          '.priorProjection.review_target | .head_sha == $head and .base_ref == $ref and .merge_base_sha == $base' \
+          .codex-ci/ledger-evidence.json >/dev/null; then
+          SETTLED_HERE=true
+        fi
         REASON="no_previous_review"
         MODE="full"
         DIFF_BASE="$MERGE_BASE_SHA"
@@ -518,27 +535,24 @@ runs:
           REASON="reset_requested"
         elif [ "${FORCE_FULL_REVIEW:-false}" = "true" ]; then
           REASON="forced_full_review"
-        elif [ -z "$SINCE_SHA" ] && { [ "$EVENT_NAME" = "workflow_dispatch" ] ||
-             { [ "$EVENT_NAME" = "issue_comment" ] && [ "$SINCE" != "$HEAD_SHA" ]; }; }; then
-          # A review command on the last reviewed head is scoped below.
+        elif [ "$SETTLED_HERE" = "true" ] && [ -z "$SINCE_SHA" ] && [ "$EVENT_NAME" != "workflow_dispatch" ] &&
+             { [ "$OWNER_EVENT" = "true" ] || [ "$EVENT_NAME" = "issue_comment" ]; }; then
+          # Re-evaluate the settled findings against the owner's decisions, with
+          # no new-finding hunt (decision hosted-converge).
+          MODE="prior_findings"
+          REASON="rerun_requested"
+          if [ "$OWNER_EVENT" = "true" ]; then REASON="new_owner_event"; fi
+        elif { [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "issue_comment" ]; } &&
+             [ -z "$SINCE_SHA" ]; then
           REASON="explicit_review_requested"
         elif [ -n "$SINCE" ]; then
           if git cat-file -e "${SINCE}^{commit}" 2>/dev/null; then
             if git merge-base --is-ancestor "$SINCE" "$HEAD_SHA"; then
               COUNT="$(git rev-list --count "$SINCE".."$HEAD_SHA")"
               if [ "$COUNT" -eq 0 ]; then
-                REASON="rerun_requested"
-                if jq -e '(.modelReviewRequired == true) or
-                  (([.humanDecisions[]?.comment_id] - [.priorProjection.human_decisions[]?.comment_id]) | length > 0) or
-                  (([.evidenceChallenges[]? | "github-comment:\(.comment_id)"] -
-                  (.priorProjection.consumed_evidence_challenge_refs // [])) | length > 0)' \
-                  .codex-ci/ledger-evidence.json >/dev/null; then
+                if [ "$OWNER_EVENT" = "true" ]; then
+                  MODE="full"
                   REASON="new_owner_event"
-                fi
-                if [ "$REASON" = "new_owner_event" ] || [ "$EVENT_NAME" = "issue_comment" ]; then
-                  # The reviewed head again: re-evaluate its open findings against the
-                  # owner's decisions, with no new-finding hunt (decision hosted-converge).
-                  MODE="prior_findings"
                 else
                   MODE="skip"
                   REASON="no_new_commits"
