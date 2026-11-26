@@ -137,17 +137,18 @@ test("equivalent evaluations deduplicate after canonical key and nullable-field 
 	assert.doesNotMatch(folded.warnings.join("\n"), /reconciliation conflict/);
 });
 
-test("conflicting unknown advisory evaluations publish a blocking finding", () => {
+test("conflicting unknown advisory evaluations publish an advisory owner decision", () => {
 	const advisory = modelFinding({ severity: "P2", reachability: "theoretical" });
 	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: advisory },
 		{ stable_id: "OR-1", result: "still_open", finding: { ...advisory, likelihood: "low" } },
 	] }, target: target(B) });
 	assert.equal(folded.open_findings[0].stable_id, "OR-1");
-	assert.equal(settlement(folded.open_findings).conclusion, "block");
-	assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record and blocked/);
+	assert.equal(folded.open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(settlement(folded.open_findings).conclusion, "pass");
+	assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record as an owner decision/);
 	assert.equal(buildProjection({ candidate: folded, target: target(B),
-		checkIdentity: checkIdentity(B), summaryCommentId: 102 }).conclusion, "block");
+		checkIdentity: checkIdentity(B), summaryCommentId: 102 }).conclusion, "pass");
 });
 
 test("pre-existing unknown conflict remains blocking through finding normalization", () => {
@@ -462,7 +463,7 @@ test("generated reconciliation mixtures never pass or lose the open conflict fin
 	assert.equal(settlement(knownInvalid.open_findings).conclusion, "block");
 });
 
-test("duplicate conflicts across finding fields and references always retain and block", () => {
+test("duplicate conflicts across finding fields and references always retain the advisory prior record", () => {
 	const prior = published(modelFinding({ severity: "P2", reachability: "theoretical" }));
 	const baseline = { ...prior.open_findings[0], last_evaluated_target: hashReviewTarget(target(B)) };
 	const variants = [
@@ -497,10 +498,10 @@ test("duplicate conflicts across finding fields and references always retain and
 			assert.equal(retained.severity, "P2", field);
 			assert.equal(retained.reachability, "theoretical", field);
 			assert.equal(retained.disposition, "AUTHOR_DECISION", field);
-			assert.equal(settlement(folded.open_findings).conclusion, "block", field);
+			assert.equal(settlement(folded.open_findings).conclusion, "pass", field);
 			assert.equal(folded.warnings.filter((warning) => warning.startsWith("reconciliation conflict on OR-1:")).length, 1, field);
 			assert.equal(buildProjection({ candidate: folded, target: target(B),
-				checkIdentity: checkIdentity(B), summaryCommentId: 104 }).conclusion, "block", field);
+				checkIdentity: checkIdentity(B), summaryCommentId: 104 }).conclusion, "pass", field);
 		}
 	}
 });
@@ -739,7 +740,7 @@ test("duplicate deferred reassessments invalidate approval for likelihood and re
 		assert.equal(folded.open_findings[0][riskField], priorProjection.open_findings[0][riskField]);
 		assert.equal(folded.open_findings[0].disposition, "AUTHOR_DECISION");
 		assert.equal(folded.open_findings[0].decision_ref, "github-comment:50");
-		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record and blocked/);
+		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record as an owner decision/);
 		assert.equal(buildProjection({ candidate: folded, target: target(A),
 			checkIdentity: checkIdentity(A), summaryCommentId: 101, humanDecisions: [decision] }).conclusion,
 			"block");
@@ -772,11 +773,11 @@ test("conflicting consequence evaluations invalidate an approved deferral", () =
 		assert.equal(buildProjection({ candidate: folded, target: target(A),
 			checkIdentity: checkIdentity(A), summaryCommentId: 101,
 			humanDecisions: [decision] }).conclusion, "block");
-		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 3 evaluations disagreed; kept prior record and blocked/);
+		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 3 evaluations disagreed; kept prior record as an owner decision/);
 	}
 });
 
-test("a conflict invalidates an advisory deferral and stays blocked until a newer decision", () => {
+test("a conflict invalidates an advisory deferral without blocking on its advisory risk", () => {
 	const baseline = modelFinding({ severity: "P2", reachability: "compound_path",
 		likelihood: "low", recoverability: "routine", attribution: "introduced" });
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
@@ -796,13 +797,14 @@ test("a conflict invalidates an advisory deferral and stays blocked until a newe
 	assert.equal(conflict.open_findings[0].severity, "P2");
 	assert.equal(conflict.open_findings[0].disposition, "AUTHOR_DECISION");
 	assert.equal(conflict.open_findings[0].decision_ref, "github-comment:50");
-	const blockedProjection = buildProjection({ candidate: conflict, target: target(A),
+	const conflictProjection = buildProjection({ candidate: conflict, target: target(A),
 		checkIdentity: checkIdentity(A), summaryCommentId: 101, humanDecisions: [decision] });
-	assert.equal(blockedProjection.conclusion, "block");
+	assert.equal(conflictProjection.conclusion, "pass");
 	const later = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: baseline },
-	] }, target: target(A), priorProjection: blockedProjection, humanDecisions: [decision] });
-	assert.equal(settlement(later.open_findings).conclusion, "block");
+	] }, target: target(A), priorProjection: conflictProjection, humanDecisions: [decision] });
+	assert.equal(later.open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(settlement(later.open_findings).conclusion, "pass");
 });
 
 test("malformed duplicate deferred risk cannot reapply an old deferral", () => {

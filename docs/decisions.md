@@ -53,6 +53,39 @@ decision entry behind it.
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
 
+### edge-case-gate
+
+**2026-11-26.** Owner request, without an evaluation run. After the GPT-6.2
+switch, engineers in three consumer repositories reported reviews that block
+merges on edge cases. Which findings should block?
+
+- Evidence ([gpt-6-2-rollback](#gpt-6-2-rollback)): on the most affected
+  consumer, findings that need several conditions to line up, with `low` or
+  `unknown` likelihood, rose from 37% to 65% of its blocking findings; models
+  rate rare races P1 on a `compound_path`. The gate blocked every P0 or P1
+  finding that was not `theoretical`, and every `AUTHOR_DECISION` finding at
+  any risk, so an advisory risk could still need an owner decision before
+  merge. The model rollback lowers the count; this rule holds with any model.
+- Decision: a finding's risk blocks when it is P0 and not `theoretical`, P1 on a
+  `normal_path`, or P1 on a `compound_path` with `high` or `medium`
+  likelihood. Everything else is advisory: P2, `theoretical`, and P1 on a
+  `compound_path` with `low` or `unknown` likelihood. An `AUTHOR_DECISION`
+  finding blocks only when its risk blocks; `FOLLOW_UP` stays advisory.
+- One rule (`riskBlocks` in `engine/ledger/projection.cjs`) derives the
+  ledger settlement, the merge-gate line, the `Blocking:` list, the hosted
+  check and the local status. The rule pack template and the output contract
+  tell the model the same rule.
+- A reconciliation conflict (two different evaluations of one finding in one
+  output) still keeps the prior record as an owner decision. Its risk is raised
+  to the riskiest copy the model reported, so it blocks exactly when one of
+  those copies would.
+- Projections published before this change still verify on read; their
+  settlement may block on an advisory owner decision.
+- Accepted loss, not measured: a defect on a compound path whose likelihood the
+  model rates `low` or `unknown` now merges with an advisory finding.
+- Reopen when a merged PR ships a defect that a P1 `compound_path` finding,
+  advisory under this rule, had described.
+
 ### gpt-6-2-rollback
 
 **2026-11-26.** Owner decision after a week of production use. Do the GPT-6.2

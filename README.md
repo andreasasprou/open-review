@@ -5,8 +5,10 @@ parent reviewer delegates bounded investigations to child agents, and then
 publishes one summary comment, inline comments on diff lines, and a check run.
 Findings carry over between review passes through hidden state comments.
 
-A finding blocks the merge only when its severity is P0 or P1 and its
-reachability is not `theoretical`. Trusted code makes that decision from the
+A finding blocks the merge only when it is a likely failure: P0 and not
+`theoretical`, P1 on a `normal_path`, or P1 on a `compound_path` with `high` or
+`medium` likelihood. Every other finding is advisory, and an advisory finding
+never needs an owner decision. Trusted code makes that decision from the
 structured output, not the model's verdict word.
 
 ## Use it

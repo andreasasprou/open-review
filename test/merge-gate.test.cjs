@@ -91,7 +91,7 @@ test("a P1 normal-path finding closes the gate", () => {
 
 test("ledger findings close the gate exactly when the ledger settlement blocks", () => {
 	const { settlement } = require("../engine/ledger/projection.cjs");
-	const ownerDecision = issue({ stable_id: "OWNER", severity: "P2", disposition: "AUTHOR_DECISION" });
+	const ownerDecision = issue({ stable_id: "OWNER", disposition: "AUTHOR_DECISION" });
 	const advisory = issue({ stable_id: "ADVISORY", severity: "P2", disposition: "FIX_IN_PR" });
 	const blocked = deriveMergeGate({ open_findings: [ownerDecision, advisory] });
 	assert.equal(blocked.status, "BLOCK");
@@ -100,6 +100,34 @@ test("ledger findings close the gate exactly when the ledger settlement blocks",
 	assert.match(formatMergeGateSummary(blocked, "OK"), /1 of 2 open findings require a fix or owner decision/);
 	assert.equal(deriveMergeGate({ open_findings: [advisory] }).status, "PASS");
 	assert.equal(settlement([advisory]).conclusion, "pass");
+});
+
+// Decision edge-case-gate: the rule table, for ledger findings and legacy issues alike.
+test("only a likely failure blocks; an owner decision on an advisory risk does not", () => {
+	const { isMergeBlocker: ledgerBlocks, settlement } = require("../engine/ledger/projection.cjs");
+	const table = [
+		[{ severity: "P0", reachability: "normal_path", likelihood: "low" }, true],
+		[{ severity: "P0", reachability: "compound_path", likelihood: "unknown" }, true],
+		[{ severity: "P0", reachability: "theoretical", likelihood: "high" }, false],
+		[{ severity: "P1", reachability: "normal_path", likelihood: "unknown" }, true],
+		[{ severity: "P1", reachability: "compound_path", likelihood: "high" }, true],
+		[{ severity: "P1", reachability: "compound_path", likelihood: "medium" }, true],
+		[{ severity: "P1", reachability: "compound_path", likelihood: "low" }, false],
+		[{ severity: "P1", reachability: "compound_path", likelihood: "unknown" }, false],
+		[{ severity: "P1", reachability: "theoretical", likelihood: "high" }, false],
+		[{ severity: "P2", reachability: "normal_path", likelihood: "high" }, false],
+	];
+	for (const [risk, blocks] of table) {
+		const label = JSON.stringify(risk);
+		for (const disposition of ["FIX_IN_PR", "AUTHOR_DECISION"]) {
+			const finding = issue({ stable_id: "F-1", ...risk, disposition });
+			assert.equal(ledgerBlocks(finding), blocks, `${disposition} ${label}`);
+			assert.equal(deriveMergeGate({ open_findings: [finding] }).status, blocks ? "BLOCK" : "PASS", label);
+			assert.equal(settlement([finding]).conclusion, blocks ? "block" : "pass", label);
+		}
+		assert.equal(ledgerBlocks(issue({ ...risk, disposition: "FOLLOW_UP" })), false, `FOLLOW_UP ${label}`);
+		assert.equal(isMergeBlocker(issue(risk)), blocks, `legacy ${label}`);
+	}
 });
 
 test("no findings passes", () => {

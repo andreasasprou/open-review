@@ -1643,20 +1643,21 @@ test("a projection comment written under the old settlement still parses", () =>
   assert.deepEqual(parseProjectionComment({ body }), legacy);
 });
 
-test("a prior v4 advisory owner-decision settlement still parses", () => {
+test("prior v4 settlements of an advisory owner decision still parse", () => {
   const candidate = validateCandidate({
     rawOutput: output({ new_findings: [finding({ severity: "P2", reachability: "theoretical",
       disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO" })] }),
     target: target(), priorProjection: null, evidence: evidence(),
   });
   const current = project({ candidate });
-  assert.equal(current.conclusion, "block");
-  const priorSettlement = rehashProjection({ ...current, conclusion: "pass",
-    watcher_action: "settled", eligible_issue_ids: [] });
+  assert.equal(current.conclusion, "pass");
+  // Published before edge-case-gate, when every owner decision blocked.
+  const blockedSettlement = rehashProjection({ ...current, conclusion: "block",
+    watcher_action: "pause_for_human", eligible_issue_ids: [] });
   assert.deepEqual(parseProjectionComment({
-    body: formatLegacyProjectionComment(priorSettlement),
-  }), priorSettlement);
-  assert.throws(() => verifyProjection({ projection: priorSettlement }), ContractError);
+    body: formatLegacyProjectionComment(blockedSettlement),
+  }), blockedSettlement);
+  assert.throws(() => verifyProjection({ projection: blockedSettlement }), ContractError);
 });
 
 test("an old-settlement projection cannot be published by this run", () => {

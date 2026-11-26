@@ -1624,7 +1624,7 @@ runs:
               });
             }
             console.log(`No new commits to review; carried merge gate: ${gate.status}`);
-            if (gate.status === 'BLOCK') core.setFailed('Carried review has reachable P0/P1 findings requiring a fix or owner decision.');
+            if (gate.status === 'BLOCK') core.setFailed('Carried review has blocking findings that require a fix or owner decision.');
             return;
           }
 
@@ -1763,7 +1763,7 @@ runs:
               },
             });
             if (result.mergeGate?.status === 'BLOCK') {
-              core.setFailed('Review found reachable P0/P1 findings that require a fix or owner decision.');
+              core.setFailed('Review found blocking findings that require a fix or owner decision.');
             }
           } catch (error) {
             if (error?.code === 'review_superseded') {

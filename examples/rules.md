@@ -93,8 +93,10 @@ finding is P2 unless current code proves every trigger in the chain. A `MUST`
 in repo guidance proves intent, but it does not make a finding P1 by itself.
 
 Trusted code decides what blocks, not you. An open issue blocks the merge when
-its severity is P0 or P1 and its reachability is not `theoretical`. Write the
-verdict word to match that rule.
+it is P0 and not `theoretical`, P1 on a `normal_path`, or P1 on a
+`compound_path` with `high` or `medium` likelihood. Every other finding is
+advisory and needs no owner decision. Write the verdict word to match that
+rule.
 
 ## Priorities, in rough severity order
 

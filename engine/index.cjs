@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require("./diagnostics-runtime.cjs");
 const path = require("node:path");
 const { spansForPath } = require("./location-spans.cjs");
-const { foldReview, isMergeBlocker: isLedgerMergeBlocker } = require("./ledger/projection.cjs");
+const { foldReview, isMergeBlocker: isLedgerMergeBlocker, riskBlocks } = require("./ledger/projection.cjs");
 const { postResults: publishLedger } = require("./ledger/publisher.cjs");
 
 // ─── Comment Markers ──────────────────────────────────────────────────────────
@@ -55,13 +55,11 @@ function formatSeverityBadge(severity) {
 // `Verdict:` word the model writes in `review_markdown`. An audit of the sibling
 // reviewer found that 51.5% of its findings were low-or-unknown likelihood and
 // off the normal path yet still marked must-fix, and that prompt prose alone did
-// not correct it. Severity plus reachability is enforced here in code instead.
-const BLOCKING_SEVERITIES = new Set(["P0", "P1"]);
-
+// not correct it. Severity, reachability and likelihood are enforced here in
+// code instead, by the ledger's rule (decision edge-case-gate).
 function isMergeBlocker(issue) {
 	return (
-		BLOCKING_SEVERITIES.has(issue?.severity) &&
-		issue?.reachability !== "theoretical" &&
+		riskBlocks(issue ?? {}) &&
 		!(issue?.disposition === "FOLLOW_UP" && issue?.decision_ref && issue?.follow_up)
 	);
 }
@@ -87,8 +85,8 @@ function deriveMergeGate(reviewState) {
 
 	// Count blockers from the issues themselves; ids are display metadata and a
 	// blank id must not exempt an otherwise blocking finding. Ledger findings use
-	// the ledger's settlement rule (an owner decision blocks at any severity), so
-	// the job result, the check and the published projection agree.
+	// the ledger's settlement rule, so the job result, the check and the
+	// published projection agree.
 	const blocks = Array.isArray(reviewState?.open_findings) ? isLedgerMergeBlocker : isMergeBlocker;
 	const blockingIssues = openIssues.filter(blocks);
 	const blockingIssueIds = blockingIssues

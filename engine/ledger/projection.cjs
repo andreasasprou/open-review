@@ -155,21 +155,29 @@ function isProposedFollowUp(finding) {
   return finding.disposition === "FOLLOW_UP" && finding.decision_ref === null;
 }
 
-// Unsettled owner decisions block even when the retained risk is advisory.
-// Other P2 findings, theoretical paths, and follow-up proposals are advisory.
+// A finding's risk blocks only a likely failure (decision edge-case-gate): a
+// reachable P0, a normal-path P1, or a compound-path P1 of high or medium
+// likelihood. P2, theoretical, and unlikely compound-path P1 risks are advisory.
+function riskBlocks(finding) {
+  if (finding.severity === "P0") return finding.reachability !== "theoretical";
+  return finding.severity === "P1" && (finding.reachability === "normal_path" ||
+    (finding.reachability === "compound_path" && ["high", "medium"].includes(finding.likelihood)));
+}
+
+// An owner decision blocks only when its risk blocks; follow-ups never block.
 function isMergeBlocker(finding) {
-  return (
-    finding.disposition === "AUTHOR_DECISION" ||
-    (finding.disposition !== "FOLLOW_UP" &&
-      finding.severity !== "P2" &&
-      finding.reachability !== "theoretical")
-  );
+  return finding.disposition !== "FOLLOW_UP" && riskBlocks(finding);
 }
 
 // Previously published v4 projections gated only reachable P0/P1 findings.
 function wasMergeBlocker(finding) {
   return finding.disposition !== "FOLLOW_UP" &&
     finding.severity !== "P2" && finding.reachability !== "theoretical";
+}
+
+// Projections published before edge-case-gate also blocked every owner decision.
+function wasOwnerDecisionBlocker(finding) {
+  return finding.disposition === "AUTHOR_DECISION" || wasMergeBlocker(finding);
 }
 
 function isFollowUpRiskEligible(finding) {
@@ -636,7 +644,9 @@ function findingRisk(finding) {
     ? ({ P0: 3, P1: 2, P2: 1 }[finding.severity] || 2) : 2;
   const reachability = typeof finding?.reachability === "string"
     ? ({ normal_path: 2, compound_path: 1, theoretical: 0 }[finding.reachability] ?? 2) : 2;
-  return [severity >= 2 && reachability > 0 ? 1 : 0, severity, reachability];
+  const blocks = riskBlocks({ severity: ["P2", "P1", "P0"][severity - 1],
+    reachability: ["theoretical", "compound_path", "normal_path"][reachability], likelihood: finding?.likelihood });
+  return [blocks ? 1 : 0, severity, reachability];
 }
 
 function moreRiskyFinding(left, right) {
@@ -646,6 +656,13 @@ function moreRiskyFinding(left, right) {
     if (b[index] !== a[index]) return b[index] > a[index] ? right : left;
   }
   return left;
+}
+
+// The riskiest still_open copy of a conflicting evaluation, the latest on a tie,
+// so a conflict never publishes a lower risk than one of its copies reported.
+function riskiestOpenCopy(members) {
+  return members.reduce((kept, member) => member.result === "still_open" &&
+    (!kept || moreRiskyFinding(member.finding, kept.finding) === member.finding) ? member : kept, null);
 }
 
 function canonicalEvaluation(evaluation, target) {
@@ -845,11 +862,11 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       (canonical.some((value) => value === null) || canonical.some((value) => value !== canonical[0]));
     if (conflict) {
       conflictIds.add(stableId);
-      warnings.push(`reconciliation conflict on ${typeof stableId === "string" ? stableId : "(invalid stable ID)"}: ${members.length} evaluations disagreed; kept prior record and blocked`);
+      warnings.push(`reconciliation conflict on ${typeof stableId === "string" ? stableId : "(invalid stable ID)"}: ${members.length} evaluations disagreed; kept prior record as an owner decision at its riskiest reported risk`);
       if (!priorById.has(stableId)) {
-        const latestWellFormed = members.findLast((member, index) =>
-          member.result === "still_open" && canonical[index] !== null);
-        unknownById.set(stableId, latestWellFormed || {
+        // A malformed riskiest copy is retained as the minimal blocker.
+        const riskiest = riskiestOpenCopy(members);
+        unknownById.set(stableId, riskiest && canonical[members.indexOf(riskiest)] !== null ? riskiest : {
           stable_id: stableId, result: "still_open", finding: { stable_id: stableId },
         });
       }
@@ -1031,7 +1048,13 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     if (conflictIds.has(priorFinding.stable_id)) {
       const storedFinding = (priorProjection?.open_findings || []).find(
         (finding) => finding.stable_id === priorFinding.stable_id) || priorFinding;
-      const carried = normalizeFinding({ ...structuredClone(storedFinding),
+      // The record stays; its risk rises to a reported copy whose risk blocks.
+      const riskiest = riskiestOpenCopy(evaluationsById.get(priorFinding.stable_id));
+      const { severity, reachability, likelihood } = riskiest &&
+        findingRisk(riskiest.finding)[0] > findingRisk(storedFinding)[0]
+        ? minimalBlockingFinding(riskiest.finding, priorFinding.stable_id, reviewTarget, "conflicting evaluations")
+        : storedFinding;
+      const carried = normalizeFinding({ ...structuredClone(storedFinding), severity, reachability, likelihood,
         last_evaluated_target: hashReviewTarget(reviewTarget),
         disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO", follow_up: null,
       }, { target: reviewTarget, conflictRetained: true });
@@ -1854,8 +1877,8 @@ function verifyProjection({ projection, allowLegacySettlement = false }) {
     fail("invalid_projection", "eligible_issue_ids must be a unique array");
   const currentSettlement = deriveCandidateSettlement(projection);
   const acceptedSettlements = allowLegacySettlement
-    ? [currentSettlement, deriveCandidateSettlement(projection, wasMergeBlocker),
-        deriveLegacySettlement(projection)]
+    ? [currentSettlement, deriveCandidateSettlement(projection, wasOwnerDecisionBlocker),
+        deriveCandidateSettlement(projection, wasMergeBlocker), deriveLegacySettlement(projection)]
     : [currentSettlement];
   if (
     !acceptedSettlements.some((settlement) =>
@@ -2282,6 +2305,7 @@ module.exports = {
   formatProjectionComment,
   isMergeBlocker,
   isProposedFollowUp,
+  riskBlocks,
   parseProjectionComment,
   prepareReviewPriorProjection,
   validateCandidate,
