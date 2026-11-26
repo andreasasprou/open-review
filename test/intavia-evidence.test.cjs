@@ -1401,7 +1401,7 @@ test("a green job keeps its BLOCK projection; the stricter result needs no gate 
   });
   const identity = v4ProjectionForTarget({ target: reviewTarget }).check_identity;
   const ownerDecision = { ...currentFindingForTarget({ target: reviewTarget, stableId: "OWNER-1" }),
-    severity: "P2", disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO" };
+    severity: "P1", disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO" };
   const projection = buildProjection({ candidate: { open_findings: [ownerDecision], closed_findings: [], prior_issue_evaluations: [] },
     target: reviewTarget, checkIdentity: identity, summaryCommentId: 99 });
   assert.equal(projection.conclusion, "block");

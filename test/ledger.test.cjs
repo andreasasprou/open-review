@@ -137,17 +137,18 @@ test("equivalent evaluations deduplicate after canonical key and nullable-field 
 	assert.doesNotMatch(folded.warnings.join("\n"), /reconciliation conflict/);
 });
 
-test("conflicting unknown advisory evaluations publish a blocking finding", () => {
+test("conflicting unknown advisory evaluations publish an advisory owner decision", () => {
 	const advisory = modelFinding({ severity: "P2", reachability: "theoretical" });
 	const folded = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: advisory },
 		{ stable_id: "OR-1", result: "still_open", finding: { ...advisory, likelihood: "low" } },
 	] }, target: target(B) });
 	assert.equal(folded.open_findings[0].stable_id, "OR-1");
-	assert.equal(settlement(folded.open_findings).conclusion, "block");
-	assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record and blocked/);
+	assert.equal(folded.open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(settlement(folded.open_findings).conclusion, "pass");
+	assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record as an owner decision/);
 	assert.equal(buildProjection({ candidate: folded, target: target(B),
-		checkIdentity: checkIdentity(B), summaryCommentId: 102 }).conclusion, "block");
+		checkIdentity: checkIdentity(B), summaryCommentId: 102 }).conclusion, "pass");
 });
 
 test("pre-existing unknown conflict remains blocking through finding normalization", () => {
@@ -462,7 +463,7 @@ test("generated reconciliation mixtures never pass or lose the open conflict fin
 	assert.equal(settlement(knownInvalid.open_findings).conclusion, "block");
 });
 
-test("duplicate conflicts across finding fields and references always retain and block", () => {
+test("duplicate conflicts across finding fields and references always retain the advisory prior record", () => {
 	const prior = published(modelFinding({ severity: "P2", reachability: "theoretical" }));
 	const baseline = { ...prior.open_findings[0], last_evaluated_target: hashReviewTarget(target(B)) };
 	const variants = [
@@ -497,10 +498,10 @@ test("duplicate conflicts across finding fields and references always retain and
 			assert.equal(retained.severity, "P2", field);
 			assert.equal(retained.reachability, "theoretical", field);
 			assert.equal(retained.disposition, "AUTHOR_DECISION", field);
-			assert.equal(settlement(folded.open_findings).conclusion, "block", field);
+			assert.equal(settlement(folded.open_findings).conclusion, "pass", field);
 			assert.equal(folded.warnings.filter((warning) => warning.startsWith("reconciliation conflict on OR-1:")).length, 1, field);
 			assert.equal(buildProjection({ candidate: folded, target: target(B),
-				checkIdentity: checkIdentity(B), summaryCommentId: 104 }).conclusion, "block", field);
+				checkIdentity: checkIdentity(B), summaryCommentId: 104 }).conclusion, "pass", field);
 		}
 	}
 });
@@ -739,7 +740,7 @@ test("duplicate deferred reassessments invalidate approval for likelihood and re
 		assert.equal(folded.open_findings[0][riskField], priorProjection.open_findings[0][riskField]);
 		assert.equal(folded.open_findings[0].disposition, "AUTHOR_DECISION");
 		assert.equal(folded.open_findings[0].decision_ref, "github-comment:50");
-		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record and blocked/);
+		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 2 evaluations disagreed; kept prior record as an owner decision/);
 		assert.equal(buildProjection({ candidate: folded, target: target(A),
 			checkIdentity: checkIdentity(A), summaryCommentId: 101, humanDecisions: [decision] }).conclusion,
 			"block");
@@ -772,11 +773,11 @@ test("conflicting consequence evaluations invalidate an approved deferral", () =
 		assert.equal(buildProjection({ candidate: folded, target: target(A),
 			checkIdentity: checkIdentity(A), summaryCommentId: 101,
 			humanDecisions: [decision] }).conclusion, "block");
-		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 3 evaluations disagreed; kept prior record and blocked/);
+		assert.match(folded.warnings.join("\n"), /reconciliation conflict on OR-1: 3 evaluations disagreed; kept prior record as an owner decision/);
 	}
 });
 
-test("a conflict invalidates an advisory deferral and stays blocked until a newer decision", () => {
+test("a conflict invalidates an advisory deferral without blocking on its advisory risk", () => {
 	const baseline = modelFinding({ severity: "P2", reachability: "compound_path",
 		likelihood: "low", recoverability: "routine", attribution: "introduced" });
 	const decision = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track this bug.",
@@ -796,13 +797,14 @@ test("a conflict invalidates an advisory deferral and stays blocked until a newe
 	assert.equal(conflict.open_findings[0].severity, "P2");
 	assert.equal(conflict.open_findings[0].disposition, "AUTHOR_DECISION");
 	assert.equal(conflict.open_findings[0].decision_ref, "github-comment:50");
-	const blockedProjection = buildProjection({ candidate: conflict, target: target(A),
+	const conflictProjection = buildProjection({ candidate: conflict, target: target(A),
 		checkIdentity: checkIdentity(A), summaryCommentId: 101, humanDecisions: [decision] });
-	assert.equal(blockedProjection.conclusion, "block");
+	assert.equal(conflictProjection.conclusion, "pass");
 	const later = foldReview({ output: { new_findings: [], prior_issue_evaluations: [
 		{ stable_id: "OR-1", result: "still_open", finding: baseline },
-	] }, target: target(A), priorProjection: blockedProjection, humanDecisions: [decision] });
-	assert.equal(settlement(later.open_findings).conclusion, "block");
+	] }, target: target(A), priorProjection: conflictProjection, humanDecisions: [decision] });
+	assert.equal(later.open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(settlement(later.open_findings).conclusion, "pass");
 });
 
 test("malformed duplicate deferred risk cannot reapply an old deferral", () => {
@@ -886,6 +888,89 @@ test("local settlement keeps prior findings when the model emits no new findings
 		patch: "", priorProjection });
 	assert.equal(result.mergeGate.status, "BLOCK");
 	assert.equal(result.ledger.open_findings[0].stable_id, "OR-1");
+});
+
+// Decision converge-after-block: a deferral survives later pushes unless its cited code changes.
+test("a deferral survives an unrelated push and reopens when its cited code changes", () => {
+	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: A,
+		comment_id: 50, actor_login: "sample-maintainer" };
+	const deferred = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1",
+		result: "still_open", finding: modelFinding() }] }, target: target(), priorProjection: published(), humanDecisions: [defer] });
+	const deferredProjection = buildProjection({ candidate: deferred, target: target(), checkIdentity: checkIdentity(),
+		summaryCommentId: 100, humanDecisions: [defer] });
+	assert.equal(deferredProjection.conclusion, "pass");
+	// The model rewords and re-rates the finding on the pushed head, as it does on every review.
+	const push = (changedPaths, where = "src/request.ts:10") => foldReview({ output: { new_findings: [], prior_issue_evaluations: [{
+		stable_id: "OR-1", result: "still_open",
+		finding: modelFinding({ likelihood: "high", likely_consequence: "Requests fail on retry." }) }] },
+		target: target(B), priorProjection: { ...deferredProjection, open_findings: deferredProjection.open_findings.map((finding) =>
+			({ ...finding, where })) }, humanDecisions: [defer], changedPaths,
+		knownPaths: ["src/request.ts", "request.ts", "src/other.ts", "src/my file.ts", "file.ts", "src/naïve.ts", "ve.ts",
+			"src/index.ts", "index.ts"] });
+	const unrelated = push(["src/other.ts", "docs/guide.md"]);
+	assert.equal(unrelated.open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(settlement(unrelated.open_findings).conclusion, "pass");
+	const touched = push(["src/request.ts"]);
+	assert.equal(touched.open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(touched.open_findings[0].decision_ref, "github-comment:50");
+	assert.match(touched.warnings.join("\n"), /OR-1: deferral reopened/);
+	assert.equal(settlement(touched.open_findings).conclusion, "block");
+	// Review finding 5 and the convergence check: cited paths resolve to whole repository files.
+	assert.equal(push(["request.ts"]).open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["file.ts"], "src/my file.ts:42").open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["src/my file.ts"], "src/my file.ts:42").open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(push(["ve.ts"], "src/naïve.ts:42").open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["src/request.ts"], "/workspace/src/request.ts:10").open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(push(["index.ts"], "/workspace/src/index.ts:3").open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(push(["src/index.ts"], "/workspace/src/index.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+	// A location that resolves to no file fails safe: the deferral reopens.
+	assert.equal(push(["src/other.ts"], "/workspace/src/missing.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+});
+
+// Review finding 4: a deferral made on the current head postdates the change since the prior projection.
+test("a fresh deferral on the current head survives the change that preceded it and later reruns", () => {
+	const defer = { stable_id: "OR-1", kind: "DEFER_FOLLOW_UP", invariant: "Track it", scope: "This PR",
+		evidence: "Issue exists", tracker: "ENG-1", owner_or_triage: "the sample owner", decision_head_sha: B,
+		comment_id: 50, actor_login: "sample-maintainer" };
+	const evaluation = { stable_id: "OR-1", result: "still_open", finding: modelFinding() };
+	const fresh = foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation] }, target: target(B),
+		priorProjection: published(), humanDecisions: [defer], changedPaths: ["src/request.ts"] });
+	assert.equal(fresh.open_findings[0].disposition, "FOLLOW_UP");
+	const freshProjection = buildProjection({ candidate: fresh, target: target(B), checkIdentity: checkIdentity(B),
+		summaryCommentId: 100, humanDecisions: [defer] });
+	const rerun = foldReview({ output: { new_findings: [], prior_issue_evaluations: [evaluation] }, target: target(B),
+		priorProjection: freshProjection, humanDecisions: [defer] });
+	assert.equal(rerun.open_findings[0].disposition, "FOLLOW_UP");
+	assert.equal(settlement(rerun.open_findings).conclusion, "pass");
+});
+
+test("the publisher's changed paths run from the prior projection's head, or the merge base when it is gone", (t) => {
+	const { execFileSync } = require("node:child_process");
+	const fs = require("node:fs");
+	const os = require("node:os");
+	const path = require("node:path");
+	const { changedSinceProjection } = require("../engine/index.cjs");
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-changed-"));
+	t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+	const git = (...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+	const commit = (file) => {
+		fs.writeFileSync(path.join(cwd, file), `${file}\n`);
+		git("add", "-A");
+		git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", file);
+		return git("rev-parse", "HEAD");
+	};
+	git("init", "-q");
+	const mergeBase = commit("base.ts");
+	const reviewed = commit("a.ts");
+	const head = commit("b.ts");
+	const at = (priorHead) => changedSinceProjection({ cwd, target: { head_sha: head, merge_base_sha: mergeBase },
+		priorProjection: priorHead && { review_target: { head_sha: priorHead } } });
+	const unchanged = { changedPaths: [], knownPaths: [] };
+	assert.deepEqual(at(null), unchanged);
+	assert.deepEqual(at(head), unchanged);
+	assert.deepEqual(at(reviewed), { changedPaths: ["b.ts"], knownPaths: ["a.ts", "b.ts", "base.ts"] });
+	assert.deepEqual(at("f".repeat(40)).changedPaths, ["a.ts", "b.ts"]);
 });
 
 test("a later design decision revokes a deferred P1 even without an evaluation", () => {

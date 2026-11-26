@@ -58,6 +58,7 @@ const ATTRIBUTIONS = new Set([
   "pre_existing",
 ]);
 const DISPOSITIONS = new Set(["FIX_IN_PR", "AUTHOR_DECISION", "FOLLOW_UP"]);
+// A deferral's risk truly expands only when one of these rises.
 const DEFERRED_FOLLOW_UP_RISK_ORDER = Object.freeze({
   severity: Object.freeze({ P2: 0, P1: 1, P0: 2 }),
   reachability: Object.freeze({
@@ -65,25 +66,7 @@ const DEFERRED_FOLLOW_UP_RISK_ORDER = Object.freeze({
     compound_path: 1,
     normal_path: 2,
   }),
-  likelihood: Object.freeze({ low: 0, medium: 1, high: 2, unknown: 3 }),
-  recoverability: Object.freeze({
-    routine: 0,
-    operational_intervention: 1,
-    unknown: 2,
-    irreversible: 3,
-  }),
-  attribution: Object.freeze({
-    pre_existing: 0,
-    introduced: 1,
-    materially_expanded: 2,
-    relied_upon: 3,
-  }),
 });
-const DEFERRED_FOLLOW_UP_EXACT_RISK_FIELDS = Object.freeze([
-  "proof_strength",
-  "likely_consequence",
-  "worst_credible_consequence",
-]);
 const DESIGN_DECISION_KINDS = new Set([
   "REDESIGN_IN_PR",
   "NARROW_BEHAVIOR",
@@ -155,21 +138,29 @@ function isProposedFollowUp(finding) {
   return finding.disposition === "FOLLOW_UP" && finding.decision_ref === null;
 }
 
-// Unsettled owner decisions block even when the retained risk is advisory.
-// Other P2 findings, theoretical paths, and follow-up proposals are advisory.
+// A finding's risk blocks only a likely failure (decision edge-case-gate): a
+// reachable P0, a normal-path P1, or a compound-path P1 of high or medium
+// likelihood. P2, theoretical, and unlikely compound-path P1 risks are advisory.
+function riskBlocks(finding) {
+  if (finding.severity === "P0") return finding.reachability !== "theoretical";
+  return finding.severity === "P1" && (finding.reachability === "normal_path" ||
+    (finding.reachability === "compound_path" && ["high", "medium"].includes(finding.likelihood)));
+}
+
+// An owner decision blocks only when its risk blocks; follow-ups never block.
 function isMergeBlocker(finding) {
-  return (
-    finding.disposition === "AUTHOR_DECISION" ||
-    (finding.disposition !== "FOLLOW_UP" &&
-      finding.severity !== "P2" &&
-      finding.reachability !== "theoretical")
-  );
+  return finding.disposition !== "FOLLOW_UP" && riskBlocks(finding);
 }
 
 // Previously published v4 projections gated only reachable P0/P1 findings.
 function wasMergeBlocker(finding) {
   return finding.disposition !== "FOLLOW_UP" &&
     finding.severity !== "P2" && finding.reachability !== "theoretical";
+}
+
+// Projections published before edge-case-gate also blocked every owner decision.
+function wasOwnerDecisionBlocker(finding) {
+  return finding.disposition === "AUTHOR_DECISION" || wasMergeBlocker(finding);
 }
 
 function isFollowUpRiskEligible(finding) {
@@ -182,24 +173,58 @@ function isFollowUpRiskEligible(finding) {
   );
 }
 
-function deferredFollowUpRiskDrifted({ currentFinding, priorFinding }) {
-  const orderedRiskExpanded = Object.entries(
-    DEFERRED_FOLLOW_UP_RISK_ORDER,
-  ).some(
+// The repository files a finding's location (`where`) cites, resolved against
+// `knownPaths` (decision converge-after-block). Each run of path characters is a
+// candidate; a trailing `:line` or `:line:col` ends it. Leading prose words are
+// dropped until the rest resolves, after stripping a leading `./`. A relative
+// path matches only an equal known path; an absolute one the longest known path
+// it ends with on `/` boundaries. `unresolved` is true when a path-like
+// candidate resolves to nothing, or when nothing in the location resolves.
+function citedFiles(where, knownPaths) {
+  const resolve = (candidate) => {
+    const path = candidate.replace(/^[(\[]+/u, "").replace(/[)\].,]+$/u, "").replace(/^\.\//u, "");
+    if (!path.startsWith("/")) return knownPaths.has(path) ? path : null;
+    const parts = path.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      const suffix = parts.slice(index).join("/");
+      if (knownPaths.has(suffix)) return suffix;
+    }
+    return null;
+  };
+  const looksLikePath = (word) => /\/|\.[\p{L}\p{N}]+[)\].,]*$/u.test(word);
+  const files = [];
+  let unresolved = false;
+  for (const [run] of String(where).matchAll(/[\p{L}\p{M}\p{N}_.\-/\[\]@+()~ ]+/gu)) {
+    const words = run.trim().split(/ +/u);
+    let file = null;
+    for (let index = 0; index < words.length && file === null; index += 1)
+      file = resolve(words.slice(index).join(" "));
+    if (file !== null) files.push(file);
+    else if (words.some(looksLikePath)) unresolved = true;
+  }
+  return { files, unresolved: unresolved || files.length === 0 };
+}
+
+// Whether a finding's location cites one of `changed`. A location that cannot
+// be resolved counts as citing one, so it fails safe: it can still block, and a
+// deferral reopens. With nothing changed, nothing is cited.
+function citesChangedFile(where, changed, knownPaths = []) {
+  if (changed.length === 0) return false;
+  const { files, unresolved } = citedFiles(where, new Set([...knownPaths, ...changed]));
+  return unresolved || files.some((file) => changed.includes(file));
+}
+
+// A deferral stays in force on later heads (decision converge-after-block)
+// unless the change since the prior review touches a file its finding cites,
+// or its severity or reachability rises. A re-rated likelihood, recoverability
+// or attribution, or reworded consequences, on unchanged code do not reopen it.
+function deferredFollowUpReopened({ currentFinding, priorFinding, changedPaths, knownPaths }) {
+  const riskExpanded = Object.entries(DEFERRED_FOLLOW_UP_RISK_ORDER).some(
     ([field, order]) =>
       Object.hasOwn(priorFinding, field) &&
       order[currentFinding[field]] > order[priorFinding[field]],
   );
-  const exactRiskChanged = DEFERRED_FOLLOW_UP_EXACT_RISK_FIELDS.some(
-    (field) =>
-      Object.hasOwn(priorFinding, field) &&
-      currentFinding[field] !== priorFinding[field],
-  );
-  const priorPlanes = new Set(priorFinding.affected_lifecycle_planes);
-  const lifecycleExpanded = currentFinding.affected_lifecycle_planes.some(
-    (plane) => !priorPlanes.has(plane),
-  );
-  return orderedRiskExpanded || exactRiskChanged || lifecycleExpanded;
+  return riskExpanded || citesChangedFile(priorFinding.where, changedPaths, knownPaths);
 }
 
 function challengeRef(challenge) {
@@ -326,11 +351,11 @@ function closureFromEvaluation(evaluation) {
   };
 }
 
+// A v4 projection, or a local runner's saved ledger: the same closed records
+// without a schema version (decision converge-after-block).
 function closedFindingRecords({ priorProjection }) {
-  if (priorProjection?.schema_version === PROJECTION_SCHEMA_VERSION) {
-    return structuredClone(priorProjection.closed_findings);
-  }
-  return [];
+  return Array.isArray(priorProjection?.closed_findings)
+    ? structuredClone(priorProjection.closed_findings) : [];
 }
 
 function decisionCommentIdFromRef(ref) {
@@ -636,7 +661,9 @@ function findingRisk(finding) {
     ? ({ P0: 3, P1: 2, P2: 1 }[finding.severity] || 2) : 2;
   const reachability = typeof finding?.reachability === "string"
     ? ({ normal_path: 2, compound_path: 1, theoretical: 0 }[finding.reachability] ?? 2) : 2;
-  return [severity >= 2 && reachability > 0 ? 1 : 0, severity, reachability];
+  const blocks = riskBlocks({ severity: ["P2", "P1", "P0"][severity - 1],
+    reachability: ["theoretical", "compound_path", "normal_path"][reachability], likelihood: finding?.likelihood });
+  return [blocks ? 1 : 0, severity, reachability];
 }
 
 function moreRiskyFinding(left, right) {
@@ -646,6 +673,13 @@ function moreRiskyFinding(left, right) {
     if (b[index] !== a[index]) return b[index] > a[index] ? right : left;
   }
   return left;
+}
+
+// The riskiest still_open copy of a conflicting evaluation, the latest on a tie,
+// so a conflict never publishes a lower risk than one of its copies reported.
+function riskiestOpenCopy(members) {
+  return members.reduce((kept, member) => member.result === "still_open" &&
+    (!kept || moreRiskyFinding(member.finding, kept.finding) === member.finding) ? member : kept, null);
 }
 
 function canonicalEvaluation(evaluation, target) {
@@ -845,11 +879,11 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
       (canonical.some((value) => value === null) || canonical.some((value) => value !== canonical[0]));
     if (conflict) {
       conflictIds.add(stableId);
-      warnings.push(`reconciliation conflict on ${typeof stableId === "string" ? stableId : "(invalid stable ID)"}: ${members.length} evaluations disagreed; kept prior record and blocked`);
+      warnings.push(`reconciliation conflict on ${typeof stableId === "string" ? stableId : "(invalid stable ID)"}: ${members.length} evaluations disagreed; kept prior record as an owner decision at its riskiest reported risk`);
       if (!priorById.has(stableId)) {
-        const latestWellFormed = members.findLast((member, index) =>
-          member.result === "still_open" && canonical[index] !== null);
-        unknownById.set(stableId, latestWellFormed || {
+        // A malformed riskiest copy is retained as the minimal blocker.
+        const riskiest = riskiestOpenCopy(members);
+        unknownById.set(stableId, riskiest && canonical[members.indexOf(riskiest)] !== null ? riskiest : {
           stable_id: stableId, result: "still_open", finding: { stable_id: stableId },
         });
       }
@@ -1031,7 +1065,13 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
     if (conflictIds.has(priorFinding.stable_id)) {
       const storedFinding = (priorProjection?.open_findings || []).find(
         (finding) => finding.stable_id === priorFinding.stable_id) || priorFinding;
-      const carried = normalizeFinding({ ...structuredClone(storedFinding),
+      // The record stays; its risk rises to a reported copy whose risk blocks.
+      const riskiest = riskiestOpenCopy(evaluationsById.get(priorFinding.stable_id));
+      const { severity, reachability, likelihood } = riskiest &&
+        findingRisk(riskiest.finding)[0] > findingRisk(storedFinding)[0]
+        ? minimalBlockingFinding(riskiest.finding, priorFinding.stable_id, reviewTarget, "conflicting evaluations")
+        : storedFinding;
+      const carried = normalizeFinding({ ...structuredClone(storedFinding), severity, reachability, likelihood,
         last_evaluated_target: hashReviewTarget(reviewTarget),
         disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO", follow_up: null,
       }, { target: reviewTarget, conflictRetained: true });
@@ -1145,6 +1185,9 @@ function validateCandidate({ rawOutput, target, priorProjection, evidence }) {
           priorFinding,
           warnings,
           reconciliationUncertain: unreconciledKnownIds.has(priorFinding.stable_id),
+          // A decision made on this head postdates every change since the prior projection.
+          changedPaths: decision.decision_head_sha === reviewTarget.head_sha ? [] : evidence?.changed_paths || [],
+          knownPaths: evidence?.known_paths || [],
         });
       else if (!missingEvaluation && (
         carried.approved_invariant !== priorFinding.approved_invariant ||
@@ -1361,6 +1404,8 @@ function validateDecisionTransition({
   priorFinding,
   warnings,
   reconciliationUncertain = false,
+  changedPaths = [],
+  knownPaths = [],
 }) {
   const ref = decisionRef(decision);
   if (finding.decision_ref !== ref)
@@ -1386,16 +1431,16 @@ function validateDecisionTransition({
     return;
   }
   if (decision.kind === "DEFER_FOLLOW_UP") {
-    // Ruling D1: widened risk remains published and blocked until a new
-    // owner decision; the old approval cannot reapply in a subsequent review.
+    // Ruling D1: a reopened deferral remains published as an owner decision
+    // until a new one; the old approval cannot reapply in a subsequent review.
     if (reconciliationUncertain ||
       (priorFinding.disposition === "AUTHOR_DECISION" && priorFinding.decision_ref === ref) ||
-      deferredFollowUpRiskDrifted({ currentFinding: evaluation.finding, priorFinding })) {
+      deferredFollowUpReopened({ currentFinding: evaluation.finding, priorFinding, changedPaths, knownPaths })) {
       finding.disposition = "AUTHOR_DECISION";
       finding.autonomous_eligibility = "NO";
       finding.follow_up = null;
       finding.approved_invariant = priorFinding.approved_invariant;
-      warnings.push(`${finding.stable_id}: deferred risk drift requires a new owner decision`);
+      warnings.push(`${finding.stable_id}: deferral reopened by changed cited code or higher risk; it needs a new owner decision`);
       return;
     }
     if (
@@ -1854,8 +1899,8 @@ function verifyProjection({ projection, allowLegacySettlement = false }) {
     fail("invalid_projection", "eligible_issue_ids must be a unique array");
   const currentSettlement = deriveCandidateSettlement(projection);
   const acceptedSettlements = allowLegacySettlement
-    ? [currentSettlement, deriveCandidateSettlement(projection, wasMergeBlocker),
-        deriveLegacySettlement(projection)]
+    ? [currentSettlement, deriveCandidateSettlement(projection, wasOwnerDecisionBlocker),
+        deriveCandidateSettlement(projection, wasMergeBlocker), deriveLegacySettlement(projection)]
     : [currentSettlement];
   if (
     !acceptedSettlements.some((settlement) =>
@@ -2218,8 +2263,11 @@ function buildMechanicalCandidate({ priorProjection, target, reason }) {
 }
 
 // Shared action/local-settlement adapters. Model output omits fields owned by
-// the engine; bind those fields before entering the moved Intavia state machine.
-function foldReview({ output, target, priorProjection = null, humanDecisions = [], evidenceChallenges = [], priorProjections = [] }) {
+// the engine; bind those fields before entering the moved v4 state machine.
+// `changedPaths`: files changed since the prior projection's head; `knownPaths`:
+// the files at this head, to resolve the paths findings cite.
+function foldReview({ output, target, priorProjection = null, humanDecisions = [], evidenceChallenges = [], priorProjections = [],
+  changedPaths = [], knownPaths = [] }) {
   const priorById = new Map((prepareReviewPriorProjection({ priorProjection, priorProjections, humanDecisions })?.open_findings || [])
     .map((finding) => [finding.stable_id, finding]));
   const bindFinding = (finding, prior = null) => ({
@@ -2243,7 +2291,8 @@ function foldReview({ output, target, priorProjection = null, humanDecisions = [
     },
     target,
     priorProjection,
-    evidence: { human_decisions: humanDecisions, evidence_challenges: evidenceChallenges, prior_projections: priorProjections },
+    evidence: { human_decisions: humanDecisions, evidence_challenges: evidenceChallenges, prior_projections: priorProjections,
+      changed_paths: changedPaths, known_paths: knownPaths },
   });
 }
 
@@ -2277,11 +2326,13 @@ module.exports = {
   buildMechanicalCandidate,
   buildProjection,
   challengeRef,
+  citesChangedFile,
   consumedChallengeRefs,
   deriveCandidateSettlement,
   formatProjectionComment,
   isMergeBlocker,
   isProposedFollowUp,
+  riskBlocks,
   parseProjectionComment,
   prepareReviewPriorProjection,
   validateCandidate,

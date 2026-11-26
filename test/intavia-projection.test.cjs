@@ -1444,7 +1444,7 @@ test("signed P0 and P1 deferrals stay tracked when their approved risk does not 
   }
 });
 
-test("a deferral accepts rationale rewording but carries substantive risk drift for an owner decision", () => {
+test("on unchanged code a deferral survives re-rating and rewording; higher severity or reachability reopens it", () => {
   const reviewTarget = target();
   const proposed = finding({
     reviewTarget,
@@ -1501,10 +1501,25 @@ test("a deferral accepts rationale rewording but carries substantive risk drift 
     rewordedRiskRationale,
   );
 
-  for (const expandedRisk of [
-    { severity: "P1" },
-    { reachability: "normal_path" },
+  const reassess = (change) => validateCandidate({
+    rawOutput: output({
+      prior_issue_evaluations: [
+        { stable_id: "ISSUE-001", result: "still_open", finding: { ...proposed, ...change } },
+      ],
+    }),
+    target: reviewTarget,
+    priorProjection: prior,
+    evidence: evidence({ humanDecisions: [decision] }),
+  });
+  for (const expandedRisk of [{ severity: "P1" }, { reachability: "normal_path" }]) {
+    const reopened = reassess(expandedRisk);
+    assert.equal(reopened.open_findings[0].disposition, "AUTHOR_DECISION");
+    assert.match(reopened.warnings[0], /deferral reopened/);
+  }
+  // Decision converge-after-block: a model re-rating on unchanged code is not expansion.
+  for (const rerated of [
     { likelihood: "medium" },
+    { likelihood: "unknown" },
     { recoverability: "irreversible" },
     { attribution: "materially_expanded" },
     { attribution: "relied_upon" },
@@ -1521,22 +1536,9 @@ test("a deferral accepts rationale rewording but carries substantive risk drift 
       ],
     },
   ]) {
-    const blocked = validateCandidate({
-          rawOutput: output({
-            prior_issue_evaluations: [
-              {
-                stable_id: "ISSUE-001",
-                result: "still_open",
-                finding: { ...proposed, ...expandedRisk },
-              },
-            ],
-          }),
-          target: reviewTarget,
-          priorProjection: prior,
-          evidence: evidence({ humanDecisions: [decision] }),
-        });
-    assert.equal(blocked.open_findings[0].disposition, "AUTHOR_DECISION");
-    assert.match(blocked.warnings[0], /risk drift/);
+    const kept = reassess(rerated);
+    assert.equal(kept.open_findings[0].disposition, "FOLLOW_UP", JSON.stringify(rerated));
+    assert.equal(kept.open_findings[0].decision_ref, "github-comment:600");
   }
 });
 
@@ -1643,20 +1645,21 @@ test("a projection comment written under the old settlement still parses", () =>
   assert.deepEqual(parseProjectionComment({ body }), legacy);
 });
 
-test("a prior v4 advisory owner-decision settlement still parses", () => {
+test("prior v4 settlements of an advisory owner decision still parse", () => {
   const candidate = validateCandidate({
     rawOutput: output({ new_findings: [finding({ severity: "P2", reachability: "theoretical",
       disposition: "AUTHOR_DECISION", autonomous_eligibility: "NO" })] }),
     target: target(), priorProjection: null, evidence: evidence(),
   });
   const current = project({ candidate });
-  assert.equal(current.conclusion, "block");
-  const priorSettlement = rehashProjection({ ...current, conclusion: "pass",
-    watcher_action: "settled", eligible_issue_ids: [] });
+  assert.equal(current.conclusion, "pass");
+  // Published before edge-case-gate, when every owner decision blocked.
+  const blockedSettlement = rehashProjection({ ...current, conclusion: "block",
+    watcher_action: "pause_for_human", eligible_issue_ids: [] });
   assert.deepEqual(parseProjectionComment({
-    body: formatLegacyProjectionComment(priorSettlement),
-  }), priorSettlement);
-  assert.throws(() => verifyProjection({ projection: priorSettlement }), ContractError);
+    body: formatLegacyProjectionComment(blockedSettlement),
+  }), blockedSettlement);
+  assert.throws(() => verifyProjection({ projection: blockedSettlement }), ContractError);
 });
 
 test("an old-settlement projection cannot be published by this run", () => {

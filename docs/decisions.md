@@ -43,7 +43,7 @@ decision entry behind it.
 | `worker-stage-deadline-minutes` | `13` | [rules-worker](#rules-worker) |
 | `codex-cli-version` | `0.169.1` | [codex-cli-version](#codex-cli-version), [gpt-6-2-models](#gpt-6-2-models) |
 | `review-budget-minutes` | `30` | [review-budget](#review-budget), [gpt-6-2-models](#gpt-6-2-models) |
-| Local scope after a passed review | carry an unchanged patch; otherwise incremental from a passed ancestor | [review-scope](#review-scope) |
+| Local scope after a settled review | carry an unchanged patch; otherwise incremental from a settled ancestor; after a BLOCK, only with that run's saved ledger, and a new finding outside the changed files is advisory | [review-scope](#review-scope), [converge-after-block](#converge-after-block) |
 | `OPEN_REVIEW_INCREMENTAL_REASONING` (local) | `high` | [review-scope](#review-scope) |
 | `OPEN_REVIEW_INCREMENTAL_TIMEOUT` (local) | `15m` | [review-scope](#review-scope), [gpt-6-2-models](#gpt-6-2-models) |
 | `--docs-only-paths` (local) | none | [review-scope](#review-scope) |
@@ -52,6 +52,107 @@ decision entry behind it.
 
 Newest first. Each entry gives the question, the evidence, the decision, and
 what would reopen it.
+
+### converge-after-block
+
+**2026-11-26.** Owner request, without an evaluation run. After a block, every
+push got a full re-review, and an owner's deferral had to be posted again after
+each push. Can the reviews after a block converge?
+
+- Evidence: `classify` in `engine/review-scope.cjs` returned a full review
+  whenever the latest settlement did not pass. Each full re-review hunted the
+  whole PR again. On one PR, 14 review passes ran; each fix drew a new P1
+  `compound_path` finding of the same class. Across three consumers, full
+  re-reviews after a block rose from 4% to 13% of reviews after the GPT-6.2
+  switch ([gpt-6-2-rollback](#gpt-6-2-rollback)).
+- Decision, local runs: after a BLOCK, the next review scopes from the blocked
+  head as it does after a pass. A same-patch rerun carries the block without a
+  model: it keeps the blocked run's ledger as it stands (open and closed
+  findings and the evaluations behind them) and re-derives the gate from its
+  open findings, so a later fix settles exactly as it would against the
+  blocked head. A push to a descendant head on the same base gets an
+  incremental review of the files whose blobs changed, which re-evaluates the
+  prior open findings. In that review, a new finding whose location (`where`)
+  cites none of the changed files is advisory: the settlement lists it and
+  leaves it out of the ledger, so a later push does not re-evaluate it into a
+  block. Each cited path resolves to one file at the reviewed head, after a
+  trailing `:line` or `:line:col` and a leading `./` are stripped: a relative
+  path only by equality, an absolute one to the longest file path it ends with.
+  A location that does not resolve counts as citing a changed file, so it can
+  still block. Closed findings, and the IDs they reserve,
+  carry from one local round to the next.
+- The open findings come from the blocked run's saved ledger in the same
+  checkout (`.agent-data/codex-review-local`), matched by the settlement
+  comment URL and head. Without it, for example after a run on another
+  machine, the review stays full. So do a PR with no settled review, a
+  retargeted base, a rewritten head, unverifiable settlement authors and a
+  requested full review. A full review resumes a saved local session only
+  when that session published the latest trusted settlement, so it cannot
+  continue from an older settlement and miss a newer block.
+- Local runs apply no owner decisions, so a carried block has none to
+  re-apply.
+- Hosted runs do not use this classifier. They already review incrementally
+  from the last reviewed head after a block, and carry a same-head rerun with
+  the current owner decisions. A new owner decision or an explicit request on
+  an unchanged head still runs a full review there, and the advisory rule for
+  new findings outside the changed files is not applied there.
+- Deferrals, evidence: an approved `DEFER_FOLLOW_UP` reopened as an owner
+  decision whenever the next evaluation raised any ordered risk field
+  (likelihood, recoverability, attribution included), changed
+  `proof_strength` or either consequence text, or added a lifecycle plane
+  (`deferredFollowUpRiskDrifted` in `engine/ledger/projection.cjs`). Each
+  review re-evaluates the finding on the new head and rewords it, so a push
+  reopened the deferral, and a reopened deferral never re-applies.
+- Decision, deferrals: a deferral stays in force on later heads unless the
+  files changed since the prior projection's head include a file its finding
+  cites (`where`, resolved as above; a location that does not resolve reopens
+  it when anything changed), or its severity or reachability rises. A re-rated
+  likelihood, recoverability, attribution or proof strength, reworded
+  consequences, or a new lifecycle plane on unchanged code do not reopen it.
+  The hosted publisher computes those files with git; when the prior head is
+  gone, every file of the PR counts as changed. A decision made on the current
+  head postdates those changes and is not reopened by them. A reopened
+  deferral still needs a new owner decision, and blocks only when its risk blocks
+  ([edge-case-gate](#edge-case-gate)). An accepted exception
+  (`APPROVE_BOUNDED_EXCEPTION`) closes its finding and is not re-evaluated, so
+  it needs no change. Local runs collect no owner decisions, so neither
+  applies to them.
+- Reopen when a blocking defect ships through a file outside an incremental
+  review's changed files or under a deferral that stayed in force, or when
+  local blocks per PR do not fall.
+
+### edge-case-gate
+
+**2026-11-26.** Owner request, without an evaluation run. After the GPT-6.2
+switch, engineers in three consumer repositories reported reviews that block
+merges on edge cases. Which findings should block?
+
+- Evidence ([gpt-6-2-rollback](#gpt-6-2-rollback)): on the most affected
+  consumer, findings that need several conditions to line up, with `low` or
+  `unknown` likelihood, rose from 37% to 65% of its blocking findings; models
+  rate rare races P1 on a `compound_path`. The gate blocked every P0 or P1
+  finding that was not `theoretical`, and every `AUTHOR_DECISION` finding at
+  any risk, so an advisory risk could still need an owner decision before
+  merge. The model rollback lowers the count; this rule holds with any model.
+- Decision: a finding's risk blocks when it is P0 and not `theoretical`, P1 on a
+  `normal_path`, or P1 on a `compound_path` with `high` or `medium`
+  likelihood. Everything else is advisory: P2, `theoretical`, and P1 on a
+  `compound_path` with `low` or `unknown` likelihood. An `AUTHOR_DECISION`
+  finding blocks only when its risk blocks; `FOLLOW_UP` stays advisory.
+- One rule (`riskBlocks` in `engine/ledger/projection.cjs`) derives the
+  ledger settlement, the merge-gate line, the `Blocking:` list, the hosted
+  check and the local status. The rule pack template and the output contract
+  tell the model the same rule.
+- A reconciliation conflict (two different evaluations of one finding in one
+  output) still keeps the prior record as an owner decision. Its risk is raised
+  to the riskiest copy the model reported, so it blocks exactly when one of
+  those copies would.
+- Projections published before this change still verify on read; their
+  settlement may block on an advisory owner decision.
+- Accepted loss, not measured: a defect on a compound path whose likelihood the
+  model rates `low` or `unknown` now merges with an advisory finding.
+- Reopen when a merged PR ships a defect that a P1 `compound_path` finding,
+  advisory under this rule, had described.
 
 ### gpt-6-2-rollback
 

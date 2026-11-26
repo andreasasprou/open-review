@@ -51,4 +51,13 @@ test("local resume refuses incremental scope without a usable v4 ledger", (t) =>
 			open_findings: [], closed_findings: [], prior_issue_evaluations: [] },
 	}));
 	assert.equal(hasUsableLocalLedger(runDir, priorHead), true);
+	// Review finding 2: only the session behind the latest trusted settlement may resume.
+	fs.writeFileSync(path.join(runDir, "resume-metadata.json"), JSON.stringify({
+		repository: "o/r", prNumber: "1", headSha: priorHead, mergeBaseSha, basename: "rollout.jsonl",
+		model: "gpt-6-astra", promptBlob: "prompt", savedAt: "2026-09-27T00:00:00Z",
+	}));
+	fs.writeFileSync(path.join(runDir, "summary.txt"), "Settlement comment: https://example.test/c/1\n");
+	assert.equal(select(input).reason, "not_latest_settlement");
+	assert.equal(select({ ...input, latestSettlement: "https://example.test/c/2" }).reason, "not_latest_settlement");
+	assert.equal(select({ ...input, latestSettlement: "https://example.test/c/1" }).reason, "missing_transcript_digest");
 });

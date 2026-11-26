@@ -3,10 +3,11 @@
 "use strict";
 
 const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
 const { recordCaughtError, requireCaughtErrorDiagnosticRecorder } = require("./diagnostics-runtime.cjs");
 const path = require("node:path");
 const { spansForPath } = require("./location-spans.cjs");
-const { foldReview, isMergeBlocker: isLedgerMergeBlocker } = require("./ledger/projection.cjs");
+const { foldReview, isMergeBlocker: isLedgerMergeBlocker, riskBlocks } = require("./ledger/projection.cjs");
 const { postResults: publishLedger } = require("./ledger/publisher.cjs");
 
 // ─── Comment Markers ──────────────────────────────────────────────────────────
@@ -55,13 +56,11 @@ function formatSeverityBadge(severity) {
 // `Verdict:` word the model writes in `review_markdown`. An audit of the sibling
 // reviewer found that 51.5% of its findings were low-or-unknown likelihood and
 // off the normal path yet still marked must-fix, and that prompt prose alone did
-// not correct it. Severity plus reachability is enforced here in code instead.
-const BLOCKING_SEVERITIES = new Set(["P0", "P1"]);
-
+// not correct it. Severity, reachability and likelihood are enforced here in
+// code instead, by the ledger's rule (decision edge-case-gate).
 function isMergeBlocker(issue) {
 	return (
-		BLOCKING_SEVERITIES.has(issue?.severity) &&
-		issue?.reachability !== "theoretical" &&
+		riskBlocks(issue ?? {}) &&
 		!(issue?.disposition === "FOLLOW_UP" && issue?.decision_ref && issue?.follow_up)
 	);
 }
@@ -87,8 +86,8 @@ function deriveMergeGate(reviewState) {
 
 	// Count blockers from the issues themselves; ids are display metadata and a
 	// blank id must not exempt an otherwise blocking finding. Ledger findings use
-	// the ledger's settlement rule (an owner decision blocks at any severity), so
-	// the job result, the check and the published projection agree.
+	// the ledger's settlement rule, so the job result, the check and the
+	// published projection agree.
 	const blocks = Array.isArray(reviewState?.open_findings) ? isLedgerMergeBlocker : isMergeBlocker;
 	const blockingIssues = openIssues.filter(blocks);
 	const blockingIssueIds = blockingIssues
@@ -1926,6 +1925,26 @@ function renderFocusedWorkerSection(workers, ledgerFindings, before = "", after 
 	return "";
 }
 
+// Files changed between the prior projection's head and `target`'s head, and
+// the files at that head to resolve cited paths, in the review checkout at
+// `cwd`. A deferral whose cited file changed needs a new owner decision
+// (decision converge-after-block). When the prior head is not in the
+// checkout, every file of the PR counts as changed.
+function changedSinceProjection({ priorProjection, target, cwd = process.cwd() }) {
+	const priorHead = priorProjection?.review_target?.head_sha;
+	if (!priorHead || priorHead === target.head_sha) return { changedPaths: [], knownPaths: [] };
+	const git = (...args) => execFileSync("git", ["-C", cwd, ...args],
+		{ encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).split("\0").filter(Boolean);
+	const changed = (from) => git("diff", "--name-only", "-z", "--no-renames", from, target.head_sha);
+	let changedPaths;
+	try {
+		changedPaths = changed(priorHead);
+	} catch {
+		changedPaths = changed(target.merge_base_sha);
+	}
+	return { changedPaths, knownPaths: git("ls-tree", "-r", "--name-only", "-z", target.head_sha) };
+}
+
 async function postResults({ recorder,
 	github,
 	owner,
@@ -1941,6 +1960,7 @@ async function postResults({ recorder,
 	checkIdentity = null,
 	revalidateLedgerAuthority = async () => {},
 	eventName = "pull_request_target",
+	ledgerPaths = { changedPaths: [], knownPaths: [] },
 }) {
 	requireCaughtErrorDiagnosticRecorder(recorder);
 	const log = (msg) => console.log(`[codex-review] ${msg}`);
@@ -1955,7 +1975,8 @@ async function postResults({ recorder,
 			priorProjection: ledgerEvidence.priorProjection,
 			priorProjections: ledgerEvidence.priorProjections || [],
 			humanDecisions: ledgerEvidence.humanDecisions,
-			evidenceChallenges: ledgerEvidence.evidenceChallenges });
+			evidenceChallenges: ledgerEvidence.evidenceChallenges,
+			...ledgerPaths });
 		for (const warning of ledgerCandidate.warnings) console.warn(`[codex-review] Ledger: ${warning}`);
 		const legacyIssues = ledgerCandidate.open_findings.map((finding) => ({
 			id: finding.stable_id, severity: finding.severity, reachability: finding.reachability,
@@ -2260,6 +2281,7 @@ async function postResults({ recorder,
 }
 
 module.exports = {
+	changedSinceProjection,
 	loadPreviousState,
 	preparePromptState,
 	fetchReviewDiscussionContext,

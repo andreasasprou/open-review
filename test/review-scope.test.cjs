@@ -38,6 +38,13 @@ function repository(t) {
 	return { root, run, commit, lines, base, git, scope };
 }
 
+// A blocking model finding at `where`.
+const ledgerFinding = (overrides) => ({ severity: "P1", reachability: "normal_path", likelihood: "medium",
+	likely_consequence: "A request fails.", worst_credible_consequence: "A request fails.", recoverability: "routine",
+	proof_strength: "inferred", attribution: "introduced", risk_rationale: "Normal use reaches it.",
+	disposition: "FIX_IN_PR", autonomous_eligibility: "NO", title: "Lost request", failure_scenario: "A request is lost.",
+	approved_invariant: "Keep every request.", evidence: "The write drops the row.", affected_lifecycle_planes: [], ...overrides });
+
 // A writer's settlement for `head`, recording the base branch and merge base it reviewed against.
 const passed = (head, mergeBase, { gate = "PASS", baseRef = "main" } = {}) =>
 	({ id: 10, head, gate, author: "maintainer", url: URL, base: { baseRef, mergeBase } });
@@ -51,13 +58,36 @@ test("a push after a passed review is reviewed only for the files that changed, 
 	});
 });
 
+// Decision converge-after-block: a block scopes the next review as a pass does, with its saved ledger.
+test("after a block, a push is reviewed incrementally and a rerun on the same patch is carried", (t) => {
+	const { run, commit, lines, base, scope } = repository(t);
+	const reviewed = commit({ "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") });
+	const blocked = passed(reviewed, base, { gate: "BLOCK" });
+	const ledger = "/runs/pr-1-blocked/local-settlement.json";
+	assert.deepEqual(scope({ baseSha: base, headSha: reviewed, latest: blocked, ledger }),
+		{ mode: "carry", reason: "same_head", from: reviewed, settlement: URL, files: [], ledger });
+	run("commit", "-q", "--allow-empty", "-m", "rerun");
+	const rerun = run("rev-parse", "HEAD");
+	assert.deepEqual(scope({ baseSha: base, headSha: rerun, latest: blocked, ledger }),
+		{ mode: "carry", reason: "same_patch", from: reviewed, settlement: URL, files: [], ledger });
+	const head = commit({ "src/b.ts": lines("b").replace("b 7\n", "b 7 changed\n") });
+	assert.deepEqual(scope({ baseSha: base, headSha: head, latest: blocked, ledger }), {
+		mode: "incremental", reason: "since_blocked_review", diffBase: reviewed, from: reviewed, settlement: URL,
+		files: ["src/b.ts"], ledger,
+	});
+	assert.equal(scope({ baseSha: base, headSha: head, latest: blocked, ledger, fullReview: true }).reason, "full_review_requested");
+	assert.equal(scope({ baseSha: base, headSha: head, latest: { ...blocked, base: { baseRef: "release", mergeBase: base } }, ledger }).reason,
+		"base_retargeted");
+});
+
 test("a PR without a usable passed review gets a full review", (t) => {
 	const { commit, lines, base, scope } = repository(t);
 	const reviewed = commit({ "src/a.ts": lines("a").replace("a 3\n", "a 3 changed\n") });
 	const head = commit({ "src/b.ts": lines("b").replace("b 7\n", "b 7 changed\n") });
 	const reason = (input) => scope({ baseSha: base, headSha: head, ...input }).reason;
 	assert.equal(reason({ latest: null }), "no_settled_review");
-	assert.equal(reason({ latest: passed(reviewed, base, { gate: "BLOCK" }) }), "last_review_not_passed");
+	assert.equal(reason({ latest: passed(reviewed, base, { gate: "BLOCK" }) }), "blocked_ledger_missing");
+	assert.equal(reason({ latest: passed(reviewed, base, { gate: "UNKNOWN" }) }), "last_review_not_passed");
 	assert.equal(reason({ latest: passed(reviewed, base), fullReview: true }), "full_review_requested");
 	assert.equal(reason({ latest: passed("f".repeat(40), base) }), "passed_head_missing");
 	assert.equal(reason({ latest: null, settlementsVerified: false }), "settlement_author_unverified");
@@ -293,7 +323,8 @@ test("the classify command reads the PR's comments and the author's permission",
 		"classify", root, "example/repo", "main", base, head, comments, MARKER, docs, full],
 	{ encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }));
 	assert.deepEqual(classifyCommand("docs/**", "false"),
-		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"], modelRounds: {} });
+		{ mode: "incremental", reason: "since_passed_review", diffBase: reviewed, from: reviewed, settlement: "u9", files: ["src/b.ts"],
+			latestSettlement: "u9", modelRounds: {} });
 	assert.equal(classifyCommand("", "true").reason, "full_review_requested");
 	fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	assert.equal(classifyCommand("", "false").reason, "settlement_author_unverified");
@@ -330,6 +361,113 @@ function settleRunner(t) {
 		return { head, base, passedHead, stderr, read };
 	};
 }
+
+test("the local runner finds the saved ledger only of the run that published the blocked settlement", (t) => {
+	const { settledLedger } = require("../engine/local-resume.cjs");
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-review-ledger-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const head = "c".repeat(40);
+	const runDir = path.join(root, ".agent-data/codex-review-local/pr-1-20261126-1");
+	fs.mkdirSync(runDir, { recursive: true });
+	fs.writeFileSync(path.join(runDir, "summary.txt"), "PR: #1\nSettlement comment: https://example.test/c/9\n");
+	fs.writeFileSync(path.join(runDir, "local-settlement.json"), JSON.stringify({ mergeGate: { status: "BLOCK" },
+		ledger: { review_target: { head_sha: head }, open_findings: [{ stable_id: "OR-1", severity: "P1", reachability: "normal_path" }],
+			closed_findings: [], prior_issue_evaluations: [] } }));
+	assert.equal(settledLedger({ root, settlement: { url: "https://example.test/c/9", head } }), path.join(runDir, "local-settlement.json"));
+	assert.equal(settledLedger({ root, settlement: { url: "https://example.test/c/8", head } }), null);
+	assert.equal(settledLedger({ root, settlement: { url: "https://example.test/c/9", head: "d".repeat(40) } }), null);
+});
+
+test("the local runner carries a blocked settlement's open findings to a rerun head", (t) => {
+	const { buildLocalSettlement } = require("../engine/local-settlement.cjs");
+	const settle = settleRunner(t);
+	const blockedHead = "c".repeat(40);
+	const blocked = buildLocalSettlement({ patch: "", output: { review_markdown: "## Verdict: BLOCK",
+		state: { last_reviewed_head_sha: blockedHead }, inline_comments: [], prior_issue_evaluations: [],
+		new_findings: [ledgerFinding({ stable_id: "OR-1", where: "src/a.ts:3" })] } });
+	const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "open-review-blocked-")), "local-settlement.json");
+	t.after(() => fs.rmSync(path.dirname(ledgerPath), { recursive: true, force: true }));
+	fs.writeFileSync(ledgerPath, JSON.stringify(blocked));
+	const carried = settle({ mode: "carry", reason: "same_patch", settlement: "https://example.test/c/9", files: [], ledger: ledgerPath });
+	assert.match(carried.read("posted.md"), /Merge gate: \*\*BLOCK\*\* — 1 of 1 open findings require a fix or owner decision\.\nBlocking: OR-1\n/);
+	assert.match(carried.read("posted.md"), /\(blocked settlement https:\/\/example\.test\/c\/9\)/);
+	assert.equal(carried.read("status"), "failure|Merge gate: BLOCK — carried from cccccccc");
+	const saved = JSON.parse(carried.read("local-settlement.json"));
+	assert.equal(saved.ledger.review_target.head_sha, carried.head);
+	assert.deepEqual(saved.ledger.open_findings.map((finding) => finding.stable_id), ["OR-1"]);
+	const [parsed] = parseSettlements([{ id: 1, user: { login: "maintainer" }, body: carried.read("posted.md") }], { marker: MARKER });
+	assert.equal(parsed.gate, "BLOCK");
+});
+
+// Review findings 1 and 3: a carry must not stop a later fix from settling, nor drop closed history.
+test("after a carried block, a fix settles as it does after the blocked head, and closed findings survive", (t) => {
+	const { buildLocalSettlement } = require("../engine/local-settlement.cjs");
+	const settle = settleRunner(t);
+	const output = (head, newFindings, evaluations = []) => ({ review_markdown: "## Verdict: BLOCK",
+		state: { last_reviewed_head_sha: head }, inline_comments: [], prior_issue_evaluations: evaluations, new_findings: newFindings });
+	const first = ledgerFinding({ stable_id: "OR-1", where: "src/a.ts:3" });
+	const second = ledgerFinding({ stable_id: "OR-2", where: "src/b.ts:7" });
+	const opened = buildLocalSettlement({ patch: "", output: output("b".repeat(40), [first, second]) });
+	const blocked = buildLocalSettlement({ patch: "", priorProjection: opened.ledger, output: output("c".repeat(40), [], [
+		{ stable_id: "OR-1", result: "resolved_on_target", evidence: "Fixed.", finding: first },
+		{ stable_id: "OR-2", result: "still_open", finding: second },
+	]) });
+	assert.equal(blocked.mergeGate.status, "BLOCK");
+	const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "open-review-blocked-")), "local-settlement.json");
+	t.after(() => fs.rmSync(path.dirname(ledgerPath), { recursive: true, force: true }));
+	fs.writeFileSync(ledgerPath, JSON.stringify(blocked));
+	const carried = JSON.parse(settle({ mode: "carry", reason: "same_patch", settlement: "https://example.test/c/9", files: [],
+		ledger: ledgerPath }).read("local-settlement.json")).ledger;
+	assert.deepEqual(carried.closed_findings.map(({ finding }) => finding.stable_id), ["OR-1"]);
+	const fix = (priorProjection) => buildLocalSettlement({ patch: "", priorProjection, changedFiles: ["src/b.ts"],
+		output: output("e".repeat(40), [], [
+			{ stable_id: "OR-2", result: "resolved_on_target", evidence: "Fixed.", finding: second },
+		]) });
+	for (const prior of [blocked.ledger, carried]) {
+		const settled = fix(prior);
+		assert.equal(settled.mergeGate.status, "PASS");
+		assert.deepEqual(settled.ledger.closed_findings.map(({ finding }) => finding.stable_id), ["OR-1", "OR-2"]);
+	}
+	// A closed ID stays reserved in a later round.
+	assert.throws(() => buildLocalSettlement({ patch: "", priorProjection: carried,
+		output: output("e".repeat(40), [ledgerFinding({ stable_id: "OR-1", where: "src/c.ts:1" })],
+			[{ stable_id: "OR-2", result: "still_open", finding: second }]) }), /genuinely new stable ID/);
+});
+
+test("after a block, a new finding outside the changed files is advisory; the prior findings still gate", () => {
+	const { buildLocalSettlement } = require("../engine/local-settlement.cjs");
+	const output = (head, newFindings, evaluations = []) => ({ review_markdown: "## Verdict: BLOCK",
+		state: { last_reviewed_head_sha: head }, inline_comments: [], prior_issue_evaluations: evaluations, new_findings: newFindings });
+	const blocked = buildLocalSettlement({ patch: "", output: output("c".repeat(40), [ledgerFinding({ stable_id: "OR-1", where: "src/a.ts:3" })]) });
+	const head = "d".repeat(40);
+	const prior = ledgerFinding({ stable_id: "OR-1", where: "src/a.ts:3" });
+	const outside = ledgerFinding({ stable_id: "OR-2", where: "src/c.ts:12" });
+	const inside = ledgerFinding({ stable_id: "OR-3", where: "`src/b.ts:7`" });
+	const resolved = { stable_id: "OR-1", result: "resolved_on_target", evidence: "Fixed.", finding: prior };
+	const knownFiles = ["src/a.ts", "src/b.ts", "src/c.ts", "src/index.ts", "index.ts", "src/my file.ts", "file.ts",
+		"src/naïve.ts", "ve.ts", "src/request.ts"];
+	const advisory = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"], knownFiles,
+		output: output(head, [outside], [resolved]) });
+	assert.equal(advisory.mergeGate.status, "PASS");
+	assert.deepEqual(advisory.ledger.open_findings, []);
+	assert.match(advisory.mergeGateSummary, /^Merge gate: \*\*PASS\*\*.*\nAdvisory, outside the changed files: OR-2\nModel verdict/);
+	const gated = buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: ["src/b.ts"], knownFiles,
+		output: output(head, [outside, inside], [{ stable_id: "OR-1", result: "still_open", finding: prior }]) });
+	assert.deepEqual(gated.mergeGate.blockingIssueIds, ["OR-1", "OR-3"]);
+	// Review finding 5 and the convergence check: a cited path resolves to one whole repository file.
+	const gate = (changed, where) => buildLocalSettlement({ patch: "", priorProjection: blocked.ledger, changedFiles: changed,
+		knownFiles, output: output(head, [ledgerFinding({ stable_id: "OR-4", where })], [resolved]) }).mergeGate.status;
+	assert.equal(gate(["index.ts"], "src/index.ts:42"), "PASS");
+	assert.equal(gate(["file.ts"], "src/my file.ts:42"), "PASS");
+	assert.equal(gate(["src/my file.ts"], "src/my file.ts:42"), "BLOCK");
+	assert.equal(gate(["ve.ts"], "src/naïve.ts:42"), "PASS");
+	assert.equal(gate(["src/request.ts"], "/workspace/src/request.ts:10"), "BLOCK");
+	assert.equal(gate(["index.ts"], "/workspace/src/index.ts:3"), "PASS");
+	assert.equal(gate(["src/index.ts"], "/workspace/src/index.ts:3"), "BLOCK");
+	// A location that resolves to no file fails safe: it can still block.
+	assert.equal(gate(["src/b.ts"], "/workspace/src/missing.ts:3"), "BLOCK");
+	assert.equal(gate(["src/b.ts"], "Location unavailable; inspect review evidence."), "BLOCK");
+});
 
 test("the local runner settles a carried or skipped head without a model, under the exact-head marker", (t) => {
 	const settle = settleRunner(t);

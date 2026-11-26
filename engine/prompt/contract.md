@@ -26,9 +26,10 @@ Keep the visible review format:
 - [applicable callouts, or "- (none)"]
 ```
 
-`## Verdict:` is a display label. A P0/P1 finding on a normal or compound path
-blocks unless an authenticated owner decision defers it. P2 and theoretical
-findings are advisory. An unapproved `FOLLOW_UP` proposal that does not meet
+`## Verdict:` is a display label. A P0 finding on a normal or compound path, a
+P1 on a normal path, or a P1 on a compound path with high or medium likelihood
+blocks unless an authenticated owner decision defers it. Every other finding is
+advisory. An unapproved `FOLLOW_UP` proposal that does not meet
 the narrow P2/low-likelihood/routine-recovery rule becomes `AUTHOR_DECISION` in
 the publisher; keep the finding in structured output. No finding is removed for
 pre-existing attribution or because it was outside the latest repair delta.
