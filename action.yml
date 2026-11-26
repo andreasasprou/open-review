@@ -67,7 +67,7 @@ inputs:
       a stored-data, security or infrastructure path outside tests and Markdown,
       or a review, merge-gate, prompt, rule-pack or agent-instruction path, and
       none otherwise; an integer from 0 to 4 sets the maximum (0 disables them).
-      Incremental reviews run no workers.
+      Incremental and prior_findings reviews run no workers.
     default: auto
   worker-model:
     description: Codex model for the focused and rules workers. Empty uses the engine default (gpt-6.1-sol).
@@ -76,7 +76,7 @@ inputs:
     description: Reasoning effort for the focused and rules workers. Empty uses the engine default (medium).
     default: ""
   rules-worker:
-    description: Check every changed file against the repository's written rules (AGENTS.md and the guidance it points to) as an advisory summary section ("true" or "false"). Incremental reviews skip it.
+    description: Check every changed file against the repository's written rules (AGENTS.md and the guidance it points to) as an advisory summary section ("true" or "false"). Incremental and prior_findings reviews skip it.
     default: "true"
   codex-cli-version:
     description: Exact @openai/codex version to install and verify.
@@ -491,6 +491,7 @@ runs:
       if: steps.skip.outputs.skip != 'true'
       shell: bash
       env:
+        BASE_REF: ${{ steps.pr.outputs.base_ref }}
         BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         LAST_REVIEWED_SHA: ${{ steps.state.outputs.last_reviewed_sha }}
@@ -510,6 +511,22 @@ runs:
         if jq -e '.priorProjection == null' .codex-ci/ledger-evidence.json >/dev/null; then
           SINCE=""
         fi
+        OWNER_EVENT=false
+        if jq -e '(.modelReviewRequired == true) or
+          (([.humanDecisions[]?.comment_id] - [.priorProjection.human_decisions[]?.comment_id]) | length > 0) or
+          (([.evidenceChallenges[]? | "github-comment:\(.comment_id)"] -
+          (.priorProjection.consumed_evidence_challenge_refs // [])) | length > 0)' \
+          .codex-ci/ledger-evidence.json >/dev/null; then
+          OWNER_EVENT=true
+        fi
+        # The authenticated projection settled this head on the same base branch
+        # and merge base, so the PR's patch is unchanged since that settlement.
+        SETTLED_HERE=false
+        if jq -e --arg head "$HEAD_SHA" --arg ref "${BASE_REF:-}" --arg base "$MERGE_BASE_SHA" \
+          '.priorProjection.review_target | .head_sha == $head and .base_ref == $ref and .merge_base_sha == $base' \
+          .codex-ci/ledger-evidence.json >/dev/null; then
+          SETTLED_HERE=true
+        fi
         REASON="no_previous_review"
         MODE="full"
         DIFF_BASE="$MERGE_BASE_SHA"
@@ -518,6 +535,13 @@ runs:
           REASON="reset_requested"
         elif [ "${FORCE_FULL_REVIEW:-false}" = "true" ]; then
           REASON="forced_full_review"
+        elif [ "$SETTLED_HERE" = "true" ] && [ -z "$SINCE_SHA" ] && [ "$EVENT_NAME" != "workflow_dispatch" ] &&
+             { [ "$OWNER_EVENT" = "true" ] || [ "$EVENT_NAME" = "issue_comment" ]; }; then
+          # Re-evaluate the settled findings against the owner's decisions, with
+          # no new-finding hunt (decision hosted-converge).
+          MODE="prior_findings"
+          REASON="rerun_requested"
+          if [ "$OWNER_EVENT" = "true" ]; then REASON="new_owner_event"; fi
         elif { [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "issue_comment" ]; } &&
              [ -z "$SINCE_SHA" ]; then
           REASON="explicit_review_requested"
@@ -526,11 +550,7 @@ runs:
             if git merge-base --is-ancestor "$SINCE" "$HEAD_SHA"; then
               COUNT="$(git rev-list --count "$SINCE".."$HEAD_SHA")"
               if [ "$COUNT" -eq 0 ]; then
-                if jq -e '(.modelReviewRequired == true) or
-                  (([.humanDecisions[]?.comment_id] - [.priorProjection.human_decisions[]?.comment_id]) | length > 0) or
-                  (([.evidenceChallenges[]? | "github-comment:\(.comment_id)"] -
-                  (.priorProjection.consumed_evidence_challenge_refs // [])) | length > 0)' \
-                  .codex-ci/ledger-evidence.json >/dev/null; then
+                if [ "$OWNER_EVENT" = "true" ]; then
                   MODE="full"
                   REASON="new_owner_event"
                 else
@@ -1003,8 +1023,8 @@ runs:
         if [ "${LEVEL_RULES_WORKER:-}" = "false" ]; then
           RULES_WORKER=false
         fi
-        # Incremental reviews run the parent alone.
-        if [ "${REVIEW_MODE:-}" = "incremental" ]; then
+        # Incremental and prior-findings reviews run the parent alone.
+        if [ "${REVIEW_MODE:-}" = "incremental" ] || [ "${REVIEW_MODE:-}" = "prior_findings" ]; then
           FOCUSED_WORKERS=0
           RULES_WORKER=false
         fi

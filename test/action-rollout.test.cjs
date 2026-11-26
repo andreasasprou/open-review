@@ -189,34 +189,71 @@ async function commandOutputs(eventName, body, sinceInput = '') {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-for (const [event, body] of [
-  ['issue_comment', '/code-review'],
-  ['issue_comment', '/code-review please review this'],
-  ['issue_comment', '/code-review full'],
-  ['issue_comment', '/alias-review'],
-  ['issue_comment', '/alias-review full'],
-  ['workflow_dispatch', ''],
+// Decision hosted-converge: the scope step on a head the authenticated projection
+// settled at `settled` (by default `f.base`, on `main` at merge base `f.base`).
+function settledScope(f, { head, settled = {}, lastReviewed = f.base, baseRef = 'main', event = 'issue_comment',
+  force = 'false', reset = 'false', since = '', evidence = {} }) {
+  writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
+    priorProjection: { human_decisions: [], review_target: { head_sha: f.base, base_ref: 'main', merge_base_sha: f.base, ...settled } },
+    modelReviewRequired: false, humanDecisions: [], evidenceChallenges: [], ...evidence,
+  }));
+  writeFileSync(f.output, '');
+  const result = runShell(block('Determine review scope', 'run'), f.root, {
+    BASE_REF: baseRef, BASE_SHA: f.base, HEAD_SHA: head, LAST_REVIEWED_SHA: lastReviewed,
+    FORCE_FULL_REVIEW: force, RESET_STATE: reset, SINCE_SHA: since, EVENT_NAME: event, GITHUB_OUTPUT: f.output,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return readFileSync(f.output, 'utf8');
+}
+
+// A review command on the settled head re-evaluates the prior findings; `full` and a
+// manual run review the whole PR, as every command does once the head has moved.
+for (const [event, body, unchanged] of [
+  ['issue_comment', '/code-review', 'prior_findings'],
+  ['issue_comment', '/code-review please review this', 'prior_findings'],
+  ['issue_comment', '/code-review full', 'full'],
+  ['issue_comment', '/alias-review', 'prior_findings'],
+  ['issue_comment', '/alias-review full', 'full'],
+  ['workflow_dispatch', '', 'full'],
 ]) {
-  test(`explicit ${event} ${body || '(manual)'} reviews an unchanged head`, async (t) => {
+  test(`explicit ${event} ${body || '(manual)'} on the settled head: ${unchanged}`, async (t) => {
     const outputs = await commandOutputs(event, body);
     assert.equal(outputs.trigger_rejected, undefined);
     assert.equal(outputs.default_branch, 'main');
     assert.equal(outputs.default_branch_sha, 'c'.repeat(40));
     const f = fixture(t, false, false);
     mkdirSync(join(f.root, '.codex-ci'));
-    writeFileSync(join(f.root, '.codex-ci/ledger-evidence.json'), JSON.stringify({
-      priorProjection: {}, modelReviewRequired: false,
-      humanDecisions: [], evidenceChallenges: [],
-    }));
-    const result = runShell(block('Determine review scope', 'run'), f.root, {
-      BASE_SHA: f.base, HEAD_SHA: f.base, LAST_REVIEWED_SHA: f.base,
-      FORCE_FULL_REVIEW: outputs.force_full_review, RESET_STATE: outputs.reset_state,
-      SINCE_SHA: outputs.since_sha, EVENT_NAME: event, GITHUB_OUTPUT: f.output,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(readFileSync(f.output, 'utf8'), /review_mode=full/);
+    const scope = (head) => settledScope(f, { head, event, force: outputs.force_full_review,
+      reset: outputs.reset_state, since: outputs.since_sha });
+    assert.match(scope(f.base), new RegExp(`review_mode=${unchanged}\n`));
+    assert.match(scope(f.trusted), /review_mode=full\n/);
   });
 }
+
+test('an owner event on the settled head re-evaluates the prior findings instead of a full review', (t) => {
+  const f = fixture(t, false, false);
+  mkdirSync(join(f.root, '.codex-ci'));
+  assert.match(settledScope(f, { head: f.base, event: 'pull_request_target', evidence: { humanDecisions: [{ comment_id: 50 }] } }),
+    /review_mode=prior_findings\n[^]*review_scope_reason=new_owner_event\n/);
+});
+
+// Independent review findings 1, 2 and 4: eligibility comes from the authenticated
+// projection's head, base branch and merge base, not from --since or the legacy state.
+test('prior_findings needs the authenticated projection on this head, base branch and merge base', (t) => {
+  const f = fixture(t, false, false);
+  mkdirSync(join(f.root, '.codex-ci'));
+  // Settled at A (f.base); B (f.trusted) was pushed and `--since B` was requested.
+  assert.doesNotMatch(settledScope(f, { head: f.trusted, since: f.trusted }), /review_mode=prior_findings/);
+  // The PR was retargeted, or its merge base differs from the settlement's.
+  assert.match(settledScope(f, { head: f.base, settled: { base_ref: 'release' } }),
+    /review_mode=full\n[^]*review_scope_reason=explicit_review_requested\n/);
+  assert.match(settledScope(f, { head: f.base, settled: { merge_base_sha: 'e'.repeat(40) } }), /review_mode=full\n/);
+  assert.match(settledScope(f, { head: f.base, baseRef: 'release', event: 'pull_request_target',
+    evidence: { humanDecisions: [{ comment_id: 50 }] } }), /review_mode=full\n[^]*review_scope_reason=new_owner_event\n/);
+  // The legacy state comment still names A, but the projection settled B.
+  assert.match(settledScope(f, { head: f.trusted, settled: { head_sha: f.trusted } }),
+    /review_mode=prior_findings\n[^]*review_scope_reason=rerun_requested\n/);
+});
 
 test('automatic unchanged head may skip', (t) => {
   const f = fixture(t, false, false);
@@ -324,7 +361,7 @@ test('a merge from the base branch after the last pass makes a full review', (t)
   assert.match(scope(merged), /review_mode=full\n[^]*review_scope_reason=merge_base_moved/);
 });
 
-test('incremental reviews start no focused or rules workers', (t) => {
+test('incremental and prior-findings reviews start no focused or rules workers', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'open-review-action-incremental-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, '.codex-ci'));
@@ -337,6 +374,7 @@ test('incremental reviews start no focused or rules workers', (t) => {
     RULES_WORKER: 'true', DIFF_BASE_SHA: 'a'.repeat(40), NODE_RECORD: record };
   for (const [mode, expected] of [
     ['incremental', /focused-workers\.cjs run 0 a{40} .* rules=false\n$/],
+    ['prior_findings', /focused-workers\.cjs run 0 a{40} .* rules=false\n$/],
     ['full', /focused-workers\.cjs run auto a{40} .* rules=true\n$/],
   ]) {
     rmSync(record, { force: true });

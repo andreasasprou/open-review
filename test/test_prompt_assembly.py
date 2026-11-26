@@ -144,6 +144,17 @@ class AssemblyContractTest(unittest.TestCase):
         self.assertIn("result: compatible | counterexample | unresolved", prompt)
         self.assertIn("`unresolved` row under \"Risks Not Raised\"", prompt)
 
+    def test_prior_findings_mode_raises_no_new_findings_in_the_runner_contract(self):
+        # Decision hosted-converge: Part 3 carries the instruction; Part 1 is unchanged.
+        prompt = engine.assemble(self.core(), self.contract(), "# Part 2 — Rules\n", "parent", "child")
+        part3 = " ".join(prompt.split("# Part 3 — ", 1)[1].split())
+        self.assertIn(
+            "In mode `prior_findings` the head has not changed since the last settlement: read the scoped diff as "
+            "usual, evaluate only the prior open findings against the collected owner decisions and challenges, "
+            "and raise no new findings.",
+            part3,
+        )
+
     def test_prompt_rules_out_skill_files_and_forked_children(self):
         result = assemble_cli(EXAMPLE_RULES)
         self.assertEqual(result.returncode, 0, result.stderr)

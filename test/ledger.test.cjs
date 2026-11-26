@@ -926,6 +926,9 @@ test("a deferral survives an unrelated push and reopens when its cited code chan
 	assert.equal(push(["src/index.ts"], "/workspace/src/index.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
 	// A location that resolves to no file fails safe: the deferral reopens.
 	assert.equal(push(["src/other.ts"], "/workspace/src/missing.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+	// Independent review finding 3: a changed file anywhere in the location reopens the deferral.
+	assert.equal(push(["src/request.ts"], "src/request.ts and src/other.ts:3").open_findings[0].disposition, "AUTHOR_DECISION");
+	assert.equal(push(["src/index.ts"], "src/request.ts and src/other.ts:3").open_findings[0].disposition, "FOLLOW_UP");
 });
 
 // Review finding 4: a deferral made on the current head postdates the change since the prior projection.
@@ -966,10 +969,18 @@ test("the publisher's changed paths run from the prior projection's head, or the
 	const head = commit("b.ts");
 	const at = (priorHead) => changedSinceProjection({ cwd, target: { head_sha: head, merge_base_sha: mergeBase },
 		priorProjection: priorHead && { review_target: { head_sha: priorHead } } });
-	const unchanged = { changedPaths: [], knownPaths: [] };
+	// The head's files are listed even when nothing changed since the prior projection.
+	const unchanged = { changedPaths: [], knownPaths: ["a.ts", "b.ts", "base.ts"] };
 	assert.deepEqual(at(null), unchanged);
 	assert.deepEqual(at(head), unchanged);
 	assert.deepEqual(at(reviewed), { changedPaths: ["b.ts"], knownPaths: ["a.ts", "b.ts", "base.ts"] });
+	// Convergence check: `--since` an ancestor after settling this head is an incremental review with
+	// nothing changed; a finding on an existing file is advisory, an unresolved location still gates.
+	const { outsideChangedFiles } = require("../engine/ledger/projection.cjs");
+	const scoped = (where) => outsideChangedFiles({ new_findings: [{ stable_id: "OR-9", where }], open_findings: [] },
+		at(head).changedPaths, at(head).knownPaths).outside.length;
+	assert.equal(scoped("a.ts:3"), 1);
+	assert.equal(scoped("Location unavailable; inspect review evidence."), 0);
 	assert.deepEqual(at("f".repeat(40)).changedPaths, ["a.ts", "b.ts"]);
 });
 
