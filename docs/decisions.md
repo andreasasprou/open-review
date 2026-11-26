@@ -113,7 +113,11 @@ converge as local ones do since [converge-after-block](#converge-after-block)?
   word by word: the longest span starting at a word that resolves is a cited
   file, and the scan continues after it, so every path counts and a path may
   contain spaces; a path-like word that starts no resolving span makes the
-  location unresolved; other words are prose and are skipped.
+  location unresolved; other words are prose and are skipped. An absolute
+  path drops only a leading prefix without whitespace, so one span never
+  covers two absolute paths; a checkout root with a space fails safe. The
+  publisher lists the head's files even when nothing changed, so a same-head
+  incremental review (`--since` an ancestor) still resolves cited paths.
 - The projection format is unchanged.
 - Accepted loss, not measured: a defect that an earlier review missed in a file
   the latest push did not change, or anywhere on an unchanged head, merges with

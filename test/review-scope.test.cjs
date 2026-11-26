@@ -475,6 +475,12 @@ test("after a block, a new finding outside the changed files is advisory; the pr
 	assert.equal(gate(["file.ts"], "In src/my file.ts:42 and src/c.ts:1"), "PASS");
 	assert.equal(gate(["src/c.ts"], "In src/my file.ts:42 and src/c.ts:1"), "BLOCK");
 	assert.equal(gate(["src/my file.ts"], "src/c.ts:1, src/my file.ts:42"), "BLOCK");
+	// Convergence check: an absolute path drops only a prefix without whitespace.
+	assert.equal(gate(["src/b.ts"], "/workspace/src/b.ts and /workspace/src/c.ts:10"), "BLOCK");
+	assert.equal(gate(["src/b.ts"], "/workspace/src/missing.ts and /workspace/src/c.ts:10"), "BLOCK");
+	assert.equal(gate(["src/b.ts"], "/workspace/src/a.ts and /workspace/src/c.ts:10"), "PASS");
+	assert.equal(gate(["file.ts"], "/workspace/src/my file.ts:42"), "PASS");
+	assert.equal(gate(["src/my file.ts"], "/workspace/src/my file.ts:42"), "BLOCK");
 });
 
 test("the local runner settles a carried or skipped head without a model, under the exact-head marker", (t) => {

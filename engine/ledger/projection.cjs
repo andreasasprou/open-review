@@ -180,15 +180,17 @@ function isFollowUpRiskEligible(finding) {
 // stripping a leading `./`, is a cited file, and the scan continues after it, so
 // every path in the location counts and a path may contain spaces. A relative
 // path matches only an equal known path; an absolute one the longest known path
-// it ends with on `/` boundaries. A word that starts no resolving span is skipped
-// as prose, unless it looks like a path. `unresolved` is true when such a
-// path-like word resolves to nothing, or when nothing in the location resolves.
+// it ends with on `/` boundaries, dropping only a prefix without whitespace, so
+// one span never covers two absolute paths. A word that starts no resolving span
+// is skipped as prose, unless it looks like a path. `unresolved` is true when
+// such a path-like word resolves to nothing, or when nothing in the location
+// resolves.
 function citedFiles(where, knownPaths) {
   const resolve = (candidate) => {
     const path = candidate.replace(/^[(\[]+/u, "").replace(/[)\].,]+$/u, "").replace(/^\.\//u, "");
     if (!path.startsWith("/")) return knownPaths.has(path) ? path : null;
     const parts = path.split("/");
-    for (let index = 1; index < parts.length; index += 1) {
+    for (let index = 1; index < parts.length && !/\s/u.test(parts[index - 1]); index += 1) {
       const suffix = parts.slice(index).join("/");
       if (knownPaths.has(suffix)) return suffix;
     }

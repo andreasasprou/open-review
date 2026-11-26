@@ -273,6 +273,9 @@ test("a hosted incremental review leaves a new finding outside the changed files
 	// Independent review findings 3 and 5: a changed file anywhere in the location blocks, and an
 	// incremental review whose change set is empty still blocks an unresolved location.
 	assert.deepEqual((await round("incremental", "src/a.ts and src/b.ts:12")).gate.blockingIssueIds, ["OR-2"]);
+	// Convergence check: one span never resolves across two absolute paths.
+	assert.deepEqual((await round("incremental", "/workspace/src/a.ts and /workspace/src/b.ts:10")).gate.blockingIssueIds, ["OR-2"]);
+	assert.deepEqual((await round("incremental", "/workspace/src/missing.ts and /workspace/src/b.ts:10")).gate.blockingIssueIds, ["OR-2"]);
 	assert.deepEqual((await round("incremental", "Location unavailable; inspect review evidence.", [])).gate.blockingIssueIds, ["OR-2"]);
 	assert.equal((await round("incremental", "src/b.ts:12", [])).gate.status, "PASS");
 });

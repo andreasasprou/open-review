@@ -1938,12 +1938,14 @@ function renderFocusedWorkerSection(workers, ledgerFindings, before = "", after 
 // the files at that head to resolve cited paths, in the review checkout at
 // `cwd`. A deferral whose cited file changed needs a new owner decision
 // (decision converge-after-block). When the prior head is not in the
-// checkout, every file of the PR counts as changed.
+// checkout, every file of the PR counts as changed. The head's files are listed
+// even when nothing changed, so a same-head review still resolves cited paths.
 function changedSinceProjection({ priorProjection, target, cwd = process.cwd() }) {
-	const priorHead = priorProjection?.review_target?.head_sha;
-	if (!priorHead || priorHead === target.head_sha) return { changedPaths: [], knownPaths: [] };
 	const git = (...args) => execFileSync("git", ["-C", cwd, ...args],
 		{ encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).split("\0").filter(Boolean);
+	const knownPaths = git("ls-tree", "-r", "--name-only", "-z", target.head_sha);
+	const priorHead = priorProjection?.review_target?.head_sha;
+	if (!priorHead || priorHead === target.head_sha) return { changedPaths: [], knownPaths };
 	const changed = (from) => git("diff", "--name-only", "-z", "--no-renames", from, target.head_sha);
 	let changedPaths;
 	try {
@@ -1951,7 +1953,7 @@ function changedSinceProjection({ priorProjection, target, cwd = process.cwd() }
 	} catch {
 		changedPaths = changed(target.merge_base_sha);
 	}
-	return { changedPaths, knownPaths: git("ls-tree", "-r", "--name-only", "-z", target.head_sha) };
+	return { changedPaths, knownPaths };
 }
 
 async function postResults({ recorder,

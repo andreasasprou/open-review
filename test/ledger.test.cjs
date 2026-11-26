@@ -969,10 +969,18 @@ test("the publisher's changed paths run from the prior projection's head, or the
 	const head = commit("b.ts");
 	const at = (priorHead) => changedSinceProjection({ cwd, target: { head_sha: head, merge_base_sha: mergeBase },
 		priorProjection: priorHead && { review_target: { head_sha: priorHead } } });
-	const unchanged = { changedPaths: [], knownPaths: [] };
+	// The head's files are listed even when nothing changed since the prior projection.
+	const unchanged = { changedPaths: [], knownPaths: ["a.ts", "b.ts", "base.ts"] };
 	assert.deepEqual(at(null), unchanged);
 	assert.deepEqual(at(head), unchanged);
 	assert.deepEqual(at(reviewed), { changedPaths: ["b.ts"], knownPaths: ["a.ts", "b.ts", "base.ts"] });
+	// Convergence check: `--since` an ancestor after settling this head is an incremental review with
+	// nothing changed; a finding on an existing file is advisory, an unresolved location still gates.
+	const { outsideChangedFiles } = require("../engine/ledger/projection.cjs");
+	const scoped = (where) => outsideChangedFiles({ new_findings: [{ stable_id: "OR-9", where }], open_findings: [] },
+		at(head).changedPaths, at(head).knownPaths).outside.length;
+	assert.equal(scoped("a.ts:3"), 1);
+	assert.equal(scoped("Location unavailable; inspect review evidence."), 0);
 	assert.deepEqual(at("f".repeat(40)).changedPaths, ["a.ts", "b.ts"]);
 });
 
