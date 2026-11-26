@@ -618,3 +618,12 @@ test('the provider check fails without a provider URL', (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /provider-base-url is required/);
 });
+
+test('every action the composite action calls is pinned to a full commit SHA', () => {
+  const uses = [...action.matchAll(/^\s*uses:\s*(\S+)(.*)$/gm)];
+  assert.ok(uses.length > 0);
+  for (const [, ref, comment] of uses) {
+    assert.match(ref, /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/, ref);
+    assert.match(comment, /^ # v\d+\.\d+\.\d+$/, `${ref} needs its version comment`);
+  }
+});
