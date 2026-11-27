@@ -1717,15 +1717,19 @@ async function collectEvidenceBundle({
     .at(-1);
   const latestReviewRefreshCommentId = latestReviewRefresh?.id;
 
+  // Retained decisions whose comment is unchanged but whose author is no longer allowlisted.
+  const retainedWithoutAuthority = new Set();
+  // Those decisions: kept as history so earlier references resolve, never applied to this review.
+  const historicalDecisions = [];
   for (const comment of issueComments) {
     if (comment.body.startsWith(HUMAN_DECISION_MARKER)) {
       // A retained decision was checked against PR history when first accepted.
       // A later force-push can drop its head commit; the decision keeps authority.
       const retainedDecision = retainedDecisionsByComment.get(comment.id);
-      const decision = parseHumanDecisionComment({
+      const parseAs = (principals) => parseHumanDecisionComment({
         comment,
-        allowed_principals: allowedDecisionPrincipals,
-        framework_principals: frameworkDecisionPrincipals,
+        allowed_principals: principals.allowed,
+        framework_principals: principals.framework,
         command: commands[0],
         known_issue_ids: knownIssueIds,
         pr_commit_shas: retainedDecision
@@ -1738,9 +1742,18 @@ async function collectEvidenceBundle({
               descendant === expectedHeadSha
           : ancestry,
       });
+      const decision = parseAs({ allowed: allowedDecisionPrincipals, framework: frameworkDecisionPrincipals });
       if (decision.ok) {
         parsedDecisionRecords.push({ comment, decision: decision.value });
-      } else rejectedRecords.push(decision);
+      } else {
+        rejectedRecords.push(decision);
+        // The comment still parses, unedited, to the retained decision under its own author: only the allowlist changed.
+        const author = retainedDecision?.actor_login;
+        const unchanged = decision.reason === "author_not_allowlisted_user" && author && comment.user?.login === author
+          ? parseAs({ allowed: [author], framework: [author] }) : null;
+        if (unchanged?.ok && canonicalJson(unchanged.value) === canonicalJson(retainedDecision))
+          retainedWithoutAuthority.add(comment.id);
+      }
       continue;
     }
     const challengeCommand = commands.find((name) =>
@@ -1826,6 +1839,12 @@ async function collectEvidenceBundle({
   );
   for (const retained of retainedDecisionsByComment.values()) {
     const current = currentDecisionsByComment.get(retained.comment_id);
+    // An owner list that no longer names the author ignores the decision; an edited or deleted comment still fails.
+    if (!current && retainedWithoutAuthority.has(retained.comment_id)) {
+      rejectedRecords.push({ comment_id: retained.comment_id, reason: "retained_decision_author_not_allowlisted" });
+      historicalDecisions.push(retained);
+      continue;
+    }
     if (!current || canonicalJson(current) !== canonicalJson(retained)) {
       const replacement = retained.kind !== "EVOLVE_FRAMEWORK" && humanDecisions.some((decision) =>
         decision.stable_id === retained.stable_id && decision.comment_id > retained.comment_id);
@@ -1995,6 +2014,7 @@ async function collectEvidenceBundle({
     reviewPriorProjection,
     modelReviewRequired,
     humanDecisions,
+    historicalDecisions,
     evidenceChallenges,
     rejectedRecords,
     trustedThreadContext,
@@ -2080,7 +2100,7 @@ async function collectLedgerEvidence({ github, owner, repo, prNumber, headSha,
   });
   return { priorProjection: bundle.priorProjection,
     priorProjections: bundle.evidence.prior_projections,
-    humanDecisions: bundle.humanDecisions,
+    humanDecisions: bundle.humanDecisions, historicalDecisions: bundle.historicalDecisions,
     evidenceChallenges: bundle.evidenceChallenges, reviewPriorProjection: bundle.reviewPriorProjection,
     rejectedOwnerEvents: bundle.rejectedRecords, modelReviewRequired: bundle.modelReviewRequired,
     reservedFindingIds: JSON.parse(bundle.files["pr-evidence.json"]).reserved_finding_ids,
@@ -2301,6 +2321,7 @@ async function revalidateLedgerAuthority({ snapshot, ...options }) {
     projection_history: (bundle.priorProjections || []).map(({ comment_id, projection }) =>
       [comment_id, projection.projection_sha256]),
     human_decisions: bundle.humanDecisions,
+    historical_decisions: bundle.historicalDecisions || [],
     evidence_challenges: bundle.evidenceChallenges,
     model_review_required: bundle.modelReviewRequired,
   });

@@ -90,3 +90,31 @@ test("the rule-pack note appears only when the PR changes the rule pack", () => 
 	assert.match(note, /default-branch version/);
 	assert.ok(note.endsWith("\n\n"));
 });
+
+test("discussion-context none keeps every human comment from the model, whatever its author or association", async () => {
+	const ledger = ledgerComment({ id: 1, login: "author", association: "OWNER", marker: MARKERS.dispositions,
+		dispositions: [{ disposition: "won't fix", rationale: "Accepted trade-off." }] });
+	const reply = (id, login, association, body) => ({ databaseId: id, body, author: { login }, authorAssociation: association, createdAt: "2026-09-01T00:00:00Z", url: `u${id}` });
+	const github = {
+		rest: { issues: { listComments: "issues" }, pulls: { listReviews: "reviews" } },
+		paginate: async (endpoint) => (endpoint === "issues" ? [ledger] : [
+			{ id: 5, user: { login: "github-actions[bot]" }, state: "COMMENTED", body: "Bot review", submitted_at: "2026-09-01T00:00:00Z" },
+			{ id: 6, user: { login: "author" }, author_association: "OWNER", state: "COMMENTED", body: "Fixed, please close.", submitted_at: "2026-09-01T00:01:00Z" }]),
+		graphql: async () => ({ repository: { pullRequest: { reviewThreads: { nodes: [
+			{ id: "T1", isResolved: false, isOutdated: false, path: "a.js", line: 1, comments: { nodes: [
+				reply(10, "github-actions[bot]", "NONE", "**[P1] Finding**"), reply(11, "author", "OWNER", "Disposition: fixed")] } },
+			{ id: "T2", isResolved: false, isOutdated: false, path: "b.js", line: 2, comments: { nodes: [reply(20, "member", "MEMBER", "Human thread")] } },
+		] } } } }),
+	};
+	const context = humanContext => fetchReviewDiscussionContext({ recorder: createRecordingCaughtErrorDiagnosticRecorder(), github,
+		owner: "example-org", repo: "example-repo", prNumber: 7, headSha: "f".repeat(40), prAuthorLogin: "author", humanContext });
+	const trusted = await context(true);
+	assert.ok(trusted.dispositions.length >= 2);
+	assert.deepEqual(trusted.threads.map(({ thread_id }) => thread_id), ["T1", "T2"]);
+	const none = await context(false);
+	assert.deepEqual(none.dispositions, []);
+	assert.deepEqual(none.review_summaries.map(({ author }) => author), ["github-actions[bot]"]);
+	assert.deepEqual(none.top_level_review_responses, []);
+	assert.deepEqual(none.threads.map(({ thread_id, trusted_responses }) => [thread_id, trusted_responses]), [["T1", []]]);
+	assert.doesNotMatch(JSON.stringify(none), /Fixed, please close|Disposition: fixed|Accepted trade-off|Human thread/);
+});

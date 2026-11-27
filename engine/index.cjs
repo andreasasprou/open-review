@@ -589,6 +589,9 @@ async function fetchReviewDiscussionContext({ recorder,
 	decisionOwners = [],
 	dispositionMarker = MARKERS.dispositions,
 	contextKeywords = [],
+	// false (action input `discussion-context: none`): no human comment reaches the model, whatever its author or
+	// association; only the reviewer bots' own reviews and threads remain.
+	humanContext = true,
 }) {
 	requireCaughtErrorDiagnosticRecorder(recorder);
 	const trustedAuthorLogins = [prAuthorLogin, ...decisionOwners].filter(Boolean);
@@ -630,7 +633,7 @@ async function fetchReviewDiscussionContext({ recorder,
 	}
 	const reviewSummaries = prReviews
 		.map((review) => normalizeReviewSummary(review, trustedAuthorLogins))
-		.filter(Boolean)
+		.filter((review) => review && (humanContext || review.is_bot))
 		.sort(compareByCreatedAtThenId);
 	const topLevelReviewResponses = buildTopLevelReviewResponses(reviewSummaries);
 	const topLevelReviewDispositions = topLevelReviewResponses.map(
@@ -691,7 +694,8 @@ async function fetchReviewDiscussionContext({ recorder,
 
 	const threads = reviewThreads.map((thread) =>
 		normalizeReviewDiscussionThread(thread, trustedAuthorLogins),
-	);
+	).flatMap((thread) => humanContext ? [thread]
+		: isBotLogin(thread.finding?.author) ? [{ ...thread, trusted_responses: [], dispositions: [] }] : []);
 	const threadDispositions = threads.flatMap((thread) => thread.dispositions);
 	const context = {
 		schema_version: 1,
@@ -702,8 +706,8 @@ async function fetchReviewDiscussionContext({ recorder,
 		top_level_review_responses: topLevelReviewResponses,
 		threads,
 		dispositions: dedupeDispositions([
-			...ledgerDispositions,
-			...topLevelDispositions,
+			...humanContext ? ledgerDispositions : [],
+			...humanContext ? topLevelDispositions : [],
 			...topLevelReviewDispositions,
 			...threadDispositions,
 		]),
@@ -933,6 +937,7 @@ async function writeReviewDiscussionContext({ recorder,
 	decisionOwners = [],
 	dispositionMarker = MARKERS.dispositions,
 	contextKeywords = [],
+	humanContext = true,
 	outputDir = ".codex-ci",
 }) {
 	requireCaughtErrorDiagnosticRecorder(recorder);
@@ -946,6 +951,7 @@ async function writeReviewDiscussionContext({ recorder,
 		decisionOwners,
 		dispositionMarker,
 		contextKeywords,
+		humanContext,
 	});
 	fs.mkdirSync(outputDir, { recursive: true });
 	fs.writeFileSync(
@@ -2061,6 +2067,7 @@ async function postResults({ recorder,
 		const published = await publishLedger({ github, owner, repo, prNumber,
 			target: ledgerTarget, priorProjection: ledgerEvidence.priorProjection,
 			evidence: { human_decisions: ledgerEvidence.humanDecisions,
+				historical_decisions: ledgerEvidence.historicalDecisions || [],
 				evidence_challenges: ledgerEvidence.evidenceChallenges,
 				prior_projections: ledgerEvidence.priorProjections || [] },
 			checkIdentity, candidate: ledgerCandidate, summaryBody: `<!-- ${MARKERS.review} -->\n${reviewBodyWithFooter}`,

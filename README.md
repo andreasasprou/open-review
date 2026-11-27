@@ -46,6 +46,7 @@ advisory. `/open-review full`, `/open-review reset` or a manual dispatch without
 | `command` | `open-review` | Slash command name(s) |
 | `decision-owners` | empty | Logins whose replies count as trusted dispositions |
 | `framework-decision-owners` | empty | Logins allowed to evolve the review framework; defaults to decision owners |
+| `discussion-context` | `trusted` | `none` keeps every human PR comment out of the model's context, for a review no comment may influence |
 | `disposition-marker` | `open-review-dispositions:v1:base64` | Marker for disposition-ledger comments |
 | `context-keywords` | empty | Extra words that mark a comment as review discussion |
 | `session-resume` | `true` | Continues the previous Codex session on incremental reviews |
