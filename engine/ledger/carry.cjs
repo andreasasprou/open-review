@@ -3,7 +3,7 @@
 const { buildProjection, foldReview, formatProjectionComment } = require("./projection.cjs");
 
 async function publishCarriedProjection({ github, owner, repo, prNumber, priorProjection, target,
-	checkIdentity, humanDecisions = [], log = console.log,
+	checkIdentity, humanDecisions = [], historicalDecisions = [], log = console.log,
 	revalidateAuthority = async () => {} }) {
 	if (!priorProjection || priorProjection.review_target.head_sha !== target.head_sha ||
 		priorProjection.review_target.repository !== target.repository ||
@@ -30,7 +30,7 @@ async function publishCarriedProjection({ github, owner, repo, prNumber, priorPr
 	const candidate = foldReview({ output: { new_findings: [], prior_issue_evaluations: [] }, target,
 		priorProjection, humanDecisions });
 	const projection = buildProjection({ candidate, target, checkIdentity,
-		summaryCommentId: priorProjection.summary_comment_id, humanDecisions });
+		summaryCommentId: priorProjection.summary_comment_id, humanDecisions: [...humanDecisions, ...historicalDecisions] });
 	formatProjectionComment(projection);
 	await revalidateAuthority();
 	const { data: finalPull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });

@@ -2402,6 +2402,59 @@ test("correction 2: retained framework ownership survives edited and deleted aut
   }
 });
 
+// An owner list that no longer names a retained decision's author (a gate that accepts no comment decisions).
+function retainedDecisionFixture() {
+  const target = correctionTarget();
+  const decision = { stable_id: "OR-DEFER", kind: "DEFER_FOLLOW_UP", invariant: "Deferred work stays tracked", scope: "Shared module", evidence: "Track this",
+    tracker: "ENG-1", owner_or_triage: "ordinary-owner", decision_head_sha: SHA_C, comment_id: 80, actor_login: "ordinary-owner" };
+  const projection = buildProjection({ candidate: { open_findings: [{
+    ...currentFindingForTarget({ target, stableId: decision.stable_id }), autonomous_eligibility: "NO",
+    decision_ref: "github-comment:80" }], closed_findings: [], prior_issue_evaluations: [] },
+    target, humanDecisions: [decision], checkIdentity: v4ProjectionForTarget({ target }).check_identity,
+    summaryCommentId: 90 });
+  const comment = { id: 80, body: formatHumanDecisionComment(decision), created_at: "2026-07-27T10:00:00Z",
+    updated_at: "2026-07-27T10:00:00Z", user: { login: "ordinary-owner", type: "User" } };
+  return { decision, projection, comment };
+}
+function collectWithPrincipals({ issueComments, principals }) {
+  return collectEvidenceBundle({ repository: "example-org/sample-app", prNumber: 42,
+    expectedBaseRef: "main", expectedBaseSha: SHA_A, expectedHeadSha: SHA_C,
+    reviewerRef: SHA_D, github: fakeGithub({ hostedProvenance: true, issueComments }), git: { mergeBase: async () => SHA_C },
+    allowedDecisionPrincipals: principals, frameworkDecisionPrincipals: principals, sleep: async () => {} });
+}
+
+test("a retained decision whose author is no longer allowlisted is ignored and logged, not a changed record", async () => {
+  const { projection, comment } = retainedDecisionFixture();
+  const kept = await collectWithPrincipals({ issueComments: [correctionComment(100, projection), comment], principals: ["ordinary-owner"] });
+  assert.deepEqual(kept.humanDecisions.map(({ comment_id }) => comment_id), [80]);
+  const bundle = await collectWithPrincipals({ issueComments: [correctionComment(100, projection), comment], principals: [] });
+  assert.deepEqual(bundle.humanDecisions, []);
+  assert.deepEqual(bundle.rejectedRecords.filter(({ comment_id }) => comment_id === 80).map(({ reason }) => reason),
+    ["author_not_allowlisted_user", "retained_decision_author_not_allowlisted"]);
+  // Kept as history only, so the projection's earlier references to it still resolve.
+  assert.deepEqual(bundle.historicalDecisions.map(({ comment_id }) => comment_id), [80]);
+  assert.deepEqual(kept.historicalDecisions, []);
+});
+
+test("a retained decision edited or deleted still fails, whatever the owner list", async () => {
+  const { projection, comment } = retainedDecisionFixture();
+  for (const principals of [[], ["ordinary-owner"]]) {
+    for (const comments of [[], [{ ...comment, updated_at: "2026-07-27T10:01:00Z" }], [{ ...comment, body: comment.body.replace("Track this", "Track that") }]]) {
+      await assert.rejects(collectWithPrincipals({ issueComments: [correctionComment(100, projection), ...comments], principals }),
+        /Retained owner decision 80/);
+    }
+  }
+});
+
+test("the ledger has no implicit decider: with no owners, a decision or challenge from any author, the PR's included, is rejected", async () => {
+  const { decision } = retainedDecisionFixture();
+  const fresh = { id: 81, body: formatHumanDecisionComment({ ...decision, comment_id: 81, actor_login: "pr-author" }),
+    created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z", user: { login: "pr-author", type: "User" } };
+  const bundle = await collectWithPrincipals({ issueComments: [fresh], principals: [] });
+  assert.deepEqual(bundle.humanDecisions, []);
+  assert.deepEqual(bundle.rejectedRecords.map(({ comment_id, reason }) => [comment_id, reason]), [[81, "author_not_allowlisted_user"]]);
+});
+
 function correctionNative({ event = "workflow_dispatch", headBranch = "main", jobs = null } = {}) {
   const run = { id: 12345, run_attempt: 1, event, path: ".github/workflows/code-review.yaml",
     head_sha: SHA_D, head_branch: headBranch, repository: { full_name: "example-org/sample-app" }, check_suite_id: 12 };

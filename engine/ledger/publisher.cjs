@@ -558,7 +558,8 @@ async function postResults({
     candidate,
     target,
     priorProjection,
-    humanDecisions: evidence?.human_decisions || [],
+    // Decisions kept only as history resolve earlier references; the candidate never applied them.
+    humanDecisions: [...evidence?.human_decisions || [], ...evidence?.historical_decisions || []],
     checkIdentity,
     summaryCommentId: Number.MAX_SAFE_INTEGER,
   });
@@ -578,7 +579,8 @@ async function postResults({
     candidate,
     target,
     priorProjection,
-    humanDecisions: evidence?.human_decisions || [],
+    // Decisions kept only as history resolve earlier references; the candidate never applied them.
+    humanDecisions: [...evidence?.human_decisions || [], ...evidence?.historical_decisions || []],
     checkIdentity,
     summaryCommentId: summary.id,
   });

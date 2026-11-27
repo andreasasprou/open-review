@@ -105,6 +105,9 @@ inputs:
   framework-decision-owners:
     description: GitHub logins allowed to make EVOLVE_FRAMEWORK decisions; when empty, any decision-owners login may.
     default: ""
+  discussion-context:
+    description: "Human PR discussion the model sees. trusted: replies and reviews from the PR author, decision-owners and OWNER, MEMBER or COLLABORATOR accounts. none: no human comment, for a review whose result no comment may influence."
+    default: trusted
   disposition-marker:
     description: HTML-comment marker of the base64 disposition ledger comments to read.
     default: open-review-dispositions:v1:base64
@@ -435,6 +438,7 @@ runs:
         REVIEW_COMMAND: ${{ inputs.command }}
         DISPOSITION_MARKER: ${{ inputs.disposition-marker }}
         CONTEXT_KEYWORDS: ${{ inputs.context-keywords }}
+        DISCUSSION_CONTEXT: ${{ inputs.discussion-context }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -455,6 +459,10 @@ runs:
             decisionOwners: list(process.env.DECISION_OWNERS),
             dispositionMarker: process.env.DISPOSITION_MARKER,
             contextKeywords: list(process.env.CONTEXT_KEYWORDS),
+            humanContext: (() => {
+              if (!['trusted', 'none'].includes(process.env.DISCUSSION_CONTEXT)) throw new Error('discussion-context must be trusted or none');
+              return process.env.DISCUSSION_CONTEXT === 'trusted';
+            })(),
             outputDir: '.codex-ci',
           });
           const fs = require('fs');
@@ -1620,6 +1628,7 @@ runs:
               console.log(`TRUSTED_WORKFLOW_SHA: ${process.env.TRUSTED_WORKFLOW_SHA}`);
               carriedProjection = await publishCarriedProjection({ github, owner, repo, prNumber,
                 priorProjection, target, checkIdentity, humanDecisions: ledgerEvidence.humanDecisions,
+                historicalDecisions: ledgerEvidence.historicalDecisions || [],
                 revalidateAuthority });
             }
             const derived = carriedProjection

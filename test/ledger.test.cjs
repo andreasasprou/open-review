@@ -1071,3 +1071,21 @@ test("same-head design decisions cannot close a P1 through resolved_on_target", 
 		}), (error) => error.code === "same_head_resolution_requires_challenge");
 	}
 });
+
+test("a decision kept only as history resolves an earlier closure without being applied again", () => {
+	const first = published();
+	const decision = { stable_id: "OR-1", kind: "REJECT_FINDING", invariant: "Requests may be dropped here", scope: "Request module",
+		evidence: "Owner reason", tracker: null, owner_or_triage: null, decision_head_sha: A, comment_id: 80, actor_login: "owner" };
+	const rejected = foldReview({ output: { new_findings: [], prior_issue_evaluations: [{ stable_id: "OR-1", result: "superseded_by_human_decision",
+		finding: first.open_findings[0], decision_ref: "github-comment:80", evidence: "The owner rejected it." }] },
+	target: target(B), priorProjection: first, humanDecisions: [decision] });
+	const second = buildProjection({ candidate: rejected, target: target(B), checkIdentity: checkIdentity(B), summaryCommentId: 99, humanDecisions: [decision] });
+	// The decision's author is no longer allowlisted: the fold gets no decision, only the projection keeps it as history.
+	const third = foldReview({ output: { new_findings: [], prior_issue_evaluations: [] }, target: target(A), priorProjection: second, humanDecisions: [] });
+	assert.deepEqual(third.closed_findings.map(({ finding, closure }) => [finding.stable_id, closure.result]), [["OR-1", "superseded_by_human_decision"]]);
+	assert.throws(() => buildProjection({ candidate: third, target: target(A), checkIdentity: { ...checkIdentity(A), workflow_run_id: "11" },
+		summaryCommentId: 99, humanDecisions: [] }), /does not resolve to a retained decision/);
+	const projection = buildProjection({ candidate: third, target: target(A), checkIdentity: { ...checkIdentity(A), workflow_run_id: "11" },
+		summaryCommentId: 99, humanDecisions: [decision] });
+	assert.deepEqual(projection.human_decisions.map(({ comment_id }) => comment_id), [80]);
+});
